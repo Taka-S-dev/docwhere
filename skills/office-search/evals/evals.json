@@ -1,0 +1,76 @@
+{
+ "skill_name": "office-search",
+ "evals": [
+  {
+   "id": 0,
+   "name": "purge-spec",
+   "prompt": "{corpus} 以下の資料で、orbitsync の purge コマンドの仕様が書いてあるのはどのドキュメントの何章？ オプションの既定値も知りたい",
+   "expected_output": "OrbitSync_CLI仕様書_v2.3.docx の 3.3 purge コマンド。--older-than 既定 90 日（purge.retention_days で変更可）、--dry-run、--target default。旧 v1.4 PDF の clean（30日）は古い版、月次運用手順書は参照のみ、と区別する。",
+   "files": [],
+   "assertions": [
+    "OrbitSync_CLI仕様書_v2.3.docx を仕様の記載先として挙げている",
+    "章として 3.3（purge コマンド）を挙げている",
+    "--older-than の既定値を 90 日と答えている",
+    "--dry-run と --target（既定 default）にも触れている",
+    "旧版 v1.4 PDF の clean（既定 30 日）を古い情報として区別している（30 日を現行の既定値として答えていない）",
+    "月次運用手順書を仕様の記載先として誤って挙げていない（参照元・補足としての言及は可）",
+    "テキストのないスキャン PDF（scan_設計メモ_2024.pdf）は検索できなかったことに触れている"
+   ]
+  },
+  {
+   "id": 1,
+   "name": "error-E2041",
+   "prompt": "orbitsync でエラー E2041 が出た。{corpus} の資料のどこに対処法が書いてあるか探して、何をすればいいか教えて",
+   "expected_output": "管理/エラーコード一覧.xlsx の E2041 行（認証トークン期限切れ → orbitsync login --refresh）と、運用/障害対応手順_2026.pptx スライド2（SSO パスワード変更直後にも発生、直らなければトークンキャッシュ削除）。",
+   "files": [],
+   "assertions": [
+    "管理/エラーコード一覧.xlsx を挙げている",
+    "エラーコード一覧の中の位置（E2041 の行またはセル番地）を示している",
+    "運用/障害対応手順_2026.pptx のスライド 2 を挙げている",
+    "対処として orbitsync login --refresh を挙げている",
+    "スライドのノートにある補足（SSO パスワード変更直後にも発生／直らなければトークンキャッシュ削除）に触れている"
+   ]
+  },
+  {
+   "id": 2,
+   "name": "proxy-timeout",
+   "prompt": "会社のネットワークから orbitsync sync を実行するとタイムアウトする。何か設定が要るなら、{corpus} の中のどの資料のどこに書いてあるか教えて",
+   "expected_output": "仕様書 v2.3 の 2.2 ネットワーク設定（HTTPS_PROXY、proxy.auth、net.timeout 既定30秒）、社内ネットワーク接続ガイド.pdf 2.2 コマンドラインツール (p.3)、エラーコード一覧 E3002、障害対応手順スライド3。",
+   "files": [],
+   "assertions": [
+    "OrbitSync_CLI仕様書_v2.3.docx の 2.2 ネットワーク設定を挙げている",
+    "環境変数 HTTPS_PROXY の設定を挙げている",
+    "net.timeout（既定 30 秒）に触れている",
+    "社内ネットワーク接続ガイド.pdf の 2.2 コマンドラインツール（p.3）を挙げている",
+    "エラー E3002（エラーコード一覧または障害対応手順スライド 3）に触れている"
+   ]
+  },
+  {
+   "id": 3,
+   "name": "log-location",
+   "prompt": "orbitsync のログってどこに出力されてる？何日分残る？ {corpus} の資料から探して、書いてある場所も教えて",
+   "expected_output": "運用/ログ運用手順.doc（旧形式）の 3 ログの保存先と保存期間：C:\\ProgramData\\OrbitSync\\logs、14 日保存、log.dir で変更可。",
+   "files": [],
+   "assertions": [
+    "運用/ログ運用手順.doc を挙げている",
+    "章「3 ログの保存先と保存期間」を挙げている",
+    "保存先 C:\\ProgramData\\OrbitSync\\logs を答えている",
+    "保存期間 14 日を答えている",
+    "設定キー log.dir で変更できることに触れている"
+   ]
+  },
+  {
+   "id": 4,
+   "name": "bandwidth",
+   "prompt": "日中に orbitsync が回線を食いつぶしてるって苦情が来た。転送速度を絞る設定ってある？ {corpus} の資料で調べて、どの資料のどこに書いてあるかも",
+   "expected_output": "技術資料/OrbitSync性能チューニングガイド.pdf の 2 帯域制限（p.2）：net.bandwidth_limit（Mbps、既定 0=無制限）、net.bandwidth_schedule で時間帯指定。",
+   "files": [],
+   "assertions": [
+    "技術資料/OrbitSync性能チューニングガイド.pdf を挙げている",
+    "節「2 帯域制限」または p.2 を示している",
+    "net.bandwidth_limit（単位 Mbps、既定 0＝無制限）を答えている",
+    "net.bandwidth_schedule による時間帯指定に触れている"
+   ]
+  }
+ ]
+}
