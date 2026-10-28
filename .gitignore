@@ -1,0 +1,26 @@
+# Allowlist: ignore everything at the root, then re-include project paths.
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/pyproject.toml
+!/uv.lock
+!/src/
+!/tests/
+!/skills/
+/skills/*
+!/skills/office-search/
+
+# Never commit these, wherever they appear inside allowed paths.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+id_rsa*
+id_ed25519*
+secrets.*
+credentials.*
