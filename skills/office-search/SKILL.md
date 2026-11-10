@@ -40,6 +40,10 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    command spec). Search the most likely kind first; when its hits are weak, search the
    others before concluding. Pass several folders by repeating `--in`.
 
+   A `wiki:NAME` (or `wiki:NAME/SPACE`) row is a folder row for the team wiki: when it fits,
+   search it with `docwhere wiki search … --wiki NAME [--space SPACE]` alongside or instead of
+   the local folders (see [The team wiki](#the-team-wiki)).
+
    If the user named a folder, use it. If there is no notes file or no row fits, ask once and
    offer to draft the map (below); do not search the whole drive.
 
