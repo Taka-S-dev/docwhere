@@ -258,6 +258,51 @@ def test_html_title_cannot_carry_terminal_escapes():
     assert all("\x1b" not in c.crumb and "\x07" not in c.crumb for c in chunks)
 
 
+def test_wiki_view_frames_the_quote_and_links_to_the_page(wiki, capsys):
+    from pathlib import Path
+
+    _json(capsys, ["wiki", "search", "タイムアウト", "--json"])
+    FakeWiki.requests.clear()
+    assert main(["wiki", "view", "--no-open", "--quote", "接続のタイムアウトは設定ファイルで変える。", "--answer", "設定ファイルで変える"]) == 0
+    page = Path(capsys.readouterr().out.strip()).read_text(encoding="utf-8")
+    assert len(FakeWiki.requests) == 2  # each page read once, as it is now
+    assert '<mark class="ans">接続のタイムアウトは設定ファイルで変える。</mark>' in page
+    assert 'href="#w1-s1"' in page and 'id="w1-s1"' in page  # evidence jumps to its section
+    assert "<script" not in page and "alert(1)" not in page
+    assert 'data-open-url="' + wiki + "/display/OPS/" in page and "#p101-timeout" in page
+    assert "社内 wiki" in page and "Confluence" not in page
+
+
+def test_search_view_needs_no_second_read(wiki, capsys, monkeypatch):
+    from docwhere import window
+
+    monkeypatch.setattr(window, "available", lambda: False)
+    monkeypatch.setattr("docwhere.opener.start_file", lambda path: None)
+    FakeWiki.requests.clear()
+    capsys.readouterr()
+    assert main(["wiki", "search", "再試行", "--view", "--quote", "失敗したら 3 回まで再試行する。"]) == 0
+    assert len(FakeWiki.requests) == 1
+    assert "view: " in capsys.readouterr().err
+
+
+def test_the_window_opens_only_pages_of_added_wikis(wiki, monkeypatch, tmp_path):
+    import os
+    import webbrowser
+    from pathlib import Path
+
+    from docwhere import window
+
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", opened.append)
+    api = window.Api(Path(os.environ["DOCWHERE_DB"]))
+    api._trusted = True
+    assert api.open_url(wiki + "/display/OPS/x") and opened == [wiki + "/display/OPS/x"]
+    for bad in ("http://elsewhere.invalid/x", "file:///C:/Windows/notepad.exe", "javascript:alert(1)"):
+        with pytest.raises(PermissionError):
+            api.open_url(bad)
+    assert len(opened) == 1
+
+
 def test_a_rest_api_that_asks_to_log_in_falls_back_to_the_pages(wiki, capsys):
     FakeWiki.mode = "api-login"  # pages open to everyone, the API only to logged-in users
     out = _json(capsys, ["wiki", "search", "タイムアウト", "--json"])

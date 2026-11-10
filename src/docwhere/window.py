@@ -519,6 +519,19 @@ class Api:
                 pythoncom.CoUninitialize()
 
     @_logged
+    def open_url(self, url: str) -> str:
+        """Open a page of an added wiki in the browser; any other address is refused."""
+        import webbrowser
+
+        from docwhere.wiki import origin, safe_url, wikis
+
+        url = str(url)
+        if not url.startswith(("http://", "https://")) or origin(url) not in {origin(w["url"]) for w in wikis(self._db)}:
+            raise PermissionError("登録した wiki のページではありません")
+        webbrowser.open(safe_url(url))
+        return "ブラウザで開きました"
+
+    @_logged
     def copy(self, text: str) -> bool:
         import win32clipboard
 

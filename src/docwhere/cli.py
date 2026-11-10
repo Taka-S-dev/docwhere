@@ -137,7 +137,15 @@ def _wiki_parser(sub) -> None:
     p.add_argument("--space", action="append", default=[], help="only this space, repeatable (overrides the wiki's spaces)")
     p.add_argument("-n", "--limit", type=int, default=5, help="pages to read per wiki (default 5, at most 20)")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--view", action="store_true", help="also show the hits in the reader (see wiki view)")
+    _wiki_view_options(p, "with --view: ")
     p.set_defaults(func=cmd_wiki_search)
+
+    p = ws.add_parser("view", help="show the last wiki search's hits in the reader, with the answer's quotes framed")
+    p.add_argument("n", type=int, nargs="*", help="only these hit numbers (default: all)")
+    _wiki_view_options(p)
+    p.add_argument("--no-open", action="store_true", help="write the page and print its path only")
+    p.set_defaults(func=cmd_wiki_view)
 
     p = ws.add_parser("show", help="print the sections of a page: hit N of the last wiki search, a page id or its address")
     p.add_argument("ref")
@@ -150,6 +158,14 @@ def _wiki_parser(sub) -> None:
     p = ws.add_parser("open", help="open hit N of the last wiki search (or a page address of an added wiki) in the browser")
     p.add_argument("ref")
     p.set_defaults(func=cmd_wiki_open)
+
+
+def _wiki_view_options(p: argparse.ArgumentParser, prefix: str = "") -> None:
+    p.add_argument("-C", "--context", type=int, default=1, help=f"{prefix}neighbouring sections to include, folded (default 1)")
+    p.add_argument("--quote", action="append", default=[], help=f"{prefix}sentence that answers the question; framed, repeatable")
+    p.add_argument("--answer", default="", help=f"{prefix}one-line answer shown at the top of the page")
+    p.add_argument("--title", default="", help=f"{prefix}the question, used as the page title (default: the terms)")
+    p.add_argument("--browser", action="store_true", help=f"{prefix}open the saved page in the browser, not the docwhere window")
 
 
 def _view_options(p: argparse.ArgumentParser, prefix: str = "") -> None:
@@ -490,12 +506,14 @@ def cmd_wiki_search(args) -> int:
 
     db = _wiki_db(args)
     limit = max(1, min(args.limit, MAX_WIKI_PAGES))
-    found = []
+    found, pages = [], {}
     for entry in _wiki_entries(db, args.wiki):
         wiki = client(entry)
         if args.space:
             wiki.spaces = args.space
-        found += hits(entry["name"], wiki.search(args.terms, args.all, limit), args.terms)
+        read = wiki.search(args.terms, args.all, limit)
+        pages.update({(entry["name"], page.id): page for page in read})
+        found += hits(entry["name"], read, args.terms)
     found.sort(key=lambda h: -h.score)
     for n, h in enumerate(found, 1):
         h.n = n
@@ -503,6 +521,9 @@ def cmd_wiki_search(args) -> int:
     db.with_name("last_wiki.json").write_text(
         json.dumps({"terms": args.terms, "hits": [h.to_dict() for h in found]}, ensure_ascii=False), encoding="utf-8"
     )
+    if args.view:
+        path = _show_wiki_view(db, args.terms, [h.to_dict() for h in found], pages, args, open_it=True)
+        print(f"view: {path}", file=sys.stderr)
     if args.json:
         print(json.dumps({"terms": args.terms, "hits": [h.to_dict() for h in found],
                           "next": "docwhere wiki show N prints the hit's sections; docwhere wiki open N opens the page"},
@@ -515,6 +536,35 @@ def cmd_wiki_search(args) -> int:
         print(f"{h.n:>2}. {where}")
         print(f"    {_highlight(h.snippet, h.terms)}")
         print(f"    {h.url}")
+    return 0
+
+
+def _show_wiki_view(db: Path, terms: list[str], found: list[dict], pages: dict, options, open_it: bool) -> str:
+    from docwhere.wiki.view import build_wiki_html
+
+    return _show_page(
+        db,
+        lambda in_window: build_wiki_html(found, pages, terms, options.context, options.quote, options.answer, options.title),
+        options.title or " ".join(terms), options, open_it,
+    )
+
+
+@_wiki_command
+def cmd_wiki_view(args) -> int:
+    from docwhere.wiki import WikiError, client
+
+    db = _wiki_db(args)
+    try:
+        last = json.loads(db.with_name("last_wiki.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise WikiError("no wiki search yet; run: docwhere wiki search TERMS") from None
+    found = [h for h in last.get("hits", []) if not args.n or h.get("n") in args.n]
+    pages = {}
+    for h in found:  # each page once, from the wiki as it is now
+        key = (h["wiki"], h["page_id"])
+        if key not in pages:
+            pages[key] = client(_wiki_entries(db, h["wiki"])[0]).page(h["page_id"] or h["url"])
+    print(_show_wiki_view(db, last.get("terms", []), found, pages, args, open_it=not args.no_open))
     return 0
 
 
@@ -614,24 +664,37 @@ def _write_view(index: Index, terms: list[str], hits: list[dict], context: int, 
     """Save the page and open it: in the docwhere window (an interactive reader) unless the
     browser was chosen or the window cannot start. Returns the saved page's path.
     ``options``: the parsed --pages, --quote, --answer, --title and --browser."""
+    from docwhere.viewer import build_html
+
+    return _show_page(
+        index.path,
+        lambda in_window: build_html(index, terms, hits, context, options.pages, options.quote, options.answer,
+                                     options.title, cut_excerpts=not in_window),
+        options.title or " ".join(terms), options, open_it,
+    )
+
+
+def _show_page(db: Path, build, title: str, options, open_it: bool) -> str:
+    """Build a result page (``build(in_window)``), save and sign it, and open it in the docwhere
+    window or the browser; returns the saved page's path."""
     from docwhere import window
     from docwhere.opener import start_file
-    from docwhere.viewer import build_html, save_view
+    from docwhere.viewer import save_view
 
-    in_window = open_it and not options.browser and window.mode(index.path) == "window" and window.available()
-    page = build_html(index, terms, hits, context, options.pages, options.quote, options.answer, options.title,
-                      cut_excerpts=not in_window)
+    in_window = open_it and not options.browser and window.mode(db) == "window" and window.available()
+    page = build(in_window)
+
     def sign(path: Path) -> None:
         try:
-            window.sign_page(index.path, path)
+            window.sign_page(db, path)
         except OSError as e:  # e.g. a key file that is not this user's
             print(f"docwhere: the page was not signed, so the window will not run its reader: {e}", file=sys.stderr)
 
-    out = save_view(index.path.with_name("views"), page, options.title or " ".join(terms), options.answer, sign=sign)
+    out = save_view(db.with_name("views"), page, title, options.answer, sign=sign)
     if not open_it:
         return str(out)
-    if not options.browser and window.mode(index.path) == "window":
-        if window.available() and window.show(index.path, out):
+    if not options.browser and window.mode(db) == "window":
+        if window.available() and window.show(db, out):
             return str(out)
         print("docwhere: the docwhere window could not start (or the index folder is shared); opening the page in the browser", file=sys.stderr)
     start_file(str(out))

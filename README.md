@@ -41,6 +41,7 @@ uv tool install -e .
 | `wiki check [NAME] [--term T]` | wiki に届くか、バージョン、REST API の有無、スペース、試しの検索の結果 |
 | `wiki search TERM... [--all] [--wiki NAME] [--space KEY] [-n K] [--json]` | wiki の検索。ヒットしたページを節に区切り、合う節と前後の文、節へのリンクを出す |
 | `wiki show N [-C K] [--whole]` / `wiki open N` | 直前の wiki 検索の N 件目の節を表示 / ブラウザで開く |
+| `wiki view [N...] [--quote Q] [--answer A] [--title T]` | 直前の wiki 検索の結果を `view` と同じ画面で表示。回答の根拠の文に枠を付け、ページはボタンでブラウザで開く。`wiki search --view` でも同じ |
 
 複数の TERM は OR（`--all` で AND）。見出しに語を含む節、複数の言い換えに当たる節が上位に来る。
 
@@ -89,6 +90,7 @@ Confluence（Server / Data Center、5.x 以降）を、ログインせずに見�
     http://wiki.example:8090/display/OPS/接続設定#接続設定-タイムアウト
 ```
 
+- `wiki view` は手元の資料と同じ画面（根拠の枠、根拠の一覧、引用のコピー）で結果を見せる。表示するページだけを読み直し、`wiki search --view` なら読み直さない。ウィンドウから開けるのは登録した wiki のページだけ。
 - REST API があれば CQL 検索 1 回で本文ごと受け取る。無い・無効なサーバーでは、サイトの検索結果ページから上位のページを開き、本文（`main-content`）だけを読む。
 - docwhere がネットワークを使うのは `wiki` コマンドだけで、接続先は `wiki add` した URL だけ。ほかのサイトへの転送はたどらず、1 応答 16 MB、20 秒で打ち切る。ページの HTML は文字として読むだけで、スクリプトは実行しない。`wiki open` が開くのも登録した wiki のページだけ。
 - 登録内容はインデックスの横の `settings.json` に入る（本人以外が書き込めるフォルダでは読まない）。手元に残るのは直前の検索結果の一覧（`last_wiki.json`）だけ。

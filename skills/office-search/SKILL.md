@@ -243,8 +243,12 @@ name the user gave it) in answers, not the product name.
 - `docwhere wiki show N` — the hit's section with its neighbours, for reading before answering.
   `--whole` for the full page.
 - Cite a wiki answer as `社内 wiki「<title>」 > <section>` with the URL, and the update date
-  when it matters. `docwhere wiki open N` opens the page in the browser when the user asks to
-  see it; the docwhere viewer does not show wiki pages.
+  when it matters.
+- To show it ("開いて", "見せて"): `docwhere wiki view [N…] --title "<question>" --answer "<one
+  line>" --quote "<sentence copied from the section>"` — the same reader as `view`, with the
+  quotes framed and a button that opens the page in the browser. It re-reads only the pages
+  shown. `wiki search … --view` does it in one step without re-reading. `docwhere wiki open N`
+  opens the page in the browser directly.
 - Errors: "asks to log in" means the page or the wiki is not viewable anonymously (docwhere
   reads only those); "cannot reach" means this PC is not on the wiki's network. Say so and
   answer from the local documents.

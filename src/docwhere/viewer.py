@@ -1131,6 +1131,7 @@ APP_JS = r"""(() => {
   ]);
 
   all("[data-live]").forEach((el) => { el.hidden = false; });
+  all("[data-static]").forEach((el) => { el.hidden = true; });  // links for the script-less browser copy
   all(".static-only").forEach((el) => { el.hidden = true; });
 
   // stay inside the viewer: only other docwhere pages and in-page anchors navigate
@@ -1143,6 +1144,12 @@ APP_JS = r"""(() => {
   }, true);
 
   document.addEventListener("click", async (event) => {
+    const wiki = event.target.closest("[data-open-url]");
+    if (wiki) {
+      event.preventDefault();
+      try { toast(await (await bridge()).open_url(wiki.dataset.openUrl)); } catch (e) { failed("開けま")(e); }
+      return;
+    }
     const open = event.target.closest("[data-open]");
     if (open) {
       event.preventDefault();
