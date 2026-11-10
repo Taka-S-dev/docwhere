@@ -339,6 +339,13 @@ def test_spaces_are_listed_with_their_names(wiki, capsys):
     assert out == {"team": [{"key": "OPS", "name": "運用"}, {"key": "DEV", "name": "開発"}]}
 
 
+def test_check_explains_a_japanese_search_that_finds_nothing(wiki, capsys):
+    capsys.readouterr()
+    assert main(["wiki", "check", "--term", "存在しない語"]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL search for" in out and "indexing language" in out
+
+
 def test_one_unreadable_result_does_not_lose_the_others(monkeypatch):
     from docwhere.wiki import Page, Response
     from docwhere.wiki import confluence as module

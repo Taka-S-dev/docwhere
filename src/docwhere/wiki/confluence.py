@@ -192,6 +192,10 @@ class Confluence:
             pages = self.search([term], limit=3)
             found = ", ".join(p.title for p in pages) or "none"
             lines.append((bool(pages), f"search for {term!r}: {len(pages)} page(s): {found}"))
+            if not pages and not term.isascii():
+                lines.append((None, "no page found for a Japanese word: if pages do contain it, ask the wiki's administrator "
+                                    "whether the indexing language (General Configuration) is set to Japanese; other words "
+                                    "or shorter forms may still match"))
         else:
             lines.append((None, "add --term WORD to try a search, e.g. a Japanese word that should match"))
         return lines
