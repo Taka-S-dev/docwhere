@@ -59,6 +59,24 @@ CHECKS = {
         both(has("bandwidth_limit", "Mbps"), any_of("無制限", "既定は 0", "既定 0", "既定値 0")),
         has("bandwidth_schedule"),
     ],
+    "remote-limit": [
+        any_of("16 件", "16件", "16 個", "16個", "16 まで", "16まで"),
+        has("2.3", "リモートの定義"),
+        has("E1001"),
+        lambda t: not re.search(r"(リモート[^\n]{0,20}32|32[^\n]{0,10}(件|個)まで登録)", t),
+    ],
+    "shutdown-during-sync": [
+        has("月次運用手順書"),
+        any_of("4 注意事項", "「4 注意事項", "注意事項"),
+        any_of("破損しない", "壊れない", "破損しません", "壊れません"),
+        any_of("再開"),
+    ],
+    "passphrase-length": [
+        any_of("12 字", "12字", "12 文字", "12文字"),
+        any_of("64 字", "64字", "64 文字", "64文字"),
+        has("2.4", "暗号化"),
+        has("crypto.passphrase"),
+    ],
 }
 
 

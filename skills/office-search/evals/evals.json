@@ -71,6 +71,45 @@
     "net.bandwidth_limit（単位 Mbps、既定 0＝無制限）を答えている",
     "net.bandwidth_schedule による時間帯指定に触れている"
    ]
+  },
+  {
+   "id": 5,
+   "name": "remote-limit",
+   "prompt": "orbitsync ってリモートは最大何個まで登録できる？ {corpus} の資料でささっと調べて",
+   "expected_output": "16 件まで（OrbitSync_CLI仕様書_v2.3.docx 2.3 リモートの定義）。17 件目以降は E1001 で読み込み失敗。--exclude の 32 個は別の上限。",
+   "files": [],
+   "assertions": [
+    "上限を 16 件と答えている",
+    "OrbitSync_CLI仕様書_v2.3.docx の 2.3 リモートの定義を挙げている",
+    "超えたときの E1001 に触れている",
+    "--exclude の 32 個をリモートの上限として答えていない"
+   ]
+  },
+  {
+   "id": 6,
+   "name": "shutdown-during-sync",
+   "prompt": "orbitsync sync の途中で PC をシャットダウンしちゃったんだけど、ファイル壊れてない？ {corpus} の資料に何か書いてある？",
+   "expected_output": "運用/月次運用手順書.docx の 4 注意事項：電源断・再起動でも元のファイルは破損しない（一時領域に書くため）。次回の sync で中断したファイルの途中から再開する。",
+   "files": [],
+   "assertions": [
+    "月次運用手順書.docx を挙げている",
+    "節「4 注意事項」を挙げている",
+    "元のファイルは破損しないと答えている",
+    "次回の sync で途中から再開することに触れている"
+   ]
+  },
+  {
+   "id": 7,
+   "name": "passphrase-length",
+   "prompt": "orbitsync の暗号化のパスワードって何文字以上にしないといけない？ {corpus} から",
+   "expected_output": "12 字以上 64 字以内（OrbitSync_CLI仕様書_v2.3.docx 2.4 暗号化。資料上の名称はパスフレーズ、crypto.passphrase で登録）。失うと復号できない。",
+   "files": [],
+   "assertions": [
+    "12 字（文字）以上と答えている",
+    "上限 64 字にも触れている",
+    "OrbitSync_CLI仕様書_v2.3.docx の 2.4 暗号化を挙げている",
+    "設定キー crypto.passphrase に触れている"
+   ]
   }
  ]
 }

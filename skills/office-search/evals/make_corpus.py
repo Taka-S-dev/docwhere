@@ -3,6 +3,9 @@
 The fictional OrbitSync CLI is documented across a current spec, an outdated spec, an ops
 manual that only references the spec, a trouble-shooting deck, an error-code sheet, a generic
 network guide, meeting notes, unrelated admin files and a scanned (text-less) PDF.
+
+Some answers are worded unlike the question that asks for them ("何個まで登録" is written
+"16 件まで", "シャットダウン" as "電源断"), so a search on the question's own words misses them.
 """
 
 import sys
@@ -56,12 +59,21 @@ def main(root: Path) -> None:
             "認証付きプロキシの場合は orbitsync config set proxy.auth <ユーザー名> で資格情報を登録する。",
             "通信タイムアウトは設定キー net.timeout で変更できる（既定 30 秒、最大 300 秒）。",
         ]),
+        (2, "2.3 リモートの定義", [
+            "同期先は orbitsync.toml の [remote.<名前>] セクションに書く。名前 default のリモートが既定の同期先になる。",
+            "1 つの設定ファイルに書けるリモートは 16 件まで。17 件目以降があると E1001 で読み込みに失敗する。",
+        ]),
+        (2, "2.4 暗号化", [
+            "クラウド側に置くデータは、利用者が決めたパスフレーズから生成した鍵で暗号化する。",
+            "パスフレーズは 12 字以上 64 字以内とし、orbitsync config set crypto.passphrase で登録する。",
+            "パスフレーズを失うとデータは復号できない。基盤チームでも再発行できない。",
+        ]),
         (1, "3 コマンドリファレンス", ["各コマンドは orbitsync <コマンド> [オプション] の形式で実行する。"]),
         (2, "3.1 sync コマンド", [
             "書式: orbitsync sync [--dry-run] [--exclude <パターン>] [--target <リモート名>]",
             "ローカルとリモートの差分を双方向に同期する。",
             [["オプション", "説明", "既定値"], ["--dry-run", "変更内容を表示するだけで実行しない", "無効"],
-             ["--exclude", "同期対象から除外するパス（glob）", "なし"], ["--target", "同期先のリモート名", "default"]],
+             ["--exclude", "同期対象から除外するパス（glob、32 個まで指定可）", "なし"], ["--target", "同期先のリモート名", "default"]],
         ]),
         (2, "3.2 config コマンド", [
             "書式: orbitsync config get|set|list <キー> [<値>]",
@@ -100,6 +112,10 @@ def main(root: Path) -> None:
             "purge のオプションの詳細は CLI 仕様書 3.3 を参照。",
         ]),
         (1, "3 バックアップ確認", ["orbitsync status で最終同期日時が当日であることを確認する。"]),
+        (1, "4 注意事項", [
+            "同期の途中で電源断や再起動が起きても、転送中のデータは一時領域に書かれるため元のファイルは破損しない。",
+            "次回の orbitsync sync で、中断したファイルの途中から転送を再開する。",
+        ]),
     ])
 
     prs = Presentation()
