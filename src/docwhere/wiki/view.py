@@ -12,7 +12,16 @@ import time
 
 from docwhere.extractors.html import html_chunks
 from docwhere.model import norm
-from docwhere.viewer import _PAGE, _RESULT_BODY, _STYLE, RAIL_QUOTE_CHARS, STATIC_CSP, _e, _probe, _section_html
+from docwhere.viewer import (
+    PAGE_TEMPLATE,
+    RAIL_QUOTE_CHARS,
+    RESULT_BODY,
+    STATIC_CSP,
+    STYLE,
+    esc,
+    quote_probe,
+    section_html,
+)
 from docwhere.wiki import Page
 
 
@@ -50,16 +59,16 @@ def build_wiki_html(
     rail = _rail(bool(answer_html), evidence, hits)
     cards = [_card(hit, pages.get((hit["wiki"], hit["page_id"])), sections.get((hit["wiki"], hit["page_id"])) or [],
                    owns[hit["n"]], context, quotes, {ev["section_id"] for ev in evidence if ev["hit"] is hit}) for hit in hits]
-    body = _RESULT_BODY.format(
+    body = RESULT_BODY.format(
         layout="layout has-rail" if rail else "layout",
         rail=rail,
-        title=_e(shown_title),
-        query=f'<span>社内 wiki</span><span>検索語 {_e(" ".join(terms))}</span><span>{_e(time.strftime("%Y-%m-%d %H:%M"))}</span>',
+        title=esc(shown_title),
+        query=f'<span>社内 wiki</span><span>検索語 {esc(" ".join(terms))}</span><span>{esc(time.strftime("%Y-%m-%d %H:%M"))}</span>',
         answer=answer_html,
         cards=(f'<h2 class="region">ページ {len(hits)} 件</h2>' + "".join(cards)) if cards
         else '<p class="empty">一致するページはありませんでした。言い方を変えて検索し直してください。</p>',
     )
-    return _PAGE.format(csp=STATIC_CSP, title=_e(shown_title), style=_STYLE, body=body)
+    return PAGE_TEMPLATE.format(csp=STATIC_CSP, title=esc(shown_title), style=STYLE, body=body)
 
 
 def _target(hit: dict, section_id: int | None) -> str:
@@ -69,7 +78,7 @@ def _target(hit: dict, section_id: int | None) -> str:
 def _locate(quote: str, hits: list[dict], sections: dict, owns: dict) -> dict:
     """The hit and section whose text holds ``quote`` (its start, as for local files); the
     hit's own section is preferred, then the rest of its page, then the other pages."""
-    probe = _probe(quote).lower()
+    probe = quote_probe(quote).lower()
     candidates = []
     for hit in hits:
         rows = sections.get((hit["wiki"], hit["page_id"])) or []
@@ -93,8 +102,9 @@ def _url(hit: dict, fragment: str) -> str:
 
 def _readable(url: str) -> str:
     """The address as people read it (page names in their own letters); links keep it encoded."""
-    from docwhere.model import norm
     from urllib.parse import unquote
+
+    from docwhere.model import norm
 
     return norm(unquote(url))
 
@@ -102,8 +112,8 @@ def _readable(url: str) -> str:
 def _open_controls(url: str) -> str:
     """In the window a button (the bridge opens the page in the browser); in a browser tab,
     where the page has no script, a plain link."""
-    return (f'<button type="button" class="open-wiki" data-live hidden data-open-url="{_e(url)}">ブラウザで開く</button>'
-            f'<a class="open-wiki" data-static href="{_e(url)}" target="_blank" rel="noopener noreferrer">wiki で開く</a>')
+    return (f'<button type="button" class="open-wiki" data-live hidden data-open-url="{esc(url)}">ブラウザで開く</button>'
+            f'<a class="open-wiki" data-static href="{esc(url)}" target="_blank" rel="noopener noreferrer">wiki で開く</a>')
 
 
 def _citation(ev: dict) -> str:
@@ -123,19 +133,19 @@ def _answer(answer: str, evidence: list[dict]) -> str:
         hit = ev["hit"]
         if hit is None:
             items.append('<div class="evidence"><p class="missing">読んだページの中で位置を特定できませんでした。</p>'
-                         f'<blockquote>{_e(ev["quote"])}</blockquote></div>')
+                         f'<blockquote>{esc(ev["quote"])}</blockquote></div>')
             continue
         section = ev["section"].split(" > ", 1)[1] if " > " in ev["section"] else ""
-        parts = [f'<span class="file">{_e(hit["title"])}</span>']
+        parts = [f'<span class="file">{esc(hit["title"])}</span>']
         if section:
-            parts.append(f'<a href="#{ev["target"]}">{_e(section)}</a>')
-        button = f'<button type="button" class="cite" data-live hidden data-cite="{_e(_citation(ev))}">引用をコピー</button>'
+            parts.append(f'<a href="#{ev["target"]}">{esc(section)}</a>')
+        button = f'<button type="button" class="cite" data-live hidden data-cite="{esc(_citation(ev))}">引用をコピー</button>'
         source = f'<p class="source">{"".join(parts)}{_open_controls(_url(hit, ev["fragment"]))}{button}</p>'
-        shown = f'<a class="quote" href="#{ev["target"]}"><blockquote>{_e(ev["quote"])}</blockquote></a>'
+        shown = f'<a class="quote" href="#{ev["target"]}"><blockquote>{esc(ev["quote"])}</blockquote></a>'
         items.append(f'<div class="evidence">{source}{shown}</div>')
     head = f'<h2 class="evidence-head">根拠 {len(evidence)} 件</h2>' if len(evidence) > 1 else ""
     text = answer or evidence[0]["quote"]
-    return (f'<section class="answer" id="answer" aria-label="回答"><p class="answer-text"><span>{_e(text)}</span></p>'
+    return (f'<section class="answer" id="answer" aria-label="回答"><p class="answer-text"><span>{esc(text)}</span></p>'
             f'{head}{"".join(items)}</section>')
 
 
@@ -148,15 +158,15 @@ def _rail(has_answer: bool, evidence: list[dict], hits: list[dict]) -> str:
         for ev in evidence:
             quote = ev["quote"] if len(ev["quote"]) <= RAIL_QUOTE_CHARS else ev["quote"][:RAIL_QUOTE_CHARS] + "…"
             if ev["hit"] is None:
-                items.append(f'<li><span class="item unplaced"><span class="pg">位置不明</span><span class="q">{_e(quote)}</span></span></li>')
+                items.append(f'<li><span class="item unplaced"><span class="pg">位置不明</span><span class="q">{esc(quote)}</span></span></li>')
                 continue
-            items.append(f'<li><a class="item" href="#{ev["target"]}"><span class="pg">{_e(ev["hit"]["title"])}</span>'
-                         f'<span class="q">{_e(quote)}</span><span class="sec">{_e(ev["section"].split(" > ")[-1])}</span></a></li>')
+            items.append(f'<li><a class="item" href="#{ev["target"]}"><span class="pg">{esc(ev["hit"]["title"])}</span>'
+                         f'<span class="q">{esc(quote)}</span><span class="sec">{esc(ev["section"].split(" > ")[-1])}</span></a></li>')
         parts.append(f'<h2>根拠</h2><ol class="evidence-list">{"".join(items)}</ol>')
     if len(hits) > 1:
         items = "".join(
-            f'<li><a class="item" href="#hit{h["n"]}"><span class="pg">{_e(h["wiki"])}</span>'
-            f'<span class="q">{_e(h["title"])}</span><span class="sec">{_e(h["crumb"].split(" > ")[-1])}</span></a></li>'
+            f'<li><a class="item" href="#hit{h["n"]}"><span class="pg">{esc(h["wiki"])}</span>'
+            f'<span class="q">{esc(h["title"])}</span><span class="sec">{esc(h["crumb"].split(" > ")[-1])}</span></a></li>'
             for h in hits
         )
         parts.append(f'<h2>ページ {len(hits)} 件</h2><ol class="candidate-list">{items}</ol>')
@@ -172,27 +182,27 @@ def _card(hit: dict, page: Page | None, rows: list[dict], own: int | None, conte
         near = [r for r in rows if abs(r["id"] - own) <= context or r["id"] in evidence_sections]
         for row in near:
             mine = row["id"] == own
-            body = _section_html(row, hit["terms"], (hit.get("anchor") or {}).get("text") if mine else None, quotes)
-            heading = _e(row["crumb"] or row["title"] or "見出しなし")
+            body = section_html(row, hit["terms"], (hit.get("anchor") or {}).get("text") if mine else None, quotes)
+            heading = esc(row["crumb"] or row["title"] or "見出しなし")
             sid = f' id="{_target(hit, row["id"])}"'
             if mine or row["id"] in evidence_sections:
                 out.append(f'<section class="own"{sid}><h3>{heading}</h3>{body}</section>')
             else:
                 out.append(f'<details class="section"{sid}><summary>{heading}</summary>{body}</details>')
-    facts = [f"<span>社内 wiki {_e(hit['wiki'])}</span>"]
+    facts = [f"<span>社内 wiki {esc(hit['wiki'])}</span>"]
     if hit.get("space"):
-        facts.append(f"<span>スペース {_e(hit['space'])}</span>")
+        facts.append(f"<span>スペース {esc(hit['space'])}</span>")
     if hit.get("updated"):
-        facts.append(f"<span>更新 {_e(hit['updated'][:10])}</span>")
+        facts.append(f"<span>更新 {esc(hit['updated'][:10])}</span>")
     fragment = next((r["fragment"] for r in rows if r["id"] == own), "") if own is not None else ""
     return f"""
 <article class="hit" id="hit{hit['n']}">
   <header>
-    <h2>{_e(hit['title'])}</h2>
-    <p class="crumb">{_e(hit['crumb'])}</p>
+    <h2>{esc(hit['title'])}</h2>
+    <p class="crumb">{esc(hit['crumb'])}</p>
     <p class="facts">{''.join(facts)}</p>
     <p class="actions">{_open_controls(_url(hit, fragment))}</p>
-    <p class="path"><span class="copy" title="クリックで全体を選択">{_e(_readable(hit['url']))}</span><span class="hint">クリックで選択して Ctrl+C でコピー</span></p>
+    <p class="path"><span class="copy" title="クリックで全体を選択">{esc(_readable(hit['url']))}</span><span class="hint">クリックで選択して Ctrl+C でコピー</span></p>
   </header>
   <div class="extract">{''.join(out)}</div>
 </article>"""

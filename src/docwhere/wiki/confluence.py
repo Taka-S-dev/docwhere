@@ -13,7 +13,8 @@ import re
 import urllib.parse
 from html.parser import HTMLParser
 
-from docwhere.wiki import Page, WikiError, clean, get, origin
+from docwhere.wiki import Page, WikiError, clean, origin
+from docwhere.wiki.net import get
 
 EXPAND = "body.view,space,version"
 MAX_SPACES = 1000

@@ -237,18 +237,18 @@ def build_html(
     answer_html = _answer_html(answer, evidence, excerpts)
     rail = _rail_html(bool(answer_html), evidence, hits, targets)
     shown_title = title or " ".join(terms)
-    body = _RESULT_BODY.format(
+    body = RESULT_BODY.format(
         layout="layout has-rail" if rail else "layout",
         rail=rail,
-        title=_e(shown_title),
-        query=f'<span>検索語 {_e(" ".join(terms))}</span><span>{_e(time.strftime("%Y-%m-%d %H:%M"))}</span>',
+        title=esc(shown_title),
+        query=f'<span>検索語 {esc(" ".join(terms))}</span><span>{esc(time.strftime("%Y-%m-%d %H:%M"))}</span>',
         answer=answer_html,
         cards=(f'<h2 class="region">資料 {len(hits)} 件</h2>' + "".join(cards)) if cards
         else '<p class="empty">一致する箇所はありませんでした。言い方を変えて検索し直してください。</p>',
     )
     if excerpts is not None:
         excerpts.close()
-    return _PAGE.format(csp=STATIC_CSP, title=_e(shown_title), style=_STYLE, body=body)
+    return PAGE_TEMPLATE.format(csp=STATIC_CSP, title=esc(shown_title), style=STYLE, body=body)
 
 
 def save_view(folder: Path, page: str, title: str, answer: str, sign=None) -> Path:
@@ -278,13 +278,13 @@ def save_view(folder: Path, page: str, title: str, answer: str, sign=None) -> Pa
     log.write_text(json.dumps(history, ensure_ascii=False, indent=1), encoding="utf-8")
 
     items = "".join(
-        f'<li><a href="{_e(Path(h["file"]).name)}"><span class="q">{_e(h["title"])}</span>'
-        + (f'<span class="a"><span>{_e(h["answer"])}</span></span>' if h["answer"] else "")
-        + f'<small>{_e(h["when"])}</small></a></li>'
+        f'<li><a href="{esc(Path(h["file"]).name)}"><span class="q">{esc(h["title"])}</span>'
+        + (f'<span class="a"><span>{esc(h["answer"])}</span></span>' if h["answer"] else "")
+        + f'<small>{esc(h["when"])}</small></a></li>'
         for h in history
     )
     body = _HISTORY_BODY.format(keep=VIEW_RETENTION["max_keep"], days=VIEW_RETENTION["max_age"] // DAY, items=items)
-    (folder / "index.html").write_text(_PAGE.format(csp=STATIC_CSP, title="質問の履歴", style=_STYLE, body=body), encoding="utf-8")
+    (folder / "index.html").write_text(PAGE_TEMPLATE.format(csp=STATIC_CSP, title="質問の履歴", style=STYLE, body=body), encoding="utf-8")
     if sign is not None:
         sign(out)
         sign(folder / "index.html")
@@ -404,14 +404,14 @@ def _open_link(hit: dict, excerpts) -> str:
     if not (hit.get("pdf") and page):
         return ""
     label = "PDF にしたものをこのページで開く" if hit.get("rendered_from") else "PDF をこのページで開く"
-    whole = f'{_e(Path(hit["pdf"]).as_uri())}#page={page}'
+    whole = f'{esc(Path(hit["pdf"]).as_uri())}#page={page}'
     part = excerpts.link(hit["pdf"], page) if excerpts is not None else None
     # static-only: a served page turns pages and opens the PDF application itself
     if part is None:
         return f'<a class="static-only" href="{whole}">{label}</a>'
     path, at = part
     return (
-        f'<a class="static-only" href="{_e(path.as_uri())}#page={at}" title="前後のページだけを抜き出した PDF">{label}</a>'
+        f'<a class="static-only" href="{esc(path.as_uri())}#page={at}" title="前後のページだけを抜き出した PDF">{label}</a>'
         f'<a class="whole static-only" href="{whole}">全体を開く（重い）</a>'
     )
 
@@ -515,7 +515,7 @@ def _sheet_table(
                 body.append(f'<tr{attrs}><th scope="row">{r}</th>{tds}</tr>')
             letters = "".join(f"<th>{_column_letter(c)}</th>" for c in cols)
             tables.append(
-                f'<figure class="sheet"><figcaption>{_e(sheet)}</figcaption><div class="sheet-scroll">'
+                f'<figure class="sheet"><figcaption>{esc(sheet)}</figcaption><div class="sheet-scroll">'
                 f'<table><thead><tr><th></th>{letters}</tr></thead><tbody>{"".join(body)}</tbody></table></div></figure>'
             )
     finally:
@@ -553,7 +553,7 @@ def _closeup(hit: dict, page: int, quote: str) -> str:
 QUOTE_PROBE_CHARS = 24  # enough of a quote to find its section; the rest may wrap onto the next line
 
 
-def _probe(quote: str) -> str:
+def quote_probe(quote: str) -> str:
     """What to look for in the index: the start of the quote, or for a table row quoted as
     "コード: E2041 / 対処: ..." its first cell, since a sheet stores the cells tab-separated."""
     if " / " in quote and ": " in quote.split(" / ", 1)[0]:
@@ -562,7 +562,7 @@ def _probe(quote: str) -> str:
 
 
 def _sections_containing(index: Index, quote: str, paths: list[str]) -> list:
-    probe = _probe(quote)
+    probe = quote_probe(quote)
     like = "%" + probe.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     marks = ",".join("?" * len(paths))
     return index.db.execute(
@@ -574,7 +574,7 @@ def _sections_containing(index: Index, quote: str, paths: list[str]) -> list:
 
 def _anchor_of_line(row, quote: str) -> dict:
     """The anchor (page, or sheet and row) of the first line in ``row`` holding the quote."""
-    probe = _probe(quote).lower()
+    probe = quote_probe(quote).lower()
     anchors = json.loads(row["anchors"])
     for i, line in enumerate(row["body"].split("\n")):
         if probe in line.lower():
@@ -593,17 +593,17 @@ def _answer_html(answer: str, evidence: list[dict], excerpts=None) -> str:
         if hit is None:
             items.append(
                 '<div class="evidence"><p class="missing">資料の中で位置を特定できませんでした。</p>'
-                f'<blockquote>{_e(ev["quote"])}</blockquote></div>'
+                f'<blockquote>{esc(ev["quote"])}</blockquote></div>'
             )
             continue
         at_page = {**hit, "anchor": {**hit["anchor"], "page": ev["page"]}} if ev["page"] else hit
-        parts = [f'<span class="file">{_e(Path(hit["path"]).name)}</span>']
+        parts = [f'<span class="file">{esc(Path(hit["path"]).name)}</span>']
         if ev["section"]:
-            parts.append(f"<span>{_e(ev['section'])}</span>")
+            parts.append(f"<span>{esc(ev['section'])}</span>")
         if ev["page"]:
-            parts.append(f'<a href="#{ev["target"]}">{_e(_page_text(hit, ev["page"]))}</a>')
+            parts.append(f'<a href="#{ev["target"]}">{esc(_page_text(hit, ev["page"]))}</a>')
         if ev["row"]:
-            parts.append(f'<a href="#{ev["target"]}">{_e(ev["row"][0])} {ev["row"][1]}行目</a>')
+            parts.append(f'<a href="#{ev["target"]}">{esc(ev["row"][0])} {ev["row"][1]}行目</a>')
         source = f'<p class="source">{"".join(parts)}{_open_link(at_page, excerpts)}</p>'
         if ev["image"]:
             shown = (
@@ -613,15 +613,15 @@ def _answer_html(answer: str, evidence: list[dict], excerpts=None) -> str:
         elif ev["table"]:
             shown = ev["table"]
         else:
-            shown = f'<a class="quote" href="#{ev["target"]}"><blockquote>{_e(ev["quote"])}</blockquote></a>'
+            shown = f'<a class="quote" href="#{ev["target"]}"><blockquote>{esc(ev["quote"])}</blockquote></a>'
         cite = _citation(hit, ev)
-        button = f'<button type="button" class="cite" data-live hidden data-cite="{_e(cite)}">引用をコピー</button>'
+        button = f'<button type="button" class="cite" data-live hidden data-cite="{esc(cite)}">引用をコピー</button>'
         source = source.replace("</p>", f"{button}</p>", 1)
         items.append(f'<div class="evidence">{source}{shown}</div>')
     head = f'<h2 class="evidence-head">根拠 {len(evidence)} 件</h2>' if len(evidence) > 1 else ""
     text = answer or evidence[0]["quote"]
     return (
-        f'<section class="answer" id="answer" aria-label="回答"><p class="answer-text"><span>{_e(text)}</span></p>'
+        f'<section class="answer" id="answer" aria-label="回答"><p class="answer-text"><span>{esc(text)}</span></p>'
         f'{head}{"".join(items)}</section>'
     )
 
@@ -641,7 +641,7 @@ def _rail_html(has_answer: bool, evidence: list[dict], hits: list[dict], targets
         for ev in evidence:
             quote = ev["quote"] if len(ev["quote"]) <= RAIL_QUOTE_CHARS else ev["quote"][:RAIL_QUOTE_CHARS] + "…"
             if ev["hit"] is None:
-                items.append(f'<li><span class="item unplaced"><span class="pg">位置不明</span><span class="q">{_e(quote)}</span></span></li>')
+                items.append(f'<li><span class="item unplaced"><span class="pg">位置不明</span><span class="q">{esc(quote)}</span></span></li>')
                 continue
             if ev["page"]:
                 where = _page_text(ev["hit"], ev["page"])
@@ -650,14 +650,14 @@ def _rail_html(has_answer: bool, evidence: list[dict], hits: list[dict], targets
             else:
                 where = Path(ev["hit"]["path"]).name
             items.append(
-                f'<li><a class="item" href="#{ev["target"]}"><span class="pg">{_e(where)}</span>'
-                f'<span class="q">{_e(quote)}</span><span class="sec">{_e(ev["section"])}</span></a></li>'
+                f'<li><a class="item" href="#{ev["target"]}"><span class="pg">{esc(where)}</span>'
+                f'<span class="q">{esc(quote)}</span><span class="sec">{esc(ev["section"])}</span></a></li>'
             )
         parts.append(f'<h2>根拠</h2><ol class="evidence-list">{"".join(items)}</ol>')
     if len(hits) > 1:
         items = "".join(
-            f'<li><a class="item" href="#{targets[h["n"]]}"><span class="pg">{_e(h["location"] or "")}</span>'
-            f'<span class="q">{_e(Path(h["path"]).name)}</span><span class="sec">{_e((h["crumb"] or h["title"]).split(" > ")[-1])}</span></a></li>'
+            f'<li><a class="item" href="#{targets[h["n"]]}"><span class="pg">{esc(h["location"] or "")}</span>'
+            f'<span class="q">{esc(Path(h["path"]).name)}</span><span class="sec">{esc((h["crumb"] or h["title"]).split(" > ")[-1])}</span></a></li>'
             for h in hits
         )
         parts.append(f'<h2>資料 {len(hits)} 件</h2><ol class="candidate-list">{items}</ol>')
@@ -678,8 +678,8 @@ def _card(
     sections = []
     for row in rows:
         own = row["id"] == hit["chunk_id"]
-        body = _section_html(row, hit["terms"], hit["anchor"].get("text") if own else None, quotes)
-        heading = _e(row["crumb"] or row["title"] or "見出しなし")
+        body = section_html(row, hit["terms"], hit["anchor"].get("text") if own else None, quotes)
+        heading = esc(row["crumb"] or row["title"] or "見出しなし")
         if own:
             sections.append(f'<section class="own"><h3>{heading}</h3>{body}</section>')
         else:
@@ -690,9 +690,9 @@ def _card(
         sections.append('<p class="empty">この検索のあとでインデックスが更新されました。検索し直してください。</p>')
 
     path = Path(hit["path"])
-    facts = [f"<span>{_e(hit['location'])}</span>"] if hit["location"] else []
-    facts.append(f"<span>更新 {_e(hit['modified'])}</span>")
-    newer = f'<p class="warn">新しい版があります: {_e(Path(hit["newer_version"]).name)}</p>' if hit.get("newer_version") else ""
+    facts = [f"<span>{esc(hit['location'])}</span>"] if hit["location"] else []
+    facts.append(f"<span>更新 {esc(hit['modified'])}</span>")
+    newer = f'<p class="warn">新しい版があります: {esc(Path(hit["newer_version"]).name)}</p>' if hit.get("newer_version") else ""
     if hit.get("rendered_from") in (".docx", ".docm", ".doc"):
         newer += '<p class="note">ページは Word で PDF にしたときの番号です。印刷設定によってずれることがあります。</p>'
 
@@ -703,11 +703,11 @@ def _card(
         page = hit["anchor"]["page"]
         reader = {"data-pdf": hit["pdf"], "data-terms": json.dumps(hit["terms"], ensure_ascii=False),
                   "data-quotes": json.dumps(quotes, ensure_ascii=False)}
-        attrs = "".join(f' {k}="{_e(v)}"' for k, v in reader.items())
+        attrs = "".join(f' {k}="{esc(v)}"' for k, v in reader.items())
         figures = "".join(
             f'<figure class="{_page_classes(p == page, p in evidence_pages)}" id="{_page_id(hit, p)}"{attrs} data-page="{p}">'
-            f'<figcaption>{_e(_page_text(hit, p))}{_page_tags(p == page, p in evidence_pages)}</figcaption>'
-            f'{_pager(hit, p)}<div class="page-scroll"><div class="page-img"><img src="{src}" alt="{_e(path.name)} p.{p}"></div></div></figure>'
+            f'<figcaption>{esc(_page_text(hit, p))}{_page_tags(p == page, p in evidence_pages)}</figcaption>'
+            f'{_pager(hit, p)}<div class="page-scroll"><div class="page-img"><img src="{src}" alt="{esc(path.name)} p.{p}"></div></div></figure>'
             for p, src in page_images
         )
         content = f'{figures}<details class="extract"><summary>抽出したテキスト</summary>{"".join(sections)}</details>'
@@ -716,11 +716,11 @@ def _card(
     return f"""
 <article class="hit" id="hit{hit['n']}">
   <header>
-    <h2>{_e(path.name)}</h2>
-    <p class="crumb">{_e(hit['crumb'] or hit['title'])}</p>
+    <h2>{esc(path.name)}</h2>
+    <p class="crumb">{esc(hit['crumb'] or hit['title'])}</p>
     <p class="facts">{''.join(facts)}{_open_link(hit, excerpts)}</p>
     {_open_button(hit, "actions")}
-    <p class="path"><span class="copy" title="クリックで全体を選択">{_e(str(path))}</span><span class="hint">クリックで選択して Ctrl+C でコピー</span></p>
+    <p class="path"><span class="copy" title="クリックで全体を選択">{esc(str(path))}</span><span class="hint">クリックで選択して Ctrl+C でコピー</span></p>
     {newer}
   </header>
   {content}
@@ -740,7 +740,7 @@ def _open_button(hit: dict, cls: str) -> str:
     """A button (live pages only) that opens the file in its application at the hit."""
     label = OPEN_LABELS.get(Path(hit["path"]).suffix.lower(), "エディタで開く")
     anchor = {k: v for k, v in hit["anchor"].items() if k != "page" or not hit.get("rendered_from")}
-    return (f'<p class="{cls}" data-live hidden><button type="button" data-open="{_e(_open_spec(hit["path"], anchor))}">'
+    return (f'<p class="{cls}" data-live hidden><button type="button" data-open="{esc(_open_spec(hit["path"], anchor))}">'
             f"{label}</button></p>")
 
 
@@ -749,10 +749,10 @@ def _pager(hit: dict, page: int) -> str:
     if hit.get("rendered_from"):
         label = OPEN_LABELS[hit["rendered_from"]]
         spec = _open_spec(hit["path"], {k: v for k, v in hit["anchor"].items() if k != "page"})
-        opener = f'<button type="button" data-open="{_e(spec)}">{label}</button>'
+        opener = f'<button type="button" data-open="{esc(spec)}">{label}</button>'
     else:
         spec = _open_spec(hit["pdf"], {"page": page})
-        opener = f'<button type="button" data-open-page data-open="{_e(spec)}" title="このページを PDF アプリで開く">PDF アプリ</button>'
+        opener = f'<button type="button" data-open-page data-open="{esc(spec)}" title="このページを PDF アプリで開く">PDF アプリ</button>'
     return (
         '<div class="pager" data-live hidden>'
         '<button type="button" data-go="-1" aria-label="前のページ">‹ 前</button>'
@@ -796,13 +796,13 @@ def _page_tags(is_hit: bool, has_evidence: bool) -> str:
     return "".join(tags)
 
 
-def _section_html(row, terms: list[str], hit_line: str | None, quotes: list[str]) -> str:
+def section_html(row, terms: list[str], hit_line: str | None, quotes: list[str]) -> str:
     anchors = json.loads(row["anchors"])
     out, previous = [], None
     for i, line in enumerate(row["body"].split("\n")):
         anchor = anchors[i] if len(anchors) > 1 and i < len(anchors) else (anchors[0] if anchors else {})
         label = location_label(anchor) if len(anchors) > 1 else ""
-        prefix = f'<span class="loc">{_e(label)}</span>' if label and label != previous else ""
+        prefix = f'<span class="loc">{esc(label)}</span>' if label and label != previous else ""
         previous = label
         text = line.replace(CELL_SEP, " | ")
         marked, has_answer = _mark(text, terms, quotes)
@@ -816,7 +816,7 @@ def _mark(text: str, terms: list[str], quotes: list[str]) -> tuple[str, bool]:
     """``text`` escaped, terms in <mark> and quoted answer text in <mark class=ans>."""
     low = text.lower()
     if len(low) != len(text):  # a few characters change length when lower-cased
-        return _e(text), False
+        return esc(text), False
     level = [0] * len(text)  # 1 = term, 2 = answer
     for t in (t.lower() for t in terms):
         start = 0
@@ -835,18 +835,18 @@ def _mark(text: str, terms: list[str], quotes: list[str]) -> tuple[str, bool]:
     out, run, current = [], [], 0
     for ch, lv in zip(text, level):
         if lv != current:
-            out.append(tags[current][0] + _e("".join(run)) + tags[current][1])
+            out.append(tags[current][0] + esc("".join(run)) + tags[current][1])
             run, current = [], lv
         run.append(ch)
-    out.append(tags[current][0] + _e("".join(run)) + tags[current][1])
+    out.append(tags[current][0] + esc("".join(run)) + tags[current][1])
     return "".join(out), 2 in level
 
 
-def _e(text: str) -> str:
+def esc(text: str) -> str:
     return html.escape(text or "", quote=True)
 
 
-_STYLE = """
+STYLE = """
 :root {
   --bg: #eef1f4; --surface: #ffffff; --ink: #1b2430; --muted: #5b6675; --rule: #d5dbe3;
   --blue: #1f4e8c; --marker: #ffb000; --marker-soft: #ffe39a; --term: #dbe6f5; --warn: #a8431a;
@@ -1067,7 +1067,7 @@ dialog#toc::backdrop { background: rgba(0, 0, 0, .45); }
 }
 """
 
-_PAGE = """<!doctype html>
+PAGE_TEMPLATE = """<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
@@ -1084,7 +1084,7 @@ _PAGE = """<!doctype html>
 </html>
 """
 
-_RESULT_BODY = """<div class="{layout}">
+RESULT_BODY = """<div class="{layout}">
 {rail}
 <div class="wrap">
 <header class="top"><p class="top-bar"><a class="back" href="index.html">質問の履歴</a><span class="top-actions"><button type="button" data-pin data-live hidden aria-pressed="false">常に手前に表示</button><button type="button" data-settings data-live hidden>設定</button></span></p><h1>{title}</h1><p class="query">{query}</p></header>

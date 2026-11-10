@@ -32,6 +32,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
+from docwhere.settings import load_settings, private, save_settings
+
 START_TIMEOUT = 15.0
 DEFAULT_TITLE = "Reference"  # what others see on screen and in the taskbar: no tool name
 DEFAULT_SIZE = (1280, 900)
@@ -41,56 +43,34 @@ MAX_TEXT = 300
 # ---- settings ----------------------------------------------------------------------------
 
 
-def _settings_path(db: Path) -> Path:
-    return db.with_name("settings.json")
-
-
-def _settings(db: Path) -> dict:
-    """The saved settings; none are read from an index folder others can write to (see
-    private()), where a planted file could name the program that opens PDFs."""
-    if not private(db.parent):
-        return {}
-    try:
-        return json.loads(_settings_path(db).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-
-
-def _save_settings(db: Path, **changes) -> None:
-    settings = {**_settings(db), **changes}
-    path = _settings_path(db)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, ensure_ascii=False, indent=1), encoding="utf-8")
-
-
 def mode(db: Path) -> str:
     """"window" (the default) or "browser": where view pages open."""
-    return "browser" if _settings(db).get("viewer") == "browser" else "window"
+    return "browser" if load_settings(db).get("viewer") == "browser" else "window"
 
 
 def set_mode(db: Path, value: str) -> None:
-    _save_settings(db, viewer=value)
+    save_settings(db, viewer=value)
 
 
 def title(db: Path) -> str:
     """The window's title, as set with ``viewer title``; the default names no tool."""
-    return str(_settings(db).get("title") or DEFAULT_TITLE)
+    return str(load_settings(db).get("title") or DEFAULT_TITLE)
 
 
 def set_title(db: Path, value: str) -> None:
-    _save_settings(db, title=value.strip() or DEFAULT_TITLE)
+    save_settings(db, title=value.strip() or DEFAULT_TITLE)
 
 
 def pdf_app(db: Path) -> dict:
     """{"command": [program, arg, ...]} as set with ``viewer pdf``, or {} for the default."""
-    setting = _settings(db).get("pdf_app") or {}
+    setting = load_settings(db).get("pdf_app") or {}
     return setting if isinstance(setting, dict) and isinstance(setting.get("command"), list) else {}
 
 
 def set_pdf_app(db: Path, command: list[str] | None) -> None:
     """Use ``command`` to open PDFs ({page} and {file} are filled in); None goes back to the
     default (Acrobat if installed, else Windows' default PDF app)."""
-    _save_settings(db, pdf_app={"command": checked_command(command)} if command else {})
+    save_settings(db, pdf_app={"command": checked_command(command)} if command else {})
 
 
 # Programs that run commands or scripts given as arguments: as the "PDF app" they would turn a
@@ -190,58 +170,6 @@ def _key(db: Path) -> bytes:
     finally:
         os.close(fd)
     return key
-
-
-# SYSTEM and the local Administrators group can write anywhere anyway.
-_TRUSTED_SIDS = {"S-1-5-18", "S-1-5-32-544"}
-_INHERIT_ONLY_ACE = 0x08
-
-
-def private(folder: Path) -> bool:
-    """Whether only this user can put files in ``folder`` (the index folder).
-
-    The window trusts what it finds there: the key file, saved pages and their signatures,
-    settings. In a folder others can write to (a shared DOCWHERE_DB), they could swap a page
-    after it was checked, read a key while it is being made, or plant a settings file, so the
-    window is not used there and pages open in the browser, where they run no script at all.
-
-    Inside the user's profile the folder must be the user's own; profiles are per-user by
-    design, and other principals granted there were granted by the machine's owner. Elsewhere
-    no one but the user, SYSTEM and Administrators may hold a right that writes into it.
-    """
-    folder = folder.resolve()
-    if not folder.exists():
-        return private(folder.parent) if folder.parent != folder else False
-    if sys.platform != "win32":
-        st = folder.stat()
-        return st.st_uid == os.getuid() and not st.st_mode & 0o022
-    import ntsecuritycon as nc
-    import win32api
-    import win32security
-
-    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32security.TOKEN_QUERY)
-    me = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
-    info = win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION
-    sd = win32security.GetFileSecurity(str(folder), info)
-    if sd.GetSecurityDescriptorOwner() != me:
-        return False
-    profile = Path(os.environ.get("USERPROFILE", "")).resolve() if os.environ.get("USERPROFILE") else None
-    if profile is not None and folder.is_relative_to(profile):
-        return True
-    dacl = sd.GetSecurityDescriptorDacl()
-    if dacl is None:  # a NULL DACL grants everyone everything
-        return False
-    writes = (nc.FILE_WRITE_DATA | nc.FILE_APPEND_DATA | nc.FILE_WRITE_EA | nc.FILE_WRITE_ATTRIBUTES | nc.DELETE
-              | nc.WRITE_DAC | nc.WRITE_OWNER | nc.GENERIC_WRITE | nc.GENERIC_ALL | nc.FILE_DELETE_CHILD)
-    for i in range(dacl.GetAceCount()):
-        (kind, flags), mask, sid = dacl.GetAce(i)
-        if kind != win32security.ACCESS_ALLOWED_ACE_TYPE or flags & _INHERIT_ONLY_ACE or sid == me:
-            continue
-        if win32security.ConvertSidToStringSid(sid) in _TRUSTED_SIDS:
-            continue
-        if mask & writes:
-            return False
-    return True
 
 
 def _owned_by_me(path: Path) -> bool:
@@ -444,7 +372,7 @@ class Api:
     @_logged
     def zoom(self) -> dict:
         """The page size last chosen in the viewer: {"mode": "width" | "fit", "scale": float}."""
-        saved = _settings(self._db).get("zoom") or {}
+        saved = load_settings(self._db).get("zoom") or {}
         mode = saved.get("mode") if saved.get("mode") in ("width", "fit") else "width"
         try:
             scale = min(MAX_ZOOM, max(MIN_ZOOM, float(saved.get("scale", 1.0))))
@@ -454,7 +382,7 @@ class Api:
 
     @_logged
     def save_zoom(self, mode: str, scale: float) -> dict:
-        _save_settings(self._db, zoom={"mode": "fit" if mode == "fit" else "width",
+        save_settings(self._db, zoom={"mode": "fit" if mode == "fit" else "width",
                                        "scale": min(MAX_ZOOM, max(MIN_ZOOM, float(scale)))})
         return self.zoom()
 
@@ -523,7 +451,8 @@ class Api:
         """Open a page of an added wiki in the browser; any other address is refused."""
         import webbrowser
 
-        from docwhere.wiki import origin, safe_url, wikis
+        from docwhere.wiki import origin, safe_url
+        from docwhere.wiki.registry import wikis
 
         url = str(url)
         if not url.startswith(("http://", "https://")) or origin(url) not in {origin(w["url"]) for w in wikis(self._db)}:
@@ -592,7 +521,7 @@ class Api:
     def pin(self, on: bool) -> bool:
         self._pinned = bool(on)
         _set_topmost(self._pinned)
-        _save_settings(self._db, pinned=self._pinned)
+        save_settings(self._db, pinned=self._pinned)
         return self._pinned
 
     @_logged
@@ -791,7 +720,7 @@ def run(db: Path, page: Path) -> None:
 
     _setup_log(db)
     _log.info("window started on %s", page.name)
-    settings = _settings(db)
+    settings = load_settings(db)
     geometry = _usable_geometry(settings.get("window") or {})
     api = Api(db)
     api._pinned = bool(settings.get("pinned"))
@@ -819,7 +748,7 @@ def run(db: Path, page: Path) -> None:
     def remember() -> None:
         try:
             if (hwnd := _own_window()) is not None:
-                _save_settings(db, window=_placement(hwnd))
+                save_settings(db, window=_placement(hwnd))
         except Exception:
             pass
 

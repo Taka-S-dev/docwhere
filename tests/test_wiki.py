@@ -8,8 +8,9 @@ import pytest
 
 from docwhere.cli import main
 from docwhere.extractors.html import html_chunks
-from docwhere.wiki import WikiError, checked_url
+from docwhere.wiki import WikiError
 from docwhere.wiki.confluence import Confluence
+from docwhere.wiki.registry import checked_url
 
 PAGES = {
     "101": {
@@ -227,8 +228,9 @@ def test_saved_html_files_are_searched(tmp_path, capsys, monkeypatch):
 
 
 def test_links_off_the_wiki_on_its_search_page_are_skipped(monkeypatch):
-    from docwhere.wiki import Page, Response
+    from docwhere.wiki import Page
     from docwhere.wiki import confluence as module
+    from docwhere.wiki.net import Response
 
     wiki = Confluence("http://wiki.example", [])
     page = "<a class='search-result-link' href='http://elsewhere.invalid/display/X/Y'>a</a>" \
@@ -347,8 +349,9 @@ def test_check_explains_a_japanese_search_that_finds_nothing(wiki, capsys):
 
 
 def test_one_unreadable_result_does_not_lose_the_others(monkeypatch):
-    from docwhere.wiki import Page, Response
+    from docwhere.wiki import Page
     from docwhere.wiki import confluence as module
+    from docwhere.wiki.net import Response
 
     wiki = Confluence("http://wiki.example", [])
     results = "".join(f"<a class='search-result-link' href='/pages/viewpage.action?pageId={i}'>p</a>" for i in (1, 2))
@@ -364,8 +367,8 @@ def test_one_unreadable_result_does_not_lose_the_others(monkeypatch):
 
 
 def test_space_list_requests_are_bounded(monkeypatch):
-    from docwhere.wiki import Response
     from docwhere.wiki import confluence as module
+    from docwhere.wiki.net import Response
 
     calls = []
     junk = json.dumps({"results": [{"name": "no key"}] * module.SPACE_PAGE}).encode()

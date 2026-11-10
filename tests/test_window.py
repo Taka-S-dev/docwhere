@@ -158,9 +158,9 @@ def test_try_pdf_uses_the_unsaved_program_on_an_indexed_pdf_only(api, tmp_path, 
 
 
 def test_settings_button_is_live_only():
-    from docwhere.viewer import _RESULT_BODY
+    from docwhere.viewer import RESULT_BODY
 
-    assert 'data-settings data-live hidden' in _RESULT_BODY
+    assert 'data-settings data-live hidden' in RESULT_BODY
 
 
 def test_saved_position_off_every_monitor_is_dropped():
@@ -279,7 +279,7 @@ def test_settings_in_a_shared_index_folder_are_not_used(tmp_path, monkeypatch):
     db = tmp_path / "index.db"
     (tmp_path / "settings.json").write_text('{"pdf_app": {"command": ["C:/x/viewer.exe", "{file}"]}}', encoding="utf-8")
     assert window.pdf_app(db)["command"][0] == "C:/x/viewer.exe"
-    monkeypatch.setattr(window, "private", lambda folder: False)
+    monkeypatch.setattr("docwhere.settings.private", lambda folder: False)
     assert window.pdf_app(db) == {} and window.mode(db) == "window"
 
 

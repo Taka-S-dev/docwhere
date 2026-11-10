@@ -92,7 +92,7 @@ def search(
     folded = [t.lower() for t in terms]
     scored = []
     for row in _fetch(index, candidates):
-        score, matched = _score(row, folded)
+        score, matched = score_row(row, folded)
         if matched and (not require_all or len(matched) == len(terms)):
             if row["path"] in newer:
                 score *= SUPERSEDED_FACTOR
@@ -105,7 +105,7 @@ def search(
         if per_path.get(row["path"], 0) >= per_file:
             continue
         per_path[row["path"]] = per_path.get(row["path"], 0) + 1
-        snippet, anchor = _locate(row, matched)
+        snippet, anchor = locate_snippet(row, matched)
         hits.append(
             Hit(
                 n=len(hits) + 1,
@@ -152,7 +152,7 @@ def _fetch(index: Index, ids: set[int]):
         )
 
 
-def _score(row, folded: list[str]) -> tuple[float, list[int]]:
+def score_row(row, folded: list[str]) -> tuple[float, list[int]]:
     title, crumb, body = row["title"].lower(), row["crumb"].lower(), row["body"].lower()
     filename = norm(os.path.basename(row["path"])).lower()
     score, matched = 0.0, []
@@ -167,7 +167,7 @@ def _score(row, folded: list[str]) -> tuple[float, list[int]]:
     return score, matched
 
 
-def _locate(row, terms: list[str]) -> tuple[str, dict]:
+def locate_snippet(row, terms: list[str]) -> tuple[str, dict]:
     """Snippet from the line matching the most terms, and that line's anchor."""
     lines = row["body"].split("\n")
     anchors = json.loads(row["anchors"])
