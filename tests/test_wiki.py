@@ -52,7 +52,9 @@ class FakeWiki(BaseHTTPRequestHandler):
         if url.path == "/":
             return self._send(200, "<html><head><meta name='ajs-version-number' content='6.15.4'></head><body>home</body></html>")
         if url.path == "/rest/api/space":
-            return self._json({"results": [{"key": "OPS"}]})
+            return self._json({"results": [{"key": "OPS", "name": "運用"}, {"key": "DEV", "name": "開発[2J"}]})
+        if url.path == "/spacedirectory/view.action":
+            return self._send(200, "<a href='/display/OPS'>運用</a><a href='/display/DEV/'>開発</a><a href='/display/OPS/Page'>page</a>")
         if url.path.startswith("/rest/api/space/"):
             key = url.path.rsplit("/", 1)[1]
             return self._json({"key": "OPS", "name": "運用"}) if key == "OPS" else self._json({"message": "no"}, 404)
@@ -329,6 +331,14 @@ def test_an_unreachable_wiki_fails_fast(tmp_path, monkeypatch, capsys):
     assert time.monotonic() - started < 10 and "cannot reach" in capsys.readouterr().err
 
 
+def test_spaces_are_listed_with_their_names(wiki, capsys):
+    out = _json(capsys, ["wiki", "spaces", "--json"])
+    assert out == {"team": [{"key": "OPS", "name": "運用"}, {"key": "DEV", "name": "開発 [2J"}]}  # no escape survives
+    FakeWiki.mode = "legacy"
+    out = _json(capsys, ["wiki", "spaces", "--json"])
+    assert out == {"team": [{"key": "OPS", "name": "運用"}, {"key": "DEV", "name": "開発"}]}
+
+
 def test_one_unreadable_result_does_not_lose_the_others(monkeypatch):
     from docwhere.wiki import Page, Response
     from docwhere.wiki import confluence as module
@@ -344,3 +354,21 @@ def test_one_unreadable_result_does_not_lose_the_others(monkeypatch):
 
     monkeypatch.setattr(wiki, "page", page)
     assert [p.id for p in wiki._site_search(["x"], False, 5)] == ["2"]
+
+
+def test_space_list_requests_are_bounded(monkeypatch):
+    from docwhere.wiki import Response
+    from docwhere.wiki import confluence as module
+
+    calls = []
+    junk = json.dumps({"results": [{"name": "no key"}] * module.SPACE_PAGE}).encode()
+
+    def get(base, path, params=None):
+        calls.append(path)
+        if path == "/rest/api/space":
+            return Response(200, base + path, junk, "application/json")
+        return Response(200, base + path, b"<a href='/display/A'>A</a>", "text/html")
+
+    monkeypatch.setattr(module, "get", get)
+    assert Confluence("http://wiki.example", []).space_list() == [("A", "A")]
+    assert calls.count("/rest/api/space") == module.MAX_SPACES // module.SPACE_PAGE

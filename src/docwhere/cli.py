@@ -125,6 +125,11 @@ def _wiki_parser(sub) -> None:
     p.add_argument("name")
     p.set_defaults(func=cmd_wiki_remove)
 
+    p = ws.add_parser("spaces", help="the spaces of a wiki that can be viewed without logging in (key and name)")
+    p.add_argument("name", nargs="?")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_wiki_spaces)
+
     p = ws.add_parser("check", help="what works on a wiki: reachable, version, REST API, spaces, a test search")
     p.add_argument("name", nargs="?")
     p.add_argument("--term", help="a word to try searching for")
@@ -484,6 +489,24 @@ def cmd_wiki_remove(args) -> int:
     if not remove_wiki(_wiki_db(args), args.name):
         raise WikiError(f"no wiki named {args.name!r}")
     print(f"removed {args.name}")
+    return 0
+
+
+@_wiki_command
+def cmd_wiki_spaces(args) -> int:
+    from docwhere.wiki import client
+
+    out = {}
+    for entry in _wiki_entries(_wiki_db(args), args.name):
+        out[entry["name"]] = client(entry).space_list()
+    if args.json:
+        print(json.dumps({name: [{"key": k, "name": n} for k, n in spaces] for name, spaces in out.items()},
+                         ensure_ascii=False, indent=1))
+        return 0
+    for name, spaces in out.items():
+        print(f"# {name}: {len(spaces)} space(s)")
+        for key, title in spaces:
+            print(f"{key}	{title}")
     return 0
 
 

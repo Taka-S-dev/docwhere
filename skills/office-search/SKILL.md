@@ -211,7 +211,9 @@ create it with the header if it does not exist. Tell the user the row you added.
 levels deep and sample file names (and, where names are vague, the headings from a search
 or `docwhere show`) to infer each folder's subject and kind. Show the draft rows and write
 them only after the user confirms or corrects them — a wrong kind sends later searches to the
-wrong place. Do not add file rows when drafting; those come from real finds.
+wrong place. Do not add file rows when drafting; those come from real finds. For an added
+wiki, `docwhere wiki spaces --json` lists its spaces with their names; draft one
+`wiki:NAME/SPACE` row per space whose name says what it holds.
 
 **Opening it** ("メモ開いて", "地図のファイル開いて"): create it first if missing (the header
 line only, UTF-8 with BOM so Excel shows Japanese correctly), then open it with the default

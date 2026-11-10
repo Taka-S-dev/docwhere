@@ -39,6 +39,7 @@ uv tool install -e .
 | `status [--errors]` | インデックス済みフォルダと、読めなかったファイル |
 | `wiki add NAME URL [--space KEY]` / `wiki list` / `wiki remove NAME` | 検索する wiki の登録（下の「社内 wiki」） |
 | `wiki check [NAME] [--term T]` | wiki に届くか、バージョン、REST API の有無、スペース、試しの検索の結果 |
+| `wiki spaces [NAME] [--json]` | ログインせずに見られるスペースのキーと名前の一覧 |
 | `wiki search TERM... [--all] [--wiki NAME] [--space KEY] [-n K] [--json]` | wiki の検索。ヒットしたページを節に区切り、合う節と前後の文、節へのリンクを出す |
 | `wiki show N [-C K] [--whole]` / `wiki open N` | 直前の wiki 検索の N 件目の節を表示 / ブラウザで開く |
 | `wiki view [N...] [--quote Q] [--answer A] [--title T]` | 直前の wiki 検索の結果を `view` と同じ画面で表示。回答の根拠の文に枠を付け、ページはボタンでブラウザで開く。`wiki search --view` でも同じ |

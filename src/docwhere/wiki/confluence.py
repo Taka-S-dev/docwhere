@@ -16,6 +16,8 @@ from html.parser import HTMLParser
 from docwhere.wiki import Page, WikiError, clean, get, origin
 
 EXPAND = "body.view,space,version"
+MAX_SPACES = 1000
+SPACE_PAGE = 100
 ROOT_ID = "main-content"  # the page body in Confluence's page layout
 
 
@@ -139,6 +141,27 @@ class Confluence:
         url = f"{self.base}/pages/viewpage.action?pageId={page_id}" if page_id else self.base + path
         return Page(id=page_id, title=title, url=url, space=meta.get("ajs-space-key", ""), html=html, root=ROOT_ID)
 
+    # ---- spaces ----------------------------------------------------------------------
+
+    def space_list(self) -> list[tuple[str, str]]:
+        """(key, name) of the spaces anyone can view: from the REST API, else the space directory."""
+        found: list[tuple[str, str]] = []
+        for start in range(0, MAX_SPACES, SPACE_PAGE):  # a bounded number of requests, whatever the answers
+            r = get(self.base, "/rest/api/space", {"limit": SPACE_PAGE, "start": start})
+            data = r.json() if r.status == 200 else None
+            if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+                break
+            found += [(clean(s.get("key")), clean(s.get("name"))) for s in data["results"] if isinstance(s, dict) and s.get("key")]
+            if len(data["results"]) < SPACE_PAGE:
+                return found
+        if found:
+            return found[:MAX_SPACES]
+        r = get(self.base, "/spacedirectory/view.action")
+        self._refuse_login(r)
+        if r.status != 200:
+            raise WikiError(f"the wiki has no space list this version of docwhere can read (HTTP {r.status})")
+        return _SpaceLinks.find(r.text())[:MAX_SPACES]
+
     # ---- check -----------------------------------------------------------------------
 
     def check(self, term: str | None = None) -> list[tuple[bool | None, str]]:
@@ -202,6 +225,38 @@ class _Meta(HTMLParser):
         p = cls()
         p.feed(html)
         return p.values
+
+
+class _SpaceLinks(HTMLParser):
+    """Spaces on the space directory page: links to /display/KEY with the space's name."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.spaces: dict[str, str] = {}
+        self.key: str | None = None
+        self.text: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            m = re.search(r"/display/([^/?#]+)/?$", dict(attrs).get("href") or "")
+            self.key, self.text = (urllib.parse.unquote(m.group(1)), []) if m else (None, [])
+
+    def handle_data(self, data):
+        if self.key:
+            self.text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self.key:
+            name = clean("".join(self.text))
+            if name:
+                self.spaces.setdefault(clean(self.key), name)
+            self.key = None
+
+    @classmethod
+    def find(cls, html: str) -> list[tuple[str, str]]:
+        p = cls()
+        p.feed(html)
+        return list(p.spaces.items())
 
 
 class _ResultLinks(HTMLParser):
