@@ -35,13 +35,15 @@ def table_lines(rows: list[list[str]]) -> list[str]:
     the header when its cells are distinct short labels; otherwise, or when a row's cells do
     not line up with it (merged cells), the row is joined without labels. Tables with a
     single row or column are boxes around text, not tables of values, and stay one line per cell.
+    A labelled header row is not a line of its own: every row already names its columns, and a
+    bare "項目 / 既定値" line would be the snippet for any search on a column name.
     """
     rows = [cells for cells in ([norm(c) for c in r] for r in rows) if any(cells)]
     if len(rows) < 2 or max(map(len, rows)) < 2:
         return [c for cells in rows for c in cells if c]
     header = rows[0]
     labelled = all(header) and len(set(header)) == len(header) and max(map(len, header)) <= MAX_HEADER_CHARS
-    lines = [" / ".join(c for c in header if c)]
+    lines = [] if labelled else [" / ".join(c for c in header if c)]
     for cells in rows[1:]:
         if labelled and len(cells) == len(header):
             lines.append(" / ".join(f"{h}: {c}" for h, c in zip(header, cells) if c))

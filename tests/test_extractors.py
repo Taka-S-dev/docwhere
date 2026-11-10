@@ -23,15 +23,17 @@ def test_word_sections_follow_headings(docs):
     assert crumbs == ["はじめに", "コマンド", "コマンド > config コマンド", "コマンド > backup コマンド"]
     config = chunks[2]
     assert config.title == "config コマンド"
-    assert config.lines[-2:] == ["オプション / 説明", "オプション: --force / 説明: 検証エラーを無視する"]  # table read in place
+    assert config.lines[-1] == "オプション: --force / 説明: 検証エラーを無視する"  # table read in place
+    assert "オプション / 説明" not in config.lines  # the header row is in every labelled row already
 
 
 def test_table_rows_are_labelled_by_the_header():
     from docwhere.model import table_lines
 
     rows = [["項目", "既定値", "範囲"], ["接続タイムアウト", "30秒", "1-300"], ["再送回数", "3", ""]]
-    assert table_lines(rows) == ["項目 / 既定値 / 範囲", "項目: 接続タイムアウト / 既定値: 30秒 / 範囲: 1-300", "項目: 再送回数 / 既定値: 3"]
-    assert table_lines([["注意", "本手順は管理者権限が必要です。実行前に必ずバックアップを取得してください。"], ["a", "b"]])[1] == "a / b"
+    assert table_lines(rows) == ["項目: 接続タイムアウト / 既定値: 30秒 / 範囲: 1-300", "項目: 再送回数 / 既定値: 3"]
+    unlabelled = table_lines([["注意", "本手順は管理者権限が必要です。実行前に必ずバックアップを取得してください。"], ["a", "b"]])
+    assert unlabelled[0].startswith("注意 / ") and unlabelled[1] == "a / b"  # a first row that is not labels stays
     assert table_lines([["枠で囲んだ注意書き"]]) == ["枠で囲んだ注意書き"]  # a one-cell box, not a table of values
 
 
@@ -46,7 +48,7 @@ def test_word_table_keeps_vertically_merged_value_on_every_row(tmp_path):
     table.cell(1, 0).merge(table.cell(2, 0))
     doc.save(tmp_path / "t.docx")
     (chunk,) = extract(tmp_path / "t.docx")
-    assert chunk.lines[1:] == ["区分: 通信 / 項目: 接続タイムアウト / 既定値: 30秒", "区分: 通信 / 項目: 再送回数 / 既定値: 3"]
+    assert chunk.lines == ["区分: 通信 / 項目: 接続タイムアウト / 既定値: 30秒", "区分: 通信 / 項目: 再送回数 / 既定値: 3"]
 
 
 def test_pdf_pages_take_bookmark_titles(docs):
