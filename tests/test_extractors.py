@@ -23,7 +23,30 @@ def test_word_sections_follow_headings(docs):
     assert crumbs == ["はじめに", "コマンド", "コマンド > config コマンド", "コマンド > backup コマンド"]
     config = chunks[2]
     assert config.title == "config コマンド"
-    assert "--force" in config.lines and "検証エラーを無視する" in config.lines  # table read in place
+    assert config.lines[-2:] == ["オプション / 説明", "オプション: --force / 説明: 検証エラーを無視する"]  # table read in place
+
+
+def test_table_rows_are_labelled_by_the_header():
+    from docwhere.model import table_lines
+
+    rows = [["項目", "既定値", "範囲"], ["接続タイムアウト", "30秒", "1-300"], ["再送回数", "3", ""]]
+    assert table_lines(rows) == ["項目 / 既定値 / 範囲", "項目: 接続タイムアウト / 既定値: 30秒 / 範囲: 1-300", "項目: 再送回数 / 既定値: 3"]
+    assert table_lines([["注意", "本手順は管理者権限が必要です。実行前に必ずバックアップを取得してください。"], ["a", "b"]])[1] == "a / b"
+    assert table_lines([["枠で囲んだ注意書き"]]) == ["枠で囲んだ注意書き"]  # a one-cell box, not a table of values
+
+
+def test_word_table_keeps_vertically_merged_value_on_every_row(tmp_path):
+    from docx import Document
+
+    doc = Document()
+    table = doc.add_table(rows=3, cols=3)
+    for r, cells in enumerate((["区分", "項目", "既定値"], ["通信", "接続タイムアウト", "30秒"], ["", "再送回数", "3"])):
+        for c, text in enumerate(cells):
+            table.cell(r, c).text = text
+    table.cell(1, 0).merge(table.cell(2, 0))
+    doc.save(tmp_path / "t.docx")
+    (chunk,) = extract(tmp_path / "t.docx")
+    assert chunk.lines[1:] == ["区分: 通信 / 項目: 接続タイムアウト / 既定値: 30秒", "区分: 通信 / 項目: 再送回数 / 既定値: 3"]
 
 
 def test_pdf_pages_take_bookmark_titles(docs):
@@ -92,3 +115,51 @@ def test_markdown_sections_and_line_numbers(docs):
     chunks = extract(docs / "notes.md")
     assert chunks[1].crumb == "Intro > deploy コマンド"
     assert chunks[1].anchors[1] == {"line": 5}
+
+
+def test_word_cell_text_is_capped_and_deep_tables_skipped(tmp_path, monkeypatch):
+    from docx import Document
+
+    from docwhere.extractors import word
+
+    monkeypatch.setattr(word, "MAX_CELL_CHARS", 50)
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text, table.cell(0, 1).text = "name", "value"
+    table.cell(1, 0).text = "big"
+    table.cell(1, 1).text = "x" * 500
+    inner = table.cell(1, 0).add_table(rows=1, cols=1)
+    inner.cell(0, 0).add_table(rows=1, cols=1).cell(0, 0).add_table(rows=1, cols=1).cell(0, 0).text = "too deep"
+    doc.save(tmp_path / "t.docx")
+    (chunk,) = extract(tmp_path / "t.docx")
+    row = chunk.lines[-1]
+    assert "x" * 50 in row and "x" * 51 not in row  # the long cell is cut at the cap
+    assert "too deep" not in row  # the fourth level of nesting is not read
+
+
+def test_word_document_text_past_the_limit_is_refused(docs, monkeypatch):
+    from docwhere.extractors import word
+
+    monkeypatch.setattr(word, "MAX_DOCUMENT_CHARS", 20)
+    with pytest.raises(ValueError, match="limit"):
+        extract(docs / "運用マニュアル.docx")
+
+
+def test_word_merged_cell_cannot_outgrow_the_budget_while_a_table_is_built(tmp_path, monkeypatch):
+    from docx import Document
+
+    from docwhere.extractors import word
+
+    doc = Document()
+    table = doc.add_table(rows=200, cols=2)
+    table.cell(0, 0).text, table.cell(0, 1).text = "name", "value"
+    table.cell(1, 0).text = "y" * 1000
+    table.cell(1, 0).merge(table.cell(199, 0))  # one cell, repeated on 199 rows
+    doc.save(tmp_path / "t.docx")
+    monkeypatch.setattr(word, "MAX_DOCUMENT_CHARS", 50_000)
+    built = []
+    real = word.table_lines
+    monkeypatch.setattr(word, "table_lines", lambda rows: built.append(len(rows)) or real(rows))
+    with pytest.raises(ValueError, match="limit"):
+        extract(tmp_path / "t.docx")
+    assert built == []  # refused while the rows were being read, before the table was assembled

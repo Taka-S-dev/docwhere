@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from docwhere.extractors import register
-from docwhere.model import Chunk, norm
+from docwhere.model import Chunk, norm, table_lines
 
 
 @register(".pptx", ".pptm")
@@ -36,6 +36,5 @@ def _shape_texts(shapes) -> Iterator[str]:
             for para in shape.text_frame.paragraphs:
                 yield para.text
         elif getattr(shape, "has_table", False) and shape.has_table:
-            for row in shape.table.rows:
-                for cell in row.cells:
-                    yield cell.text
+            rows = [[cell.text for cell in row.cells if not cell.is_spanned] for row in shape.table.rows]
+            yield from table_lines(rows)

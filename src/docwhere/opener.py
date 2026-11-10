@@ -15,6 +15,7 @@ from pathlib import Path
 from docwhere.model import norm
 
 WORD_FIND_LIMIT = 500  # occurrences of the term to try before settling for the first one
+WD_WITH_IN_TABLE = 12  # Range.Information: whether the range is inside a table
 _MACROS_BY_UI = 2  # msoAutomationSecurityByUI
 
 
@@ -116,7 +117,8 @@ def _find_in_word(doc, term: str, line: str):
     """
     if not term:
         return None
-    target = norm(line)[:60]
+    line = norm(line)
+    target = line[:60]
     rng = doc.Content
     find = rng.Find
     find.ClearFormatting()
@@ -138,6 +140,8 @@ def _find_in_word(doc, term: str, line: str):
         paragraph = norm(rng.Paragraphs(1).Range.Text.replace("\x07", " "))
         if target and target in paragraph:
             return rng
+        if rng.Information(WD_WITH_IN_TABLE) and paragraph and paragraph in line:
+            return rng  # a table row is indexed as one line, so the cell is a part of it
     return first
 
 

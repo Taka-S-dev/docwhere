@@ -18,7 +18,7 @@ from pathlib import Path
 from docwhere.model import Chunk
 
 # Bump whenever extractor output changes; files indexed by an older version are re-extracted.
-EXTRACTOR_VERSION = 3
+EXTRACTOR_VERSION = 4
 
 # Office Open XML files are zip archives that the parsers inflate in memory. A small file can
 # declare gigabytes of content, so the declared total is checked before any parser touches it.

@@ -7,6 +7,7 @@ import unicodedata
 from dataclasses import dataclass, field
 
 MAX_CHUNK_CHARS = 4000
+MAX_HEADER_CHARS = 30  # longer first-row cells are content, not column labels
 
 # Document text is printed to the terminal, so escape sequences and bidi overrides embedded in
 # a file must not survive extraction. C0/C1 controls become spaces (some are Word's line and
@@ -24,6 +25,29 @@ def norm(text: str) -> str:
     """
     text = _INVISIBLE.sub("", _CONTROLS.sub(" ", unicodedata.normalize("NFKC", text)))
     return " ".join(text.split())
+
+
+def table_lines(rows: list[list[str]]) -> list[str]:
+    """One line per table row, labelled by the header row: "項目: 接続タイムアウト / 既定値: 30秒".
+
+    A setting's value sits in the cell next to its name, so a hit on the name must carry the
+    rest of the row for the snippet to answer "what is the default". The first row counts as
+    the header when its cells are distinct short labels; otherwise, or when a row's cells do
+    not line up with it (merged cells), the row is joined without labels. Tables with a
+    single row or column are boxes around text, not tables of values, and stay one line per cell.
+    """
+    rows = [cells for cells in ([norm(c) for c in r] for r in rows) if any(cells)]
+    if len(rows) < 2 or max(map(len, rows)) < 2:
+        return [c for cells in rows for c in cells if c]
+    header = rows[0]
+    labelled = all(header) and len(set(header)) == len(header) and max(map(len, header)) <= MAX_HEADER_CHARS
+    lines = [" / ".join(c for c in header if c)]
+    for cells in rows[1:]:
+        if labelled and len(cells) == len(header):
+            lines.append(" / ".join(f"{h}: {c}" for h, c in zip(header, cells) if c))
+        else:
+            lines.append(" / ".join(c for c in cells if c))
+    return lines
 
 
 @dataclass
