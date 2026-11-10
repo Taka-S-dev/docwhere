@@ -235,9 +235,14 @@ returns; nothing is copied to disk except the last result list. It is the only p
 docwhere that uses the network, and only towards wikis the user added. Say "社内 wiki" (or the
 name the user gave it) in answers, not the product name.
 
-- Which wikis exist: `docwhere wiki list`. None → the user adds one:
-  `docwhere wiki add NAME URL [--space KEY]`, then `docwhere wiki check NAME --term <a word
-  from their docs>`. Paste the check output back to the user if a line says FAIL.
+- Which wikis exist: `docwhere wiki list`. None → ask the user for the wiki's address (the
+  top page they open in the browser) and a short name, then run
+  `docwhere wiki add NAME URL [--space KEY]` yourself, followed by
+  `docwhere wiki check NAME --term <a Japanese word their pages surely contain>` and
+  `docwhere wiki spaces NAME`. Never guess or reuse an address the user did not give.
+  Report each check line in plain words; on a FAIL, say what it means and what to try
+  (wrong address, the network, a login the wiki asks for). Then offer `wiki:` rows for the
+  notes map from the space list (see Drafting the map).
 - When to search it: the notes map has a `wiki:` row whose kind or note fits the question, the
   user mentions the wiki, or the local search comes up short and a wiki is added. In thorough
   mode search both and merge.
