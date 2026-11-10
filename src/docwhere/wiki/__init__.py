@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 TIMEOUT = 20  # seconds per request
+REACH_TIMEOUT = 3  # seconds to open a connection at all: off the wiki's network, fail fast
 MAX_RESPONSE = 16 << 20  # bytes read from one response
 KINDS = ("confluence",)
 
@@ -165,12 +166,37 @@ class Response:
             return None
 
 
+_reachable: set[str] = set()
+
+
+def _check_reachable(url: str) -> None:
+    """Fail within seconds when the wiki's server cannot be reached at all (a PC off the
+    office network), instead of waiting out the request timeout. Skipped behind a proxy,
+    which is what the connection then goes to."""
+    import socket
+
+    parts = urllib.parse.urlsplit(url)
+    key = origin(url)
+    if key in _reachable:
+        return
+    proxies = urllib.request.getproxies()
+    if proxies.get(parts.scheme) and not urllib.request.proxy_bypass(parts.hostname or ""):
+        return
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        socket.create_connection((parts.hostname, port), timeout=REACH_TIMEOUT).close()
+    except OSError as e:
+        raise WikiError(f"cannot reach the wiki at {key} (is this PC on its network?): {e}") from None
+    _reachable.add(key)
+
+
 def get(base: str, path: str, params: dict | None = None) -> Response:
     """GET ``path`` on the wiki at ``base``. HTTP errors are returned, not raised, so callers
     can tell "no such API" (404) from "cannot reach the wiki" (raised as WikiError)."""
     url = base + path + ("?" + urllib.parse.urlencode(params) if params else "")
     if origin(url) != origin(base):
         raise WikiError(f"not a page of the wiki: {url}")
+    _check_reachable(url)
     opener = urllib.request.build_opener(_SameOrigin(origin(base)))
     request = urllib.request.Request(url, headers={"Accept": "application/json, text/html;q=0.9"})
     try:

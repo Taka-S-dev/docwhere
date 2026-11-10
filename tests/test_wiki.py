@@ -313,6 +313,22 @@ def test_a_rest_api_that_asks_to_log_in_falls_back_to_the_pages(wiki, capsys):
     assert "REST API asks to log in" in capsys.readouterr().out
 
 
+def test_an_unreachable_wiki_fails_fast(tmp_path, monkeypatch, capsys):
+    import socket
+    import time
+
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {})
+    monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "db" / "index.db"))
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()  # nothing listens there now
+    assert main(["wiki", "add", "off", f"http://127.0.0.1:{port}"]) == 0
+    started = time.monotonic()
+    assert main(["wiki", "search", "x"]) == 2
+    assert time.monotonic() - started < 10 and "cannot reach" in capsys.readouterr().err
+
+
 def test_one_unreadable_result_does_not_lose_the_others(monkeypatch):
     from docwhere.wiki import Page, Response
     from docwhere.wiki import confluence as module
