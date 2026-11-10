@@ -19,8 +19,11 @@ WD_WITH_IN_TABLE = 12  # Range.Information: whether the range is inside a table
 _MACROS_BY_UI = 2  # msoAutomationSecurityByUI
 
 
-def open_at(path: str, anchor: dict) -> str:
-    """Open ``path`` positioned at ``anchor``; return a one-line description of what happened."""
+def open_at(path: str, anchor: dict, pdf_app: dict | None = None) -> str:
+    """Open ``path`` positioned at ``anchor``; return a one-line description of what happened.
+
+    ``pdf_app`` is the PDF application set with ``viewer pdf`` ({"command": [...]}), if any.
+    """
     if not Path(path).exists():
         raise FileNotFoundError(path)
     ext = Path(path).suffix.lower()
@@ -37,27 +40,56 @@ def open_at(path: str, anchor: dict) -> str:
         ".ppt": _powerpoint,
     }.get(ext, _text)
     try:
+        if handler is _pdf:
+            return _pdf(os.path.abspath(path), anchor, pdf_app)
         return handler(os.path.abspath(path), anchor)
     except Exception as e:
-        _startfile(path)
+        start_file(path)
         return f"opened without jumping ({type(e).__name__}: {e})"
 
 
-def _startfile(path: str) -> None:
+def start_file(path: str) -> None:
     if sys.platform == "win32":
         os.startfile(path)
     else:
         subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", path])
 
 
-def _pdf(path: str, anchor: dict) -> str:
-    page = anchor.get("page", 1)
-    acrobat = _acrobat()
-    if acrobat is None:
-        _startfile(path)
-        return "opened in the default PDF viewer (Acrobat not found, cannot jump to the page)"
-    subprocess.Popen([acrobat, "/A", f"page={page}", path])
-    return f"opened at p.{page}"
+def _pdf(path: str, anchor: dict, pdf_app: dict | None = None) -> str:
+    """Open a PDF at its page.
+
+    With a command set by ``viewer pdf`` ([program, arg, ...] where {page} and {file} are
+    filled in), that program runs, without a shell. Otherwise Acrobat if it is installed, else
+    Windows' default PDF app, which cannot be told a page.
+    """
+    page = int(anchor.get("page", 1))
+    command = (pdf_app or {}).get("command")
+    if command:
+        # checked again here, not only when saved: a settings file edited by hand (or by
+        # anyone else) must not turn "open the PDF" into running a shell
+        from docwhere.window import checked_command
+
+        try:
+            command = checked_command(command)
+        except FileNotFoundError:
+            if Path(command[0]).exists():  # there, but not an .exe (a .bat, a .lnk)
+                command = None
+            # else: reported below, with the default app as the fallback
+        except (OSError, ValueError):
+            command = None
+    if command:
+        program = command[0]
+        if not Path(program).is_file():
+            start_file(path)
+            return f"opened in the default PDF app ({program} not found, cannot jump to the page)"
+        args = [arg.replace("{page}", str(page)).replace("{file}", path) for arg in command[1:]]
+        subprocess.Popen([program, *args])
+        return f"opened at p.{page} in {Path(program).stem}"
+    if acrobat := _acrobat():
+        subprocess.Popen([acrobat, "/A", f"page={page}", path])
+        return f"opened at p.{page} in Acrobat"
+    start_file(path)
+    return "opened in the default PDF app (cannot jump to the page; set one with: viewer pdf)"
 
 
 def _acrobat() -> str | None:
@@ -174,7 +206,7 @@ def _text(path: str, anchor: dict) -> str:
     if code and "line" in anchor:
         subprocess.Popen([code, "-g", f"{path}:{anchor['line']}"])
         return f"opened in VS Code at line {anchor['line']}"
-    _startfile(path)
+    start_file(path)
     return "opened"
 
 
