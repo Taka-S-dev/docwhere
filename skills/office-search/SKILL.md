@@ -1,6 +1,6 @@
 ---
 name: office-search
-description: Find which document in a folder tree covers a topic, and where (section, page, slide, cell), across PDF, Word, Excel, PowerPoint (including legacy .doc/.xls/.ppt) and text files, using the indexed `docwhere` CLI; then show that section or open the file at the spot. Also answers quick value questions from the documents ("このタイムアウトのデフォルト何秒？"), and keeps a notes file mapping folders to what they hold (通信の仕様書はここ, 設計書はここ) plus places the user wants remembered. Use whenever the user asks which document describes something, where a spec / procedure / command / setting / error code is written, what a documented value or default is, wants to locate information inside a pile of documents, or asks to remember where something is written — e.g. "このコマンドの仕様が書いてあるドキュメントどれ？", "〜について書いてある資料探して", "〜の手順はどこ？", "何章に書いてある？", "このエラーの対処法どこかに書いてない？", "〜の既定値は？", "その箇所開いて", "〜は〜に書いてあるって覚えておいて", "資料の地図作って". Prefer this over office-read's office_find.py for anything beyond a handful of files, since docwhere keeps an index, ranks by section and knows which file is the newer version.
+description: Find which document in a folder tree covers a topic, and where (section, page, slide, cell), across PDF, Word, Excel, PowerPoint (including legacy .doc/.xls/.ppt) and text files, using the indexed `docwhere` CLI; then show that section or open the file at the spot. Also answers quick value questions from the documents ("このタイムアウトのデフォルト何秒？"), and keeps a notes file mapping folders to what they hold (通信の仕様書はここ, 設計書はここ) plus places the user wants remembered. Use whenever the user asks which document describes something, where a spec / procedure / command / setting / error code is written, what a documented value or default is, wants to locate information inside a pile of documents, or asks to remember where something is written — e.g. "このコマンドの仕様が書いてあるドキュメントどれ？", "〜について書いてある資料探して", "〜の手順はどこ？", "何章に書いてある？", "このエラーの対処法どこかに書いてない？", "〜の既定値は？", "その箇所開いて", "〜は〜に書いてあるって覚えておいて", "資料の地図作って". Also searches an added team wiki (Confluence) through the wiki's own search when the notes or the question point there ("wikiに書いてある？"). Prefer this over office-read's office_find.py for anything beyond a handful of files, since docwhere keeps an index, ranks by section and knows which file is the newer version.
 ---
 
 # office-search
@@ -194,6 +194,7 @@ D:\proj\docs\仕様書\通信\通信仕様_v2.docx,3.2 通信パラメータ,仕
 ```
 
 - `path` — absolute. A folder makes a map row; a file makes a note on that file.
+  `wiki:NAME` (or `wiki:NAME/SPACE`) makes a map row for a wiki added with `docwhere wiki add`.
 - `section` — optional heading, `p.12`, `slide 4` or `Sheet!D5`.
 - `kind` — マニュアル, 仕様書, 設計書, or whatever the user's own categories are; keep theirs.
 - `note` — a few keywords or a short phrase. Brief is fine; it only has to point.
@@ -221,6 +222,33 @@ open the file is locked, so rows cannot be added until it is closed.
 `newer_version`, say so in the answer and offer to fix or drop the row. Never edit or delete
 the user's rows silently.
 
+## The team wiki
+
+`docwhere wiki` searches a wiki through the wiki's own search and reads only the pages it
+returns; nothing is copied to disk except the last result list. It is the only part of
+docwhere that uses the network, and only towards wikis the user added. Say "社内 wiki" (or the
+name the user gave it) in answers, not the product name.
+
+- Which wikis exist: `docwhere wiki list`. None → the user adds one:
+  `docwhere wiki add NAME URL [--space KEY]`, then `docwhere wiki check NAME --term <a word
+  from their docs>`. Paste the check output back to the user if a line says FAIL.
+- When to search it: the notes map has a `wiki:` row whose kind or note fits the question, the
+  user mentions the wiki, or the local search comes up short and a wiki is added. In thorough
+  mode search both and merge.
+- `docwhere wiki search <terms…> --json [--wiki NAME] [--space KEY] [-n 5]` — phrase terms as
+  for local search. Hits carry `title`, `crumb`, `snippet`, `url` (with `#heading` when the
+  section has one) and `updated`. The wiki's own word matching decides which pages come back;
+  if Japanese terms find nothing, try shorter or other wordings before giving up (old servers
+  index Japanese poorly unless their indexing language is set to Japanese).
+- `docwhere wiki show N` — the hit's section with its neighbours, for reading before answering.
+  `--whole` for the full page.
+- Cite a wiki answer as `社内 wiki「<title>」 > <section>` with the URL, and the update date
+  when it matters. `docwhere wiki open N` opens the page in the browser when the user asks to
+  see it; the docwhere viewer does not show wiki pages.
+- Errors: "asks to log in" means the page or the wiki is not viewable anonymously (docwhere
+  reads only those); "cannot reach" means this PC is not on the wiki's network. Say so and
+  answer from the local documents.
+
 ## Limits
 
 - Scanned PDFs are not OCR'd; they appear in `unreadable`.
@@ -229,4 +257,6 @@ the user's rows silently.
 - PDFs without bookmarks get headings guessed from font size and boldness; in unusually
   formatted PDFs the crumb may be missing or approximate, so read the section when it matters.
   PDF tables are read as laid-out text, so a row may not come out labelled by its headers.
+- Wiki hits depend on the wiki's own search; docwhere ranks sections only within the pages it
+  returns. Attachments on wiki pages and content filled in by macros are not read.
 - `--no-update` skips the change scan when searching the same folder repeatedly in one task.

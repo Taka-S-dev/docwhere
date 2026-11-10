@@ -27,7 +27,7 @@ _ZIP_BASED = {".docx", ".docm", ".xlsx", ".xlsm", ".pptx", ".pptm"}
 
 Extractor = Callable[[Path], list[Chunk]]
 
-_MODULES = ("pdf", "word", "excel", "powerpoint", "text", "legacy")
+_MODULES = ("pdf", "word", "excel", "powerpoint", "text", "html", "legacy")
 _REGISTRY: dict[str, Extractor] = {}
 _SERIAL: set[str] = set()
 _RELEASERS: list[Callable[[], None]] = []
@@ -49,10 +49,17 @@ def on_release(fn: Callable[[], None]) -> Callable[[], None]:
     return fn
 
 
+_loaded = False
+
+
 def _load() -> None:
-    if not _REGISTRY:
+    # A flag, not "is the registry empty": importing one extractor directly (html_chunks for
+    # wiki pages) registers that module alone and must not hide the others.
+    global _loaded
+    if not _loaded:
         for name in _MODULES:
             importlib.import_module(f"{__name__}.{name}")
+        _loaded = True
 
 
 def supported_extensions() -> frozenset[str]:

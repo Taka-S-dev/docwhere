@@ -1,6 +1,6 @@
 # docwhere
 
-フォルダ以下の PDF・Word・Excel・PowerPoint・テキストを**節単位**で全文検索し、該当箇所をそのまま開く CLI。
+フォルダ以下の PDF・Word・Excel・PowerPoint・HTML・テキストを**節単位**で全文検索し、該当箇所をそのまま開く CLI。社内 wiki（Confluence）も wiki 自身の検索を通して同じ形で引ける。
 エージェントからは Agent Skills 形式のスキル `office-search`（[skills/office-search/SKILL.md](skills/office-search/SKILL.md)）経由で使う。
 
 ```
@@ -37,6 +37,10 @@ uv tool install -e .
 | `snap N` / `snap --id ID [--term T] [-P K] [--quote Q]` | PDF のヒットしたページ（と前後 K ページ）を、検索語と回答の文を強調した PNG に保存してパスを表示 |
 | `index DIR... [--rebuild]` | インデックスを明示的に作成・再作成 |
 | `status [--errors]` | インデックス済みフォルダと、読めなかったファイル |
+| `wiki add NAME URL [--space KEY]` / `wiki list` / `wiki remove NAME` | 検索する wiki の登録（下の「社内 wiki」） |
+| `wiki check [NAME] [--term T]` | wiki に届くか、バージョン、REST API の有無、スペース、試しの検索の結果 |
+| `wiki search TERM... [--all] [--wiki NAME] [--space KEY] [-n K] [--json]` | wiki の検索。ヒットしたページを節に区切り、合う節と前後の文、節へのリンクを出す |
+| `wiki show N [-C K] [--whole]` / `wiki open N` | 直前の wiki 検索の N 件目の節を表示 / ブラウザで開く |
 
 複数の TERM は OR（`--all` で AND）。見出しに語を含む節、複数の言い換えに当たる節が上位に来る。
 
@@ -48,6 +52,7 @@ uv tool install -e .
 | docx / docm / doc | 見出しで区切った節。表は行ごとに見出し行のラベル付き | 節の見出し | Word で該当段落を選択 |
 | xlsx / xlsm / xls | シートの行（見出し行付き） | Sheet!D5 | Excel で該当セルを選択 |
 | pptx / pptm / ppt | スライド（ノート含む）。表は行ごとに見出し行のラベル付き | slide N | PowerPoint で該当スライド |
+| html / htm | 見出し（h1〜h6）で区切った節。表は行ごとに見出し行のラベル付き。スクリプト・スタイルは読まない | 節の見出し | 既定のアプリ |
 | txt / md / csv / log など | md は見出し、他は一定量 | L行 | VS Code で該当行 |
 
 - .doc / .xls / .ppt は Office（COM）で新形式に変換してから読む。変換中のマクロは強制無効。パスワード付きの .doc / .xls は読めないファイルとして扱う（.ppt は未検証）。
@@ -68,6 +73,26 @@ D:\proj\docs\仕様書\通信,,仕様書,通信 プロトコル コマンド
 D:\proj\docs\設計書,,設計書,
 D:\proj\docs\仕様書\通信\通信仕様_v2.docx,3.2 通信パラメータ,仕様書,タイムアウト 再送回数
 ```
+
+## 社内 wiki（Confluence）
+
+Confluence（Server / Data Center、5.x 以降）を、ログインせずに見られる範囲で検索する。ページを手元に写さず、
+質問のたびに wiki 自身の検索を呼び、返ってきたページだけを読んで節に区切る。権限と内容の新しさは wiki 側の
+ものがそのまま効き、サーバーへの負荷は 1 回の質問で数リクエストに収まる。
+
+```
+> docwhere wiki add team http://wiki.example:8090 --space OPS
+> docwhere wiki check team --term タイムアウト     # 届くか、REST API があるか、日本語で当たるか
+> docwhere wiki search 接続タイムアウト 既定値
+ 1. 接続設定 > タイムアウト  [team OPS]  2026-01-05
+    項目: 接続タイムアウト / 既定値: 30 秒
+    http://wiki.example:8090/display/OPS/接続設定#接続設定-タイムアウト
+```
+
+- REST API があれば CQL 検索 1 回で本文ごと受け取る。無い・無効なサーバーでは、サイトの検索結果ページから上位のページを開き、本文（`main-content`）だけを読む。
+- docwhere がネットワークを使うのは `wiki` コマンドだけで、接続先は `wiki add` した URL だけ。ほかのサイトへの転送はたどらず、1 応答 16 MB、20 秒で打ち切る。ページの HTML は文字として読むだけで、スクリプトは実行しない。`wiki open` が開くのも登録した wiki のページだけ。
+- 登録内容はインデックスの横の `settings.json` に入る（本人以外が書き込めるフォルダでは読まない）。手元に残るのは直前の検索結果の一覧（`last_wiki.json`）だけ。
+- ヒットするかどうかは wiki の検索しだい。古いサーバーは、管理画面のインデックスの言語が日本語でないと日本語がうまく当たらないことがある。添付ファイルとマクロで差し込まれる内容は読まない。
 
 ## 画面に出る名前を変える
 
