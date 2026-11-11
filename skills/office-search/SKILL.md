@@ -42,7 +42,7 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
 
    A `wiki:NAME` (or `wiki:NAME/SPACE`) row is a folder row for the team wiki: when it fits,
    search it with `docwhere wiki search … --wiki NAME [--space SPACE]` alongside or instead of
-   the local folders (see [The team wiki](#the-team-wiki)).
+   the local folders (read `references/wiki.md` first).
 
    If the user named a folder, use it. If there is no notes file or no row fits, ask once and
    offer to draft the map (below); do not search the whole drive.
@@ -150,7 +150,7 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    one line naming them (or the count, if many), because the answer could be in one of them.
    Never say that every file was searched when this list is not empty.
    Likewise `excludes`: the patterns that applied to the searched folders, each with
-   `left_out`, the folders and files it kept out of this search (see Leaving files out).
+   `left_out`, the folders and files it kept out of this search (see `references/exclude.md`).
    When any `left_out` is above zero, end the answer with one line saying so —
    「除外中：旧版（3 か所）、*_bak*（1 件）は検索していません」 — because the answer could be
    in one of them, and the user may have forgotten the pattern. When nothing fits, offer to
@@ -162,64 +162,10 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    ask in one line whether to add it to the notes file. Do not offer after an easy hit.
 
 7. **Show the user only when asked.**
-   - To look over the candidates ("見せて", "並べて", "パパっと確認したい", "抜粋見たい"): run the
-     same search again with `--view`. It opens one local HTML page in the browser with every
-     hit's section (terms marked, the hit line flagged, neighbouring sections collapsed), PDF
-     pages as images, and a link to the original. The page stays on this machine; it has no
-     scripts and loads nothing from the network. `docwhere view 1 3` shows only some hits of
-     the last search.
-   - Once you know the answer, mark it: pass the sentence that states it, copied from the
-     snippet or section, as `--quote "..."` (repeatable), and your one-line answer as
-     `--answer "..."`. The quote gets an orange frame on the PDF page and bold marking in the
-     text, the terms drop to an underline, and the answer heads the page. Without a quote
-     every occurrence of a search term is highlighted equally, which buries the answer.
-     Show only the hits that matter (`docwhere view 2 --quote ...`) rather than all of them.
-     When the answer rests on several places (two pages, two documents), pass one `--quote`
-     per place: each becomes its own piece of evidence with its source, page and close-up,
-     found anywhere in the shown files, and its page is added to that file's pages. A quote
-     that cannot be found is shown as such — fix its wording rather than leave it.
-   - When the answer takes more than one place to reach — a value on one page and its
-     condition on another, a table that refers to a figure, two documents read together —
-     show how they connect: follow each `--quote` (or `--figure`) with `--note "<what this
-     place shows, in one plain sentence>"`. With notes the evidence reads as numbered steps
-     ending in 「つまり <--answer>」, so the user can follow the reasoning, not only the
-     sources. Give the steps in the order of the reasoning, and keep each note to what that
-     place itself says:
-     `--quote "失敗したときの再試行は図2の流れに従う。" --note "本文は再試行の回数を図2に任せている"
-     --figure "図2 再試行の流れ" --note "図2 には最大3回とある" --answer "再試行は最大3回です"`.
-   - When the evidence is a figure (a diagram, chart or screenshot) rather than a sentence,
-     pass `--figure` instead of `--quote`: the figure is ringed on its page and shown as a
-     close-up. Name it by its caption ("図2 再試行の流れ") or by a word printed inside it when
-     that word is real text; a figure that is only a picture has no text of its own, so when
-     there is no caption, look at the page with `docwhere snap` and give its place instead:
-     `p.12#2` is the second figure from the top of page 12 (of the first hit; `3:p.12#2` of
-     hit 3). Figures are found in PDF, Word and PowerPoint pages, not in Excel or the wiki.
-     Word and PowerPoint hits are shown as pages too (Word exports them to PDF on first view,
-     a few seconds per document, then cached); their page numbers are those of the export.
-     Excel hits are shown as the rows around the hit with the header row. For a table row,
-     quote the snippet as given (`コード: E2041 / 対処: ...`); it is matched to the row.
-   - The page opens in docwhere's own window (not the browser), which lets the user turn to
-     any page (← →), follow the PDF's cross-references (Backspace goes back), open the file
-     in Acrobat/Word/Excel at the spot, copy a citation and keep the window on top. One window
-     serves every question: a later view replaces the page and raises the window. If the
-     user prefers the browser, `docwhere viewer browser` (or `--browser` once).
-   - Always pass the user's question as `--title "..."`. Each view is a new file that opens
-     in a new browser tab, so earlier answers stay open while the user asks the next
-     question; the title is what tells those tabs apart. Every page links to a history page
-     listing the recent questions and answers. Old pages and snapshots are pruned
-     automatically; run `docwhere clean` only when the user asks to clear them.
-   - Add `-P 1` (or `-P 2`) for the PDF pages either side of each hit page when the user asks
-     for them ("前後のページも"), or when the hit runs on: a table or procedure that continues
-     over the page break, a hit at the very top or bottom of its page, or a note that says
-     "次ページ参照". Keep the default otherwise; each extra page makes the file heavier.
-     Pages are shown in page order; the page holding the `--quote` is always included, and
-     the close-up and page number in the answer jump to it.
-     `snap -P 1` saves the neighbouring pages for you to read in the same situations.
-   - The `p.` number is the PDF's page index, which can differ from the number printed on
-     the page (front matter shifts it). The viewer shows both ("p.120（印刷 118）") when the
-     pages carry printed numbers; when you cite a page to the user, give both the same way.
-     The user can also type a printed page number into the viewer to go there, open the PDF's
-     contents, and click the section path above each page.
+   - To look over the candidates ("見せて", "並べて", "パパっと確認したい", "抜粋見たい"),
+     to mark the answer on the page, or to show reasoning across pages or a figure: first read
+     `references/view.md` (next to this file), then run `docwhere view` or `search --view` as
+     it says.
    - To jump into one document ("開いて", "そこ開いて"): `docwhere open N` opens hit N of the
      *last* search at its spot — Acrobat at the page, Word with the paragraph selected, Excel
      with the cell selected, PowerPoint at the slide, VS Code at the line.
@@ -227,38 +173,14 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
 
 ## When something does not work on this PC
 
-Run `docwhere doctor` when Office files stay unreadable, a view does not open in the window,
-the background reading never seems to progress, or the user asks to check the setup
-("動作確認して"). It prints one line per check (`ok` / `FAIL` / `--`); each Office check takes a few
-seconds and is stopped after 60. Report each FAIL in plain words with what it means for searching. One
-check, whether background reading survives the command, is only known on the second run:
-when it says `--`, run it again after 10 seconds. Pass `--skill <the SKILL.md you were
-loaded from>` to check that copy is current.
+Office files stay unreadable, a view does not open in the window, background reading never
+progresses, or the user asks to check the setup ("動作確認して"): read
+`references/troubleshooting.md` first.
 
 ## Leaving files out
 
-Old versions, backups and drafts slow the first index and push older answers into the hits.
-The user can keep them out per folder; a pattern set on a folder applies below it, whichever
-folder is searched, and is remembered in the index (nothing is written to the folder).
-
-- A name matches a folder or file of that name at any depth: `旧版`, `*_bak*`, `*.log`,
-  `*コピー*`. A pattern with `/` is a path from the folder: `設計/archive`. Case is ignored;
-  write `*旧*` to match part of a name.
-- To add, when the user asks ("旧版は検索に出さないで", "バックアップは除外して"): turn the
-  request into patterns, tell the user the patterns and the folder in one line, then run
-  `docwhere exclude "<folder>" <pattern>...`. Do not add patterns the user did not ask for;
-  when old versions crowd the hits, suggest a pattern and wait for a yes. Already indexed
-  files the pattern matches drop out at once.
-- To see what is excluded ("何を除外してる？"): `docwhere status --json`; each folder's
-  `excludes` lists `pattern` and `matched` (folders and files it left out the last time that
-  folder itself was indexed or searched; `null` until then — the pattern still applies). Answer in plain words, e.g. 「設計フォルダでは『旧版』フォルダ
-  （3 か所）と、名前に _bak が入るファイルを除外しています」. A pattern with `matched: 0`
-  matches nothing — say so, it is probably mistyped.
-- To undo ("さっきの除外戻して"): `docwhere exclude "<folder>" --remove <pattern>` (or `--clear`
-  for all of that folder's patterns). The next search reads those files again, which can
-  take a while for many Office files.
-- `docwhere forget` drops a folder's patterns along with its index; `index --rebuild` keeps
-  them.
+To keep old versions, backups or drafts out ("旧版は検索に出さないで"), to say what is
+excluded, or to undo it: read `references/exclude.md` first.
 
 ## The notes file
 
@@ -284,23 +206,8 @@ D:\proj\docs\仕様書\通信\通信仕様_v2.docx,3.2 通信パラメータ,仕
 A line starting with `#` is a comment; the user may write there how their kinds differ
 ("設計書には画面遷移も含む"), and that overrides the defaults in step 1.
 
-**Registering** ("〜は〜に書いてあるって覚えておいて", "通信の仕様書はこのフォルダ"):
-check that the path exists (and, for a section, that a search finds it there), then append
-one row. Quote a field that contains a comma. Read the file back to check it still parses;
-create it with the header if it does not exist. Tell the user the row you added.
-
-**Drafting the map** ("地図作って", or when there is none): list the folder tree two or three
-levels deep and sample file names (and, where names are vague, the headings from a search
-or `docwhere show`) to infer each folder's subject and kind. Show the draft rows and write
-them only after the user confirms or corrects them — a wrong kind sends later searches to the
-wrong place. Do not add file rows when drafting; those come from real finds. For an added
-wiki, `docwhere wiki spaces --json` lists its spaces with their names; draft one
-`wiki:NAME/SPACE` row per space whose name says what it holds.
-
-**Opening it** ("メモ開いて", "地図のファイル開いて"): create it first if missing (the header
-line only, UTF-8 with BOM so Excel shows Japanese correctly), then open it with the default
-app (`start "" "<path>"` / `os.startfile`), usually Excel. Mention that while Excel has it
-open the file is locked, so rows cannot be added until it is closed.
+Before adding a row ("〜は〜に書いてあるって覚えておいて"), drafting the map ("地図作って", or
+when there is none) or opening the file ("メモ開いて"): read `references/notes.md` first.
 
 **Stale rows**: when a row's path no longer exists, its section is gone, or the file has a
 `newer_version`, say so in the answer and offer to fix or drop the row. Never edit or delete
@@ -308,40 +215,12 @@ the user's rows silently.
 
 ## The team wiki
 
-`docwhere wiki` searches a wiki through the wiki's own search and reads only the pages it
-returns; nothing is copied to disk except the last result list. It is the only part of
-docwhere that uses the network, and only towards wikis the user added. Say "社内 wiki" (or the
-name the user gave it) in answers, not the product name.
+Before running any `docwhere wiki` command, read `references/wiki.md` (adding a wiki,
+searching, showing a page, errors).
 
-- Which wikis exist: `docwhere wiki list`. None → ask the user for the wiki's address (the
-  top page they open in the browser) and a short name, then run
-  `docwhere wiki add NAME URL [--space KEY]` yourself, followed by
-  `docwhere wiki check NAME --term <a Japanese word their pages surely contain>` and
-  `docwhere wiki spaces NAME`. Never guess or reuse an address the user did not give.
-  Report each check line in plain words; on a FAIL, say what it means and what to try
-  (wrong address, the network, a login the wiki asks for). Then offer `wiki:` rows for the
-  notes map from the space list (see Drafting the map).
 - When to search it: the notes map has a `wiki:` row whose kind or note fits the question, the
   user mentions the wiki, or the local search comes up short and a wiki is added. In thorough
   mode search both and merge.
-- `docwhere wiki search <terms…> --json [--wiki NAME] [--space KEY] [-n 5]` — phrase terms as
-  for local search. Hits carry `title`, `crumb`, `snippet`, `url` (with `#heading` when the
-  section has one) and `updated`. The wiki's own word matching decides which pages come back;
-  if Japanese terms find nothing, try shorter or other wordings before giving up (old servers
-  index Japanese poorly unless their indexing language is set to Japanese).
-- `docwhere wiki show N` — the hit's section with its neighbours, for reading before answering.
-  `--whole` for the full page.
-- Cite a wiki answer as `社内 wiki「<title>」 > <section>` with the URL, and the update date
-  when it matters.
-- To show it ("開いて", "見せて"), with `--note` after a `--quote` as for local files:
-  `docwhere wiki view [N…] --title "<question>" --answer "<one
-  line>" --quote "<sentence copied from the section>"` — the same reader as `view`, with the
-  quotes framed and a button that opens the page in the browser. It re-reads only the pages
-  shown. `wiki search … --view` does it in one step without re-reading. `docwhere wiki open N`
-  opens the page in the browser directly.
-- Errors: "asks to log in" means the page or the wiki is not viewable anonymously (docwhere
-  reads only those); "cannot reach" means this PC is not on the wiki's network. Say so and
-  answer from the local documents.
 
 ## Limits
 

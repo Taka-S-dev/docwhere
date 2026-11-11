@@ -5,8 +5,8 @@ Installs (or updates) docwhere and copies its skills into an agent's skills fold
 .DESCRIPTION
 1. Installs the docwhere command from this folder with uv (an editable install, so a later
    git pull takes effect at once; run this script again when dependencies change).
-2. Copies each skills\<name>\SKILL.md into <SkillsDir>\<name>\. A copy that differs from the
-   new one is kept next to it as SKILL.md.bak.
+2. Copies each skills\<name>\SKILL.md, with the references\ files it tells the agent to read,
+   into <SkillsDir>\<name>\. A SKILL.md that differs from the new one is kept as SKILL.md.bak.
 3. Checks the result with "docwhere doctor".
 
 Run it from any folder:
@@ -56,20 +56,31 @@ foreach ($skill in Get-ChildItem (Join-Path $repo "skills") -Directory) {
     if (-not (Test-Path $source)) { continue }
     $targetDir = Join-Path $SkillsDir $skill.Name
     $target = Join-Path $targetDir "SKILL.md"
-    if ((Test-Path $target) -and ((Get-FileHash $target).Hash -eq (Get-FileHash $source).Hash)) {
+    # SKILL.md and the files it tells the agent to read (references\); evals\ is for development
+    $files = @(Get-Item $source)
+    $refs = Join-Path $skill.FullName "references"
+    if (Test-Path $refs) { $files += Get-ChildItem $refs -File -Recurse }
+    $changed = @($files | Where-Object {
+        $to = Join-Path $targetDir $_.FullName.Substring($skill.FullName.Length + 1)
+        -not (Test-Path $to) -or (Get-FileHash $to).Hash -ne (Get-FileHash $_.FullName).Hash
+    })
+    if (-not $changed) {
         Write-Host "  $($skill.Name): already current"
         $copied += $target
         continue
     }
-    if ($PSCmdlet.ShouldProcess($target, "copy $source")) {
-        New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-        if (Test-Path $target) {
+    if ($PSCmdlet.ShouldProcess($targetDir, "copy $($changed.Count) file(s) from $($skill.FullName)")) {
+        $existed = Test-Path $target
+        if ($existed -and ($changed.FullName -contains $source)) {
             Copy-Item $target "$target.bak" -Force
-            Write-Host "  $($skill.Name): updated (the previous copy is SKILL.md.bak)"
-        } else {
-            Write-Host "  $($skill.Name): added"
         }
-        Copy-Item $source $target -Force
+        foreach ($file in $changed) {
+            $to = Join-Path $targetDir $file.FullName.Substring($skill.FullName.Length + 1)
+            New-Item -ItemType Directory -Force -Path (Split-Path $to) | Out-Null
+            Copy-Item $file.FullName $to -Force
+        }
+        $what = if (-not $existed) { "added" } elseif ($changed.FullName -contains $source) { "updated (the previous SKILL.md is SKILL.md.bak)" } else { "updated" }
+        Write-Host "  $($skill.Name): $what, $($changed.Count) file(s)"
     }
     $copied += $target
 }

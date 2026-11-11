@@ -107,3 +107,18 @@ def test_change_check_times_the_listing(tmp_path, probe):
     assert check.ok and check.detail.startswith("1 files listed")
     assert doctor._scan_check(index, tmp_path / "missing").ok is False
 
+
+
+def test_a_skill_copy_must_bring_the_files_it_points_to(tmp_path):
+    original = tmp_path / "repo" / "office-search"
+    copy = tmp_path / "agent" / "office-search"
+    for folder in (original, copy):
+        (folder / "references").mkdir(parents=True)
+        (folder / "SKILL.md").write_text(HEADER.format("ok") + "Read `references/view.md` first.\n", encoding="utf-8")
+    (original / "references" / "view.md").write_text("new", encoding="utf-8")
+    check = doctor._skill_check(copy / "SKILL.md", original / "SKILL.md")
+    assert check.ok is False and "references/view.md is missing" in check.detail
+    (copy / "references" / "view.md").write_text("old", encoding="utf-8")
+    assert "references/view.md differs" in doctor._skill_check(copy / "SKILL.md", original / "SKILL.md").detail
+    (copy / "references" / "view.md").write_text("new", encoding="utf-8")
+    assert doctor._skill_check(copy / "SKILL.md", original / "SKILL.md").ok is True

@@ -17,3 +17,10 @@ def test_descriptions_are_short_enough_and_plain_yaml():
         # In a plain (unquoted) YAML value, ": " starts a mapping and " #" a comment.
         assert ": " not in description and " #" not in description, path
         assert not description.startswith(('"', "'", ">", "|")), path
+
+
+def test_every_file_a_skill_points_to_exists():
+    """Parts read only when needed live in references/; a pointer to a missing one is a dead end."""
+    for path in SKILLS:
+        for ref in set(re.findall(r"references/[\w.-]+\.md", path.read_text(encoding="utf-8"))):
+            assert (path.parent / ref).is_file(), (path, ref)

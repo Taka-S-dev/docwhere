@@ -22,7 +22,7 @@
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-`install.ps1` は、`uv tool install -e . --force` で `docwhere` コマンドを入れ（入れ直し）、`skills\<名前>\SKILL.md` を `%USERPROFILE%\.copilot\skills\<名前>\` にコピーし、最後に `docwhere doctor --no-office` でコピーした SKILL.md が読み込める形かを確かめる。中身の違う SKILL.md がすでにあれば `SKILL.md.bak` に残してから上書きする。エージェントが別のフォルダからスキルを読むときは `-SkillsDir <フォルダ>`、スキルだけ更新するときは `-SkipTool`、何をするかだけ見るときは `-WhatIf`。`uv` は先に入れておく。
+`install.ps1` は、`uv tool install -e . --force` で `docwhere` コマンドを入れ（入れ直し）、`skills\<名前>\` の `SKILL.md` と `references\`（スキルが必要なときだけ読む手順）を `%USERPROFILE%\.copilot\skills\<名前>\` にコピーし、最後に `docwhere doctor --no-office` でコピーした SKILL.md が読み込める形か、`references\` がそろっていて古くないかを確かめる。中身の違う SKILL.md がすでにあれば `SKILL.md.bak` に残してから上書きする。エージェントが別のフォルダからスキルを読むときは `-SkillsDir <フォルダ>`、スキルだけ更新するときは `-SkipTool`、何をするかだけ見るときは `-WhatIf`。`uv` は先に入れておく。
 
 ## コマンド
 
@@ -137,7 +137,7 @@ Confluence（Server / Data Center）を、ログインせずに見られる範�
 
 - **ビューアのウィンドウ名**（タイトルバーとタスクバー）：既定は「Reference」でツール名は出ない。変えるときは `docwhere viewer title "好きな名前"`。ページのタイトル（ブラウザで開いたときのタブ名）は質問文だけ。
 - **スキル名**：既定の `office-search` にもツール名は入っていない。変えるときは `skills/office-search/SKILL.md` 先頭の `name:` とフォルダ名を同じ名前にする。
-- **コマンド名**（ターミナルに出る `docwhere ...`）：`pyproject.toml` の `[project.scripts]` の `docwhere = ...` の左側を新しい名前にして `uv tool install -e . --force` で入れ直し、`SKILL.md` の中の `docwhere` をすべて新しい名前に置き換える。
+- **コマンド名**（ターミナルに出る `docwhere ...`）：`pyproject.toml` の `[project.scripts]` の `docwhere = ...` の左側を新しい名前にして `uv tool install -e . --force` で入れ直し、`SKILL.md` と `references\` の中の `docwhere` をすべて新しい名前に置き換える。
 - 内部の名前（保存先 `%LOCALAPPDATA%\docwhere\`、プロセス、パイプ名）は画面に出ないので変えなくてよい。
 
 ## 設計メモ

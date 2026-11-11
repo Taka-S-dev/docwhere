@@ -353,9 +353,17 @@ def _skill_check(path: Path, original: Path | None) -> Check:
     problems = skill_problems(text, path.parent.name)
     if original is not None and original.exists() and original.read_text(encoding="utf-8") != text:
         problems.append(f"differs from {original}: copy it again")
+    # the files the skill tells the agent to read must sit next to it, as current as SKILL.md
+    for ref in sorted(set(re.findall(r"references/[\w.-]+\.md", text))):
+        here = path.parent / ref
+        if not here.exists():
+            problems.append(f"{ref} is missing next to it: copy the whole skill folder")
+        elif original is not None and (there := original.parent / ref).exists() and \
+                there.read_text(encoding="utf-8") != here.read_text(encoding="utf-8"):
+            problems.append(f"{ref} differs from {there}: copy it again")
     if problems:
         return Check(name, False, "; ".join(problems))
-    return Check(name, True, "loads (header and description within the limits)")
+    return Check(name, True, "loads (header and description within the limits, and the files it refers to)")
 
 
 def skill_problems(text: str, folder: str) -> list[str]:
