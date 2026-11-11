@@ -166,6 +166,7 @@ def build_html(
     answer: str = "",
     title: str = "",
     cut_excerpts: bool = True,
+    reading: dict | None = None,
 ) -> str:
     """With ``cut_excerpts`` off (the page will be read in the docwhere window, which turns pages
     itself) PDF links point at the whole file and no excerpt is cut.
@@ -242,7 +243,7 @@ def build_html(
         rail=rail,
         title=esc(shown_title),
         query=f'<span>検索語 {esc(" ".join(terms))}</span><span>{esc(time.strftime("%Y-%m-%d %H:%M"))}</span>',
-        answer=answer_html,
+        answer=_reading_html(reading) + answer_html,
         cards=(f'<h2 class="region">資料 {len(hits)} 件</h2>' + "".join(cards)) if cards
         else '<p class="empty">一致する箇所はありませんでした。言い方を変えて検索し直してください。</p>',
     )
@@ -580,6 +581,20 @@ def _anchor_of_line(row, quote: str) -> dict:
         if probe in line.lower():
             return anchors[i] if len(anchors) > 1 and i < len(anchors) else (anchors[0] if anchors else {})
     return {}
+
+
+def _reading_html(reading: dict | None) -> str:
+    """A band saying the search ran before every file was read, so the user does not take a
+    missing answer for an absent one."""
+    if not reading or reading.get("complete") is not False:
+        return ""
+    kinds = "・".join(list(reading.get("remaining_types", {}))[:3])
+    minutes = max(1, round(reading.get("about_seconds_left", 0) / 60))
+    return (
+        '<p class="partial" role="note">まだ読み終えていないファイルがあります。この結果は'
+        f' {reading["files"]} 件中 {reading["read"]} 件を読んだ時点のものです（残り {reading["remaining"]} 件は主に'
+        f' {esc(kinds)}、目安あと {minutes} 分）。すべてのファイルから探すには、読み終わってからもう一度検索してください。</p>'
+    )
 
 
 def _answer_html(answer: str, evidence: list[dict], excerpts=None) -> str:
@@ -982,6 +997,8 @@ mark { background: var(--term); color: inherit; border-radius: 2px; }
 mark.ans { background: var(--marker-soft); font-weight: 700; }
 .loc { display: inline-block; margin-right: 8px; color: var(--muted); font-size: 12px; }
 .empty { color: var(--muted); }
+.partial { margin: 20px 0 0; padding: 12px 16px; border-left: 4px solid var(--warn); background: var(--surface);
+  color: var(--ink); font-size: 14px; line-height: 1.7; }
 
 .history h1 { margin: 0; font-size: 24px; }
 .history .note { margin: 2px 0 0; color: var(--muted); font-size: 13px; }

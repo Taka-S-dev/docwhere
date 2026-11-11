@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS chunks(
     file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     title TEXT NOT NULL, crumb TEXT NOT NULL, body TEXT NOT NULL, anchors TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS chunks_file ON chunks(file_id);
+CREATE TABLE IF NOT EXISTS queue(
+    key TEXT PRIMARY KEY, path TEXT NOT NULL, requested_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS reader(
+    id INTEGER PRIMARY KEY CHECK (id = 1), pid INTEGER, heartbeat REAL, started REAL,
+    current TEXT, done INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0,
+    stop INTEGER NOT NULL DEFAULT 0);
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     title, crumb, body, content='chunks', content_rowid='id', tokenize='trigram');
 CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
@@ -95,6 +101,17 @@ class SyncStats:
     left_out: dict[tuple[str, str], int] = field(default_factory=dict)
 
 
+@dataclass
+class Scan:
+    root: Path
+    todo: list[tuple]  # (key, path, mtime_ns, size) of every file still to read
+    stats: SyncStats
+
+
+class Stopped(Exception):
+    """A sync was asked to stop part way (``Index.extract``'s ``should_stop``)."""
+
+
 class Index:
     def __init__(self, db_path: Path | None = None) -> None:
         self.path = Path(db_path or default_db_path())
@@ -136,6 +153,11 @@ class Index:
         Files that could not be read are tried again when they change or when the extractors
         do (``EXTRACTOR_VERSION``); files that were read, only when their output would change.
         """
+        return self.extract(self.scan(root), progress, workers, timeout)
+
+    def scan(self, root: Path) -> Scan:
+        """The quick half of a sync: list the folder, drop files that are gone and find the files
+        to read. Nothing is extracted, so this takes seconds even for a large folder."""
         root = Path(root).resolve()
         if not root.is_dir():
             raise NotADirectoryError(str(root))
@@ -156,40 +178,73 @@ class Index:
 
         gone = [r["id"] for k, r in known.items() if k not in on_disk]
         todo = [(k, p, mtime, size) for k, (p, mtime, size) in on_disk.items() if not _current(known.get(k), mtime, size)]
+        stats.removed = len(gone)
+        hits_json = json.dumps({p: hits.get((root_key, p), 0) for p in self._excludes(root_key)}, ensure_ascii=False)
         with self.db:
             self._delete_files(gone)
-        stats.removed = len(gone)
+            self.db.execute(
+                "INSERT INTO roots(key, path, synced_at, exclude_hits) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET path = excluded.path, synced_at = excluded.synced_at,"
+                " exclude_hits = excluded.exclude_hits",
+                (root_key, str(root), time.time(), hits_json),
+            )
+        return Scan(root, todo, stats)
 
+    def extract(
+        self,
+        scan: Scan,
+        progress: Progress | None = None,
+        workers: int | None = None,
+        timeout: float = FILE_TIMEOUT,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> SyncStats:
+        """The slow half of a sync: read the files ``scan`` found. When ``should_stop`` returns
+        true (asked about every second) the reading stops with ``Stopped``; what was read is kept."""
+        stats, todo = scan.stats, scan.todo
         done, reading, saved = 0, [], time.monotonic()
 
         def tick(now_reading: list[tuple[str, float]] | None = None) -> None:
             nonlocal reading
+            if should_stop and should_stop():
+                raise Stopped
             if now_reading is not None:
                 reading = [(Path(p), s) for p, s in now_reading]
             if progress:
                 progress(SyncProgress(done, len(todo), reading))
 
-        for key, path, mtime, size, chunks, error, timed_out in _extract_all(todo, workers, timeout, tick):
-            self._store(key, path, mtime, size, chunks, error)
-            done += 1
-            stats.updated += 1
-            stats.failed += error is not None
-            if timed_out:
-                stats.timed_out.append(str(path))
-            if done % SAVE_EVERY_FILES == 0 or time.monotonic() - saved >= SAVE_EVERY_SECONDS:
-                self.db.commit()  # a sync stopped part way keeps what it read
-                saved = time.monotonic()
-            tick()
-
-        hits_json = json.dumps({p: hits.get((root_key, p), 0) for p in self._excludes(root_key)}, ensure_ascii=False)
-        self.db.execute(
-            "INSERT INTO roots(key, path, synced_at, exclude_hits) VALUES (?, ?, ?, ?)"
-            " ON CONFLICT(key) DO UPDATE SET path = excluded.path, synced_at = excluded.synced_at,"
-            " exclude_hits = excluded.exclude_hits",
-            (root_key, str(root), time.time(), hits_json),
-        )
-        self.db.commit()
+        outcomes = _extract_all(todo, workers, timeout, tick)
+        try:
+            for key, path, mtime, size, chunks, error, timed_out in outcomes:
+                self._store(key, path, mtime, size, chunks, error)
+                done += 1
+                stats.updated += 1
+                stats.failed += error is not None
+                if timed_out:
+                    stats.timed_out.append(str(path))
+                if done % SAVE_EVERY_FILES == 0 or time.monotonic() - saved >= SAVE_EVERY_SECONDS:
+                    self.db.commit()  # a sync stopped part way keeps what it read
+                    saved = time.monotonic()
+                tick()
+        finally:
+            outcomes.close()  # stops the readers, and the Office instances they started, at once
+            self.db.commit()
         return stats
+
+    def pending(self, todo: list[tuple]) -> list[tuple]:
+        """The entries of a scan's ``todo`` that are still not read (another process may be
+        reading them)."""
+        left = []
+        for i in range(0, len(todo), 500):
+            batch = todo[i : i + 500]
+            marks = ",".join("?" * len(batch))
+            rows = {
+                r["key"]: r
+                for r in self.db.execute(
+                    f"SELECT key, mtime_ns, size, version, error FROM files WHERE key IN ({marks})", [t[0] for t in batch]
+                )
+            }
+            left += [t for t in batch if not _current(rows.get(t[0]), t[2], t[3])]
+        return left
 
     def forget(self, root: Path, keep_excludes: bool = False) -> None:
         """Drop everything indexed under ``root`` (the next sync re-extracts it) and, unless

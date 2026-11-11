@@ -84,16 +84,29 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    ```
 
    Add `--all` when every term must appear (narrowing), `--ext pdf,docx` to limit formats,
-   `-n 20` for more results. The first search on a new folder builds the index and can take
-   a while for thousands of files (legacy .doc/.xls/.ppt are converted through Office, about
-   a second each); later searches take well under a second. While it builds, stderr gets a
-   line every 10 seconds (`indexing …: 1200/2400 files (50%), 8.2 files/s, about 2m 31s
-   left; reading X.doc for 40s`). For a folder of hundreds of Office files, tell the user
-   the first run will take a while, and run `docwhere index DIR` in the background when your
-   shell allows, reporting the latest line when asked. If your shell's time limit stops the
-   command, at most its last few seconds of work are lost: run it again and it continues where
-   it stopped. A file that
-   takes over 3 minutes is given up and listed in `unreadable`; the rest is still read.
+   `-n 20` for more results. Later searches take well under a second.
+
+   **A folder not read yet.** The first search on a new folder (or after many files changed)
+   waits at most 20 seconds, then answers from the files read so far and leaves the rest to a
+   background reader, which keeps going after the command returns (legacy .doc/.xls/.ppt are
+   converted through Office, about a second each). The JSON's `reading` says how much the
+   search saw: `complete` is true once every file was read; while it is false, `read` of
+   `files` were searched, `remaining` are not yet, `remaining_types` tells which kinds and
+   `about_seconds_left` how long reading should take. `reading` is always there; never take
+   a missing field for a finished read. With `complete: false`:
+   - Start or end the answer with 「<files> 件中 <read> 件を読んだ時点の答えです（残りは主に
+     .doc、あと約◯分）」.
+   - Nothing found: never say it is not written. Say the answer may be in the files not read
+     yet, and ask 「全件で探すなら、読み終わるのを待って探し直します（あと約◯分）。待ちますか？」.
+   - Thorough mode, or the user asked to search everything ("全部", "漏れなく"): ask the same
+     before answering.
+   - The user agrees: search again with `--wait-all`, which waits until every file is read
+     (stderr gets a progress line every 10 seconds). If your shell's time limit is shorter
+     than the wait, do not wait: tell the user how long it will take and to ask again then;
+     the reader keeps going meanwhile and nothing read is lost.
+   `docwhere status` shows the reader's progress, `docwhere index --stop` stops it (what it
+   read is kept; the next search continues). A file that takes over 3 minutes is given up
+   and listed in `unreadable`; the rest is still read.
 
 3. **Judge the hits, do not just relay them.** Each hit has:
    - `crumb` (heading path) and `location` (`p.12`, `slide 4`, `Sheet!D5`, `L40`; empty for
@@ -313,4 +326,6 @@ name the user gave it) in answers, not the product name.
   PDF tables are read as laid-out text, so a row may not come out labelled by its headers.
 - Wiki hits depend on the wiki's own search; docwhere ranks sections only within the pages it
   returns. Attachments on wiki pages and content filled in by macros are not read.
-- `--no-update` skips the change scan when searching the same folder repeatedly in one task.
+- `--no-update` skips the change scan when searching the same folder repeatedly in one task;
+  `reading.complete` is then null (not checked), so do not use it while a folder is still
+  being read.

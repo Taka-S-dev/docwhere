@@ -7,15 +7,26 @@ import json
 import subprocess
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
-from docwhere.index import FILE_TIMEOUT, Index, SyncStats, default_db_path
+from docwhere import background
+from docwhere.extractors import is_serial
+from docwhere.index import FILE_TIMEOUT, Index, SyncProgress, SyncStats, default_db_path
 from docwhere.present import highlight, show_page
+from docwhere.progress import duration
 from docwhere.wiki import cli as wiki_cli
 
 HINT = "docwhere show --id ID prints the whole section; docwhere open N opens the hit"
 STALE_DAYS = 90  # status flags folders not searched for this long
 MAX_UNREADABLE_LISTED = 20
+# A search waits this long for new or changed files to be read, then answers from what is read
+# and leaves the rest to the background reader, saying how much it has not seen yet.
+WAIT = 20
+# Rough costs, used only to tell whether a search can read the files itself within WAIT.
+READ_STARTUP = 3  # starting the reader processes
+SECONDS_PER_FILE = 0.3
+SECONDS_PER_CONVERSION = 1.5  # a legacy .doc/.xls/.ppt, converted through Office
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,6 +56,9 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("-n", "--limit", type=int, default=10)
     p.add_argument("--per-file", type=int, default=3, help="max hits per file (default 3)")
     p.add_argument("--no-update", action="store_true", help="search the index as is, skip the change scan")
+    p.add_argument("--wait", type=float, default=WAIT, metavar="SEC",
+                   help=f"seconds to wait for new files to be read before answering from what is read (default {WAIT})")
+    p.add_argument("--wait-all", action="store_true", help="wait until every file is read, however long it takes")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--view", action="store_true", help="also open the hits as an HTML page (see view)")
     _view_options(p, "with --view: ")
@@ -82,6 +96,9 @@ def _parser() -> argparse.ArgumentParser:
                    r'(e.g. "D:\Tools\SumatraPDF.exe" -reuse-instance -page {page} {file}), or auto')
     p.set_defaults(func=cmd_viewer)
 
+    p = sub.add_parser("reader", help=argparse.SUPPRESS)  # the background reader (started by search)
+    p.set_defaults(func=cmd_reader)
+
     p = sub.add_parser("window", help=argparse.SUPPRESS)  # the window process itself (started by view)
     p.add_argument("page", type=Path)
     p.set_defaults(func=cmd_window)
@@ -90,8 +107,9 @@ def _parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_clean)
 
     p = sub.add_parser("index", help="build or update the index for folders")
-    p.add_argument("roots", type=Path, nargs="+")
+    p.add_argument("roots", type=Path, nargs="*")
     p.add_argument("--rebuild", action="store_true", help="drop and re-extract everything under the folders")
+    p.add_argument("--stop", action="store_true", help="stop the background reading started by searches")
     p.add_argument("--workers", type=int, default=None)
     p.add_argument("--timeout", type=float, default=FILE_TIMEOUT,
                    help=f"seconds one file may take before it is given up as unreadable (default {FILE_TIMEOUT})")
@@ -136,14 +154,28 @@ def cmd_search(args) -> int:
 
     roots = args.roots or [Path(".")]
     index = Index(args.db)
-    updates = []
+    updates: list[SyncStats] = []
+    reading = {"complete": None}  # not checked with --no-update
     if not args.no_update:
+        waiting = []
         for root in roots:
-            updates.append(_sync(index, root))
+            scan = index.scan(root)
+            _note_excluded(root, scan.stats)
+            updates.append(scan.stats)
+            if not scan.todo:
+                continue
+            # Little to read: read it here, as before, even while the background reader works on
+            # another folder (queued behind it, a few changed files would wait for the whole folder).
+            if _estimate(scan.todo) <= args.wait:
+                _extract(index, scan)
+            else:
+                waiting.append(scan)
+        reading = _reading(index, updates, _wait_for_reader(index, waiting, None if args.wait_all else args.wait))
     exts = [e.strip() for e in args.ext.split(",")] if args.ext else None
     hits = search(index, roots, args.terms, require_all=args.all, exts=exts, limit=args.limit, per_file=args.per_file)
     _last_path(index).write_text(
-        json.dumps({"terms": args.terms, "hits": [h.to_dict() for h in hits]}, ensure_ascii=False), encoding="utf-8"
+        json.dumps({"terms": args.terms, "hits": [h.to_dict() for h in hits], "reading": reading}, ensure_ascii=False),
+        encoding="utf-8",
     )
 
     # Every unreadable file in scope, not only the ones that failed during this sync: a file
@@ -152,12 +184,13 @@ def cmd_search(args) -> int:
     # What the exclusion patterns kept out of this search, so a miss caused by one is noticed.
     excludes = _left_out(index, roots, updates)
     if args.view:
-        path = _write_view(index, args.terms, [h.to_dict() for h in hits], 1, args, open_it=True)
+        path = _write_view(index, args.terms, [h.to_dict() for h in hits], 1, args, open_it=True, reading=reading)
         print(f"view: {path}", file=sys.stderr)
     if args.json:
         out = {
             "terms": args.terms,
             "roots": [str(Path(r).resolve()) for r in roots],
+            "reading": reading,
             "index": {k: sum(getattr(u, k) for u in updates) for k in ("files", "updated", "removed")},
             "timed_out": [p for u in updates for p in u.timed_out],
             "excludes": excludes,
@@ -189,7 +222,72 @@ def cmd_search(args) -> int:
     if any(e["left_out"] for e in excludes):
         listed = ", ".join(f"{e['pattern']} ({e['left_out']})" for e in excludes if e["left_out"])
         print(f"left out by exclusions, not searched: {listed}; see: docwhere status", file=sys.stderr)
+    if reading["complete"] is False:
+        print("\n" + _not_finished(reading), file=sys.stderr)
     return 0
+
+
+def _estimate(todo: list[tuple]) -> float:
+    """Rough seconds to read ``todo``: enough to tell a few files from a folder's worth."""
+    office = sum(is_serial(t[1]) for t in todo)
+    return READ_STARTUP + office * SECONDS_PER_CONVERSION + (len(todo) - office) * SECONDS_PER_FILE
+
+
+def _wait_for_reader(index: Index, scans: list, limit: float | None) -> list[tuple]:
+    """Hand ``scans`` to the background reader and wait up to ``limit`` seconds (None: until
+    they are read). Returns the entries still not read."""
+    from docwhere.progress import Reporter
+
+    if not scans:
+        return []
+    for scan in scans:
+        background.request(index, scan.root)
+    total = sum(len(s.todo) for s in scans)
+    report = Reporter("reading in the background")
+    deadline = None if limit is None else time.monotonic() + limit
+    while True:
+        left = [t for s in scans for t in index.pending(s.todo)]
+        report(SyncProgress(total - len(left), total, []))
+        if not left or (deadline is not None and time.monotonic() >= deadline):
+            return left
+        if background.state(index) is None:  # the reader died (or was stopped): start another
+            for scan in scans:
+                if index.pending(scan.todo):
+                    background.request(index, scan.root)
+        time.sleep(1)
+
+
+def _reading(index: Index, updates: list[SyncStats], left: list[tuple]) -> dict:
+    """How much of the searched folders this search saw. ``complete`` is false while files are
+    still being read, so a missing answer may be in a file not read yet."""
+    files = sum(u.files for u in updates)
+    out = {"complete": not left, "files": files, "read": files - len(left), "remaining": len(left)}
+    if left:
+        state = background.state(index)
+        rate = state.rate() if state else None
+        out["remaining_types"] = dict(Counter(Path(t[1]).suffix.lower() for t in left).most_common())
+        out["about_seconds_left"] = round(len(left) / rate if rate else _estimate(left))
+        out["background"] = state is not None
+    return out
+
+
+def _not_finished(reading: dict) -> str:
+    kinds = ", ".join(list(reading["remaining_types"])[:3])
+    return (
+        f"not finished reading: this searched {reading['read']} of {reading['files']} files; {reading['remaining']} are"
+        f" still being read in the background (mostly {kinds}), about {duration(reading['about_seconds_left'])} left.\n"
+        "to search every file: search again once reading has finished (docwhere status shows how far it got),"
+        " or add --wait-all to wait for it"
+    )
+
+
+def _extract(index: Index, scan) -> SyncStats:
+    from docwhere.progress import Reporter
+
+    stats = index.extract(scan, progress=Reporter(f"indexing {scan.root}"))
+    for path in stats.timed_out:
+        print(f"gave up on (took too long, listed as unreadable): {path}", file=sys.stderr)
+    return stats
 
 
 def _left_out(index: Index, roots: list[Path], updates: list[SyncStats]) -> list[dict]:
@@ -249,7 +347,7 @@ def cmd_view(args) -> int:
     index = Index(args.db)
     last = _last_search(index)
     hits = [_last_hit(index, n) for n in args.n] if args.n else last["hits"]
-    print(_write_view(index, last["terms"], hits, args.context, args, open_it=not args.no_open))
+    print(_write_view(index, last["terms"], hits, args.context, args, open_it=not args.no_open, reading=last.get("reading")))
     return 0
 
 
@@ -307,6 +405,10 @@ def cmd_viewer(args) -> int:
     return 0
 
 
+def cmd_reader(args) -> int:
+    return background.serve(Index(args.db))
+
+
 def cmd_window(args) -> int:
     from docwhere import window
 
@@ -333,6 +435,13 @@ def cmd_clean(args) -> int:
 
 def cmd_index(args) -> int:
     index = Index(args.db)
+    if args.stop:
+        print("background reading stopped (what it read is kept)" if background.stop(index)
+              else "no background reading was running")
+        return 0
+    if not args.roots:
+        print("docwhere: give the folders to index", file=sys.stderr)
+        return 2
     for root in args.roots:
         if args.rebuild:
             index.forget(root, keep_excludes=True)
@@ -349,10 +458,19 @@ def cmd_status(args) -> int:
     index = Index(args.db)
     roots = index.roots()
     errors = index.errors() if args.errors else []
+    reader = background.state(index)
+    reading = None if reader is None else {
+        "folder": reader.current, "read": reader.done, "files": reader.total, "queued": reader.queued,
+    }
     if args.json:
-        print(json.dumps({"db": str(index.path), "roots": roots, "errors": errors}, ensure_ascii=False, indent=1))
+        print(json.dumps({"db": str(index.path), "roots": roots, "errors": errors, "background": reading},
+                         ensure_ascii=False, indent=1))
         return 0
     print(f"index: {index.path}")
+    if reader is not None:
+        where = f"{reader.current}: {reader.done}/{reader.total} files" if reader.current else "starting"
+        print(f"reading in the background: {where}" + (f", then {len(reader.queued)} more folder(s)" if reader.queued else "")
+              + " (docwhere index --stop to stop it)")
     stale = []
     for r in roots:
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(r["synced_at"])) if r["synced_at"] else "-"
@@ -441,16 +559,19 @@ def _last_hit(index: Index, n: int) -> dict:
     return hits[n - 1]
 
 
-def _write_view(index: Index, terms: list[str], hits: list[dict], context: int, options, open_it: bool) -> str:
+def _write_view(
+    index: Index, terms: list[str], hits: list[dict], context: int, options, open_it: bool, reading: dict | None = None
+) -> str:
     """Save the page and open it: in the docwhere window (an interactive reader) unless the
     browser was chosen or the window cannot start. Returns the saved page's path.
-    ``options``: the parsed --pages, --quote, --answer, --title and --browser."""
+    ``options``: the parsed --pages, --quote, --answer, --title and --browser. ``reading``: how
+    much of the folders the search saw, so the page says when it was not everything."""
     from docwhere.viewer import build_html
 
     return show_page(
         index.path,
         lambda in_window: build_html(index, terms, hits, context, options.pages, options.quote, options.answer,
-                                     options.title, cut_excerpts=not in_window),
+                                     options.title, cut_excerpts=not in_window, reading=reading),
         options.title or " ".join(terms), options, open_it,
     )
 
@@ -461,11 +582,15 @@ def _sync(index: Index, root: Path, **options) -> SyncStats:
     stats = index.sync(root, progress=Reporter(f"indexing {root}"), **options)
     for path in stats.timed_out:
         print(f"gave up on (took too long, listed as unreadable): {path}", file=sys.stderr)
+    _note_excluded(root, stats)
+    return stats
+
+
+def _note_excluded(root: Path, stats: SyncStats) -> None:
     if stats.excluded_by:
         folder, pattern = stats.excluded_by
         print(f"{Path(root).resolve()} is excluded by {pattern} set on {folder}, so nothing in it is searched"
               f' (to include it: docwhere exclude "{folder}" --remove "{pattern}")', file=sys.stderr)
-    return stats
 
 
 def _described(exclude: dict) -> str:
