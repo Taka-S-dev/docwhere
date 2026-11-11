@@ -19,8 +19,10 @@
 ## インストール
 
 ```
-uv tool install -e .
+powershell -ExecutionPolicy Bypass -File install.ps1
 ```
+
+`install.ps1` は、`uv tool install -e . --force` で `docwhere` コマンドを入れ（入れ直し）、`skills\<名前>\SKILL.md` を `%USERPROFILE%\.copilot\skills\<名前>\` にコピーし、最後に `docwhere doctor --no-office` でコピーした SKILL.md が読み込める形かを確かめる。中身の違う SKILL.md がすでにあれば `SKILL.md.bak` に残してから上書きする。エージェントが別のフォルダからスキルを読むときは `-SkillsDir <フォルダ>`、スキルだけ更新するときは `-SkipTool`、何をするかだけ見るときは `-WhatIf`。`uv` は先に入れておく。
 
 ## コマンド
 

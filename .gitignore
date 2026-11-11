@@ -5,6 +5,7 @@
 !/LICENSE
 !/pyproject.toml
 !/uv.lock
+!/install.ps1
 !/src/
 !/tests/
 !/skills/
