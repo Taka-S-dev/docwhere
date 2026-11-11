@@ -60,14 +60,10 @@ def as_pdf(path: str, cache: Path) -> Path | None:
 
 
 def _export(src: Path, out: Path, ext: str) -> None:
-    from docwhere.extractors.legacy import _DUMMY_PASSWORD, _app
+    from docwhere.extractors.legacy import _app, open_word_document
 
     if ext in WORD_EXTS:
-        app = _app("Word.Application")
-        doc = app.Documents.Open(
-            str(src.resolve()), ConfirmConversions=False, ReadOnly=True, AddToRecentFiles=False,
-            PasswordDocument=_DUMMY_PASSWORD, Visible=False,
-        )
+        doc = open_word_document(src)
         try:
             doc.ExportAsFixedFormat(str(out), 17)  # wdExportFormatPDF
         finally:

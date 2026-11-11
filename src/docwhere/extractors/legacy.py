@@ -51,17 +51,29 @@ def _quit_all() -> None:
     _apps.clear()
 
 
+def open_word_document(path: Path):
+    """Open a document read-only in the private Word instance, without any prompt Word can skip."""
+    app = _app("Word.Application")
+    # A document with links to other files otherwise asks, despite DisplayAlerts, whether to
+    # update them. The option is the user's own Word setting, so it is put back.
+    links = app.Options.UpdateLinksAtOpen
+    app.Options.UpdateLinksAtOpen = False
+    try:
+        return app.Documents.Open(
+            str(path.resolve()), ConfirmConversions=False, ReadOnly=True, AddToRecentFiles=False,
+            PasswordDocument=_DUMMY_PASSWORD, Visible=False,
+        )
+    finally:
+        app.Options.UpdateLinksAtOpen = links
+
+
 @register(".doc", serial=True)
 def extract_doc(path: Path) -> list[Chunk]:
     from docwhere.extractors.word import extract as from_docx
 
-    app = _app("Word.Application")
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp, "converted.docx")
-        doc = app.Documents.Open(
-            str(path.resolve()), ConfirmConversions=False, ReadOnly=True, AddToRecentFiles=False,
-            PasswordDocument=_DUMMY_PASSWORD, Visible=False,
-        )
+        doc = open_word_document(path)
         try:
             doc.SaveAs2(str(out), FileFormat=16)  # wdFormatDocumentDefault
         finally:
