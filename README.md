@@ -35,7 +35,7 @@ uv tool install -e .
 | `viewer pdf <プログラム> <引数...>` / `viewer pdf auto`（ウィンドウ右上の「設定」からも変えられる） | 「PDF アプリで開く」で使うアプリ。引数の `{page}` にページ番号、`{file}` に PDF のパスが入る（例: `viewer pdf "D:\Tools\SumatraPDF\SumatraPDF.exe" -reuse-instance -page {page} {file}`、Acrobat なら `/A page={page} {file}`）。シェルを通さずに起動する。`auto`（既定）は Acrobat があれば Acrobat、なければ既定のアプリ（ページ指定なし） |
 | `clean` | 保存したビュー、snap の画像、Word / PowerPoint から書き出した PDF をすべて削除（普段は自動で間引かれる） |
 | `snap N` / `snap --id ID [--term T] [-P K] [--quote Q]` | PDF のヒットしたページ（と前後 K ページ）を、検索語と回答の文を強調した PNG に保存してパスを表示 |
-| `index DIR... [--rebuild]` | インデックスを明示的に作成・再作成 |
+| `index DIR... [--rebuild] [--timeout SEC]` | インデックスを明示的に作成・再作成 |
 | `status [--errors]` | インデックス済みフォルダと、読めなかったファイル |
 | `wiki add NAME URL [--space KEY]` / `wiki list` / `wiki remove NAME` | 検索する wiki の登録（下の「社内 wiki」） |
 | `wiki check [NAME] [--term T]` | wiki に届くか、バージョン、REST API の有無、スペース、試しの検索の結果 |
@@ -58,6 +58,8 @@ uv tool install -e .
 | txt / md / csv / log など | md は見出し、他は一定量 | L行 | VS Code で該当行 |
 
 - .doc / .xls / .ppt は Office（COM）で新形式に変換してから読む。変換中のマクロは強制無効。Word の「開くときにリンクを更新する」は開く間だけ切る（他ファイルへのリンクを含む文書で確認ダイアログが出て止まるため。設定は元に戻す）。パスワード付きの .doc / .xls は読めないファイルとして扱う（.ppt は未検証）。
+- ファイルは別プロセスで 1 件ずつ読み、1 件に 180 秒（`index --timeout` で変更可）以上かかったら打ち切って読めないファイルに入れ、残りを読み続ける。Office の変換で止まった場合は、変換のために起動した Word / Excel / PowerPoint ごと終了する（PowerPoint は 1 つしか起動できないため、利用者が先に開いていたときはそれを使い、終了させない）。打ち切ったファイルは、ファイルが変わるか docwhere の読み取り処理が更新されたときに読み直す。
+- インデックス作成中の進捗は標準エラーに出す。端末では 1 行を書き換え、端末でないとき（agent やスクリプトから実行したとき）は 10 秒ごとに、件数・速度・残り時間の目安と、時間のかかっているファイル名を 1 行で出す。途中で止めても読み終えた分は 5 秒ごと（または 50 件ごと）に保存してあり、次回はその続きから読む。
 - `open` で開く文書のマクロは、ダブルクリックで開いたときと同じく Office のセキュリティ センターの設定に従う。
 - 展開後のサイズが 1 GB を超える Office ファイル（zip 爆弾）は読まない。文書中の制御文字は取り除いてから保存・表示する。
 - 画像だけのスキャン PDF は読めない。検索結果の JSON の `unreadable` と `status --errors` に毎回出る。

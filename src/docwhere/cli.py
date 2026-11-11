@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-from docwhere.index import Index, default_db_path
+from docwhere.index import FILE_TIMEOUT, Index, SyncStats, default_db_path
 from docwhere.present import highlight, show_page
 from docwhere.wiki import cli as wiki_cli
 
@@ -93,6 +93,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("roots", type=Path, nargs="+")
     p.add_argument("--rebuild", action="store_true", help="drop and re-extract everything under the folders")
     p.add_argument("--workers", type=int, default=None)
+    p.add_argument("--timeout", type=float, default=FILE_TIMEOUT,
+                   help=f"seconds one file may take before it is given up as unreadable (default {FILE_TIMEOUT})")
     p.set_defaults(func=cmd_index)
 
     p = sub.add_parser("forget", help="delete the index of folders (it is rebuilt by the next search there)")
@@ -127,7 +129,7 @@ def cmd_search(args) -> int:
     updates = []
     if not args.no_update:
         for root in roots:
-            updates.append(index.sync(root, progress=_progress(f"indexing {root}")))
+            updates.append(_sync(index, root))
     exts = [e.strip() for e in args.ext.split(",")] if args.ext else None
     hits = search(index, roots, args.terms, require_all=args.all, exts=exts, limit=args.limit, per_file=args.per_file)
     _last_path(index).write_text(
@@ -145,6 +147,7 @@ def cmd_search(args) -> int:
             "terms": args.terms,
             "roots": [str(Path(r).resolve()) for r in roots],
             "index": {k: sum(getattr(u, k) for u in updates) for k in ("files", "updated", "removed")},
+            "timed_out": [p for u in updates for p in u.timed_out],
             "hits": [
                 {"id" if k == "chunk_id" else k: v for k, v in h.to_dict().items() if k != "anchor"} for h in hits
             ],
@@ -302,7 +305,7 @@ def cmd_index(args) -> int:
         if args.rebuild:
             index.forget(root)
         started = time.perf_counter()
-        s = index.sync(root, progress=_progress(f"indexing {root}"), workers=args.workers)
+        s = _sync(index, root, workers=args.workers, timeout=args.timeout)
         print(
             f"{Path(root).resolve()}: {s.files} files, {s.updated} extracted, {s.removed} removed,"
             f" {s.failed} unreadable ({time.perf_counter() - started:.1f}s)"
@@ -386,12 +389,10 @@ def _write_view(index: Index, terms: list[str], hits: list[dict], context: int, 
     )
 
 
-def _progress(label: str):
-    if not sys.stderr.isatty():
-        return None
+def _sync(index: Index, root: Path, **options) -> SyncStats:
+    from docwhere.progress import Reporter
 
-    def report(done: int, total: int) -> None:
-        end = "\n" if done == total else ""
-        print(f"\r{label}: {done}/{total}", end=end, file=sys.stderr, flush=True)
-
-    return report
+    stats = index.sync(root, progress=Reporter(f"indexing {root}"), **options)
+    for path in stats.timed_out:
+        print(f"gave up on (took too long, listed as unreadable): {path}", file=sys.stderr)
+    return stats

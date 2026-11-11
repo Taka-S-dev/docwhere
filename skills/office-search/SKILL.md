@@ -86,7 +86,14 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    Add `--all` when every term must appear (narrowing), `--ext pdf,docx` to limit formats,
    `-n 20` for more results. The first search on a new folder builds the index and can take
    a while for thousands of files (legacy .doc/.xls/.ppt are converted through Office, about
-   a second each); later searches take well under a second.
+   a second each); later searches take well under a second. While it builds, stderr gets a
+   line every 10 seconds (`indexing …: 1200/2400 files (50%), 8.2 files/s, about 2m 31s
+   left; reading X.doc for 40s`). For a folder of hundreds of Office files, tell the user
+   the first run will take a while, and run `docwhere index DIR` in the background when your
+   shell allows, reporting the latest line when asked. If your shell's time limit stops the
+   command, at most its last few seconds of work are lost: run it again and it continues where
+   it stopped. A file that
+   takes over 3 minutes is given up and listed in `unreadable`; the rest is still read.
 
 3. **Judge the hits, do not just relay them.** Each hit has:
    - `crumb` (heading path) and `location` (`p.12`, `slide 4`, `Sheet!D5`, `L40`; empty for
@@ -126,7 +133,7 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
 
 5. **Report what could not be searched.** The JSON's `unreadable` lists every file in the
    folder that docwhere could not read (scanned PDFs without text, password-protected or broken
-   files) — not only new failures. When `unreadable_count` is above zero, end the answer with
+   files, files given up after taking too long) — not only new failures. When `unreadable_count` is above zero, end the answer with
    one line naming them (or the count, if many), because the answer could be in one of them.
    Never say that every file was searched when this list is not empty.
 

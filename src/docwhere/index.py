@@ -11,21 +11,26 @@ import os
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from docwhere.extractors import EXTRACTOR_VERSION, extract, is_serial, release, supported_extensions
+from docwhere import workers as worker_pool
+from docwhere.extractors import EXTRACTOR_VERSION, OUTPUT_VERSION, extract, is_serial, supported_extensions
 from docwhere.model import Chunk
 
 SCHEMA_VERSION = 1
 MAX_FILE_BYTES = 200 * 1024 * 1024
 SKIP_DIRS = {"node_modules", "__pycache__", "$RECYCLE.BIN", "System Volume Information"}
-# Starting worker processes costs ~3 s on Windows (each re-imports the extractors), which
-# outweighs the gain until there are a few dozen files to extract.
-PARALLEL_THRESHOLD = 40
+# Each worker loads the extraction libraries once (a second or more), so a few files share one.
 FILES_PER_WORKER = 20
+MAX_WORKERS = 8
+# A file still being read after this long is given up on and recorded as unreadable: an Office
+# conversion waiting on a dialog, or a reader stuck in a damaged file, would otherwise stop the
+# whole sync. Generous, since a large workbook can legitimately take minutes.
+FILE_TIMEOUT = 180
+# Extracted files are saved in batches; a sync stopped part way loses at most the last batch.
+SAVE_EVERY_FILES = 50
+SAVE_EVERY_SECONDS = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS roots(
@@ -50,7 +55,14 @@ CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
 END;
 """
 
-Progress = Callable[[int, int], None]
+@dataclass
+class SyncProgress:
+    done: int
+    total: int
+    reading: list[tuple[Path, float]]  # files being read now, with the seconds spent so far
+
+
+Progress = Callable[[SyncProgress], None]
 
 
 def default_db_path() -> Path:
@@ -74,6 +86,7 @@ class SyncStats:
     updated: int = 0
     removed: int = 0
     failed: int = 0
+    timed_out: list[str] = field(default_factory=list)
 
 
 class Index:
@@ -103,38 +116,49 @@ class Index:
 
     # ---- writing -----------------------------------------------------------------------
 
-    def sync(self, root: Path, progress: Progress | None = None, workers: int | None = None) -> SyncStats:
-        """Bring the index for ``root`` up to date: extract new or changed files, drop deleted ones."""
+    def sync(
+        self, root: Path, progress: Progress | None = None, workers: int | None = None, timeout: float = FILE_TIMEOUT
+    ) -> SyncStats:
+        """Bring the index for ``root`` up to date: extract new or changed files, drop deleted ones.
+
+        Files that could not be read are tried again when they change or when the extractors
+        do (``EXTRACTOR_VERSION``); files that were read, only when their output would change.
+        """
         root = Path(root).resolve()
         if not root.is_dir():
             raise NotADirectoryError(str(root))
         root_key = path_key(root)
 
         on_disk = {path_key(p): (p, st.st_mtime_ns, st.st_size) for p, st in _walk(root)}
-        known = {r["key"]: r for r in self._files_under(root_key, "id, key, mtime_ns, size, version")}
+        known = {r["key"]: r for r in self._files_under(root_key, "id, key, mtime_ns, size, version, error")}
         stats = SyncStats(files=len(on_disk))
 
         gone = [r["id"] for k, r in known.items() if k not in on_disk]
-        todo = [
-            (k, p, mtime, size)
-            for k, (p, mtime, size) in on_disk.items()
-            if (r := known.get(k)) is None or (r["mtime_ns"], r["size"], r["version"]) != (mtime, size, EXTRACTOR_VERSION)
-        ]
+        todo = [(k, p, mtime, size) for k, (p, mtime, size) in on_disk.items() if not _current(known.get(k), mtime, size)]
         with self.db:
             self._delete_files(gone)
         stats.removed = len(gone)
 
-        for done, (key, path, mtime, size, chunks, error) in enumerate(_extract_all(todo, workers), 1):
-            if error is _RETRY:
-                stats.failed += 1  # worker crashed; leave the file unrecorded so the next sync retries it
-            else:
-                self._store(key, path, mtime, size, chunks, error)
-                stats.updated += 1
-                stats.failed += error is not None
-            if done % 50 == 0:
-                self.db.commit()
+        done, reading, saved = 0, [], time.monotonic()
+
+        def tick(now_reading: list[tuple[str, float]] | None = None) -> None:
+            nonlocal reading
+            if now_reading is not None:
+                reading = [(Path(p), s) for p, s in now_reading]
             if progress:
-                progress(done, len(todo))
+                progress(SyncProgress(done, len(todo), reading))
+
+        for key, path, mtime, size, chunks, error, timed_out in _extract_all(todo, workers, timeout, tick):
+            self._store(key, path, mtime, size, chunks, error)
+            done += 1
+            stats.updated += 1
+            stats.failed += error is not None
+            if timed_out:
+                stats.timed_out.append(str(path))
+            if done % SAVE_EVERY_FILES == 0 or time.monotonic() - saved >= SAVE_EVERY_SECONDS:
+                self.db.commit()  # a sync stopped part way keeps what it read
+                saved = time.monotonic()
+            tick()
 
         self.db.execute(
             "INSERT INTO roots(key, path, synced_at) VALUES (?, ?, ?)"
@@ -235,6 +259,14 @@ def _pack_anchors(anchors: list[dict]) -> str:
     return json.dumps(anchors, ensure_ascii=False, separators=(",", ":"))
 
 
+def _current(row: sqlite3.Row | None, mtime: int, size: int) -> bool:
+    if row is None or (row["mtime_ns"], row["size"]) != (mtime, size):
+        return False
+    if row["error"] is not None:
+        return row["version"] == EXTRACTOR_VERSION
+    return OUTPUT_VERSION <= row["version"] <= EXTRACTOR_VERSION
+
+
 def _walk(root: Path) -> Iterator[tuple[Path, os.stat_result]]:
     exts = supported_extensions()
     for dirpath, dirnames, filenames in os.walk(root):
@@ -251,9 +283,6 @@ def _walk(root: Path) -> Iterator[tuple[Path, os.stat_result]]:
                 yield path, st
 
 
-_RETRY = "retry"
-
-
 def _extract_job(path: str) -> tuple[list[Chunk], str | None]:
     try:
         return extract(Path(path)), None
@@ -261,24 +290,15 @@ def _extract_job(path: str) -> tuple[list[Chunk], str | None]:
         return [], f"{type(e).__name__}: {e}"
 
 
-def _extract_all(todo: list[tuple], workers: int | None) -> Iterator[tuple]:
-    pooled = [item for item in todo if not is_serial(item[1])]
-    serial = [item for item in todo if is_serial(item[1])]
-    if len(pooled) < PARALLEL_THRESHOLD or workers == 1:
-        serial, pooled = pooled + serial, []
-    try:
-        if pooled:
-            workers = workers or min(8, os.cpu_count() or 1, -(-len(pooled) // FILES_PER_WORKER))
-            with ProcessPoolExecutor(max_workers=workers) as pool:
-                futures = {pool.submit(_extract_job, str(item[1])): item for item in pooled}
-                for fut in as_completed(futures):
-                    key, path, mtime, size = futures[fut]
-                    try:
-                        chunks, error = fut.result()
-                    except BrokenProcessPool:
-                        chunks, error = [], _RETRY
-                    yield key, path, mtime, size, chunks, error
-        for key, path, mtime, size in serial:
-            yield key, path, mtime, size, *_extract_job(str(path))
-    finally:
-        release()
+def _extract_all(todo: list[tuple], workers: int | None, timeout: float, tick) -> Iterator[tuple]:
+    """(key, path, mtime, size, chunks, error, timed_out) for every file in ``todo``."""
+    job = _extract_job  # looked up here so a test can put a slow reader in its place
+    tasks = [worker_pool.Task(str(item[1]), is_serial(item[1]), item) for item in todo]
+    pooled = sum(not t.serial for t in tasks)
+    workers = workers or min(MAX_WORKERS, os.cpu_count() or 1, -(-pooled // FILES_PER_WORKER))
+    for out in worker_pool.run(tasks, job, max(1, workers), timeout, tick):
+        key, path, mtime, size = out.task.data
+        if out.failure:
+            yield key, path, mtime, size, [], out.failure, out.timed_out
+        else:
+            yield key, path, mtime, size, *out.result, False
