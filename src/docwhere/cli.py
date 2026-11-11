@@ -1,4 +1,4 @@
-"""Command line: search, show, open, view, snap, viewer, clean, index, status, wiki."""
+"""Command line: search, show, open, view, snap, viewer, clean, index, exclude, forget, status, wiki."""
 
 from __future__ import annotations
 
@@ -97,7 +97,17 @@ def _parser() -> argparse.ArgumentParser:
                    help=f"seconds one file may take before it is given up as unreadable (default {FILE_TIMEOUT})")
     p.set_defaults(func=cmd_index)
 
-    p = sub.add_parser("forget", help="delete the index of folders (it is rebuilt by the next search there)")
+    p = sub.add_parser("exclude", help="keep folders or files out of a folder's index and searches; "
+                       "with no pattern, list what is excluded there")
+    p.add_argument("root", type=Path, help="the folder the patterns apply below, whichever folder is searched")
+    p.add_argument("patterns", nargs="*", help="a name (old, *_bak*, *.log) matches a folder or file at any depth; "
+                   "a path (specs/archive) is from ROOT. Case is ignored")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--remove", action="store_true", help="stop excluding PATTERNS; the next search or index reads their files")
+    g.add_argument("--clear", action="store_true", help="stop excluding everything set on ROOT")
+    p.set_defaults(func=cmd_exclude)
+
+    p = sub.add_parser("forget", help="delete the index of folders and their exclusions (rebuilt by the next search there)")
     p.add_argument("roots", type=Path, nargs="+")
     p.set_defaults(func=cmd_forget)
 
@@ -139,6 +149,8 @@ def cmd_search(args) -> int:
     # Every unreadable file in scope, not only the ones that failed during this sync: a file
     # that failed last week is just as invisible to this search.
     unreadable = index.errors(roots)
+    # What the exclusion patterns kept out of this search, so a miss caused by one is noticed.
+    excludes = _left_out(index, roots, updates)
     if args.view:
         path = _write_view(index, args.terms, [h.to_dict() for h in hits], 1, args, open_it=True)
         print(f"view: {path}", file=sys.stderr)
@@ -148,6 +160,11 @@ def cmd_search(args) -> int:
             "roots": [str(Path(r).resolve()) for r in roots],
             "index": {k: sum(getattr(u, k) for u in updates) for k in ("files", "updated", "removed")},
             "timed_out": [p for u in updates for p in u.timed_out],
+            "excludes": excludes,
+            "excluded_roots": [
+                {"root": str(Path(r).resolve()), "set_on": u.excluded_by[0], "pattern": u.excluded_by[1]}
+                for r, u in zip(roots, updates) if u.excluded_by
+            ],
             "hits": [
                 {"id" if k == "chunk_id" else k: v for k, v in h.to_dict().items() if k != "anchor"} for h in hits
             ],
@@ -169,7 +186,22 @@ def cmd_search(args) -> int:
             print(f"    ! newer version: {Path(h.newer_version).name}")
     if unreadable:
         print(f"\n{len(unreadable)} file(s) here could not be searched; see: docwhere status --errors", file=sys.stderr)
+    if any(e["left_out"] for e in excludes):
+        listed = ", ".join(f"{e['pattern']} ({e['left_out']})" for e in excludes if e["left_out"])
+        print(f"left out by exclusions, not searched: {listed}; see: docwhere status", file=sys.stderr)
     return 0
+
+
+def _left_out(index: Index, roots: list[Path], updates: list[SyncStats]) -> list[dict]:
+    """Each pattern that applies to the searched folders, with the folders and files it left out
+    in this search's sync (None when the search skipped the sync)."""
+    if not updates:
+        return [{**e, "left_out": None} for r in roots for e in index.excludes_applying(r)]
+    totals: dict[tuple[str, str], int] = {}
+    for u in updates:
+        for rule, n in u.left_out.items():
+            totals[rule] = totals.get(rule, 0) + n
+    return [{"pattern": p, "set_on": folder, "left_out": n} for (folder, p), n in totals.items()]
 
 
 def cmd_show(args) -> int:
@@ -303,7 +335,7 @@ def cmd_index(args) -> int:
     index = Index(args.db)
     for root in args.roots:
         if args.rebuild:
-            index.forget(root)
+            index.forget(root, keep_excludes=True)
         started = time.perf_counter()
         s = _sync(index, root, workers=args.workers, timeout=args.timeout)
         print(
@@ -332,12 +364,45 @@ def cmd_status(args) -> int:
         if note:
             stale.append(r["path"])
         print(f"  {r['path']}  {r['files']} files / {r['chunks']} sections / {r['errors']} unreadable  (synced {when}){note}")
+        if r["excludes"]:
+            print("    excluding: " + ", ".join(_described(e) for e in r["excludes"]))
     for path, error in errors:
         print(f"  ! {path}: {error}")
     if stale:
         # never removed automatically: the next search there would have to rebuild it
         print("\nto free their space: docwhere forget " + " ".join(f'"{p}"' for p in stale))
     return 0
+
+
+def cmd_exclude(args) -> int:
+    index = Index(args.db)
+    root = Path(args.root).resolve()
+    status = 0
+    try:
+        if args.remove or args.clear:
+            if args.remove and not args.patterns:
+                print("docwhere: --remove needs the patterns to stop excluding", file=sys.stderr)
+                return 2
+            removed, unknown = index.remove_excludes(root, None if args.clear else args.patterns)
+            for p in unknown:
+                print(f"{root}: was not excluding {p}", file=sys.stderr)
+                status = 1
+            if removed:
+                print(f"{root}: no longer excluding {', '.join(removed)}; the next search or index reads their files")
+        elif args.patterns:
+            added, dropped = index.add_excludes(root, args.patterns)
+            if added:
+                print(f"{root}: now excluding {', '.join(added)} ({dropped} indexed files removed)")
+    except ValueError as e:
+        print(f"docwhere: {e}", file=sys.stderr)
+        return 2
+    rows = {r["path"]: r for r in index.roots()}
+    own = rows[str(root)]["excludes"] if str(root) in rows else []
+    print(f"{root}: excluding " + ", ".join(_described(e) for e in own) if own else f"{root}: nothing excluded here")
+    for e in index.excludes_applying(root):
+        if e["set_on"] != str(root):
+            print(f"  also applies here: {e['pattern']} (set on {e['set_on']})")
+    return status
 
 
 def cmd_forget(args) -> int:
@@ -348,8 +413,9 @@ def cmd_forget(args) -> int:
         if path not in known:
             print(f"{path}: not indexed")
             continue
+        excludes = index.excludes(Path(path))
         index.forget(Path(path))
-        print(f"{path}: index removed")
+        print(f"{path}: index removed" + (f", and no longer excluding {', '.join(excludes)}" if excludes else ""))
     index.db.execute("VACUUM")  # give the space back to the disk; deleting rows alone does not
     return 0
 
@@ -395,4 +461,13 @@ def _sync(index: Index, root: Path, **options) -> SyncStats:
     stats = index.sync(root, progress=Reporter(f"indexing {root}"), **options)
     for path in stats.timed_out:
         print(f"gave up on (took too long, listed as unreadable): {path}", file=sys.stderr)
+    if stats.excluded_by:
+        folder, pattern = stats.excluded_by
+        print(f"{Path(root).resolve()} is excluded by {pattern} set on {folder}, so nothing in it is searched"
+              f' (to include it: docwhere exclude "{folder}" --remove "{pattern}")', file=sys.stderr)
     return stats
+
+
+def _described(exclude: dict) -> str:
+    matched = exclude["matched"]
+    return f"{exclude['pattern']} ({'not counted until this folder is indexed' if matched is None else f'{matched} left out'})"

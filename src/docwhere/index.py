@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from docwhere import workers as worker_pool
+from docwhere.excludes import Matcher, normalize
 from docwhere.extractors import EXTRACTOR_VERSION, OUTPUT_VERSION, extract, is_serial, supported_extensions
 from docwhere.model import Chunk
 
@@ -34,7 +35,8 @@ SAVE_EVERY_SECONDS = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS roots(
-    key TEXT PRIMARY KEY, path TEXT NOT NULL, synced_at REAL);
+    key TEXT PRIMARY KEY, path TEXT NOT NULL, synced_at REAL,
+    excludes TEXT NOT NULL DEFAULT '[]', exclude_hits TEXT);
 CREATE TABLE IF NOT EXISTS files(
     id INTEGER PRIMARY KEY, key TEXT UNIQUE NOT NULL, path TEXT NOT NULL,
     mtime_ns INTEGER NOT NULL, size INTEGER NOT NULL, version INTEGER NOT NULL, error TEXT);
@@ -87,6 +89,10 @@ class SyncStats:
     removed: int = 0
     failed: int = 0
     timed_out: list[str] = field(default_factory=list)
+    excluded_by: tuple[str, str] | None = None  # (folder, pattern) when the folder itself is left out
+    # every pattern that applied, keyed (folder it is set on, pattern): the folders and files it
+    # left out in this sync (a left-out folder counts once, its contents are not walked)
+    left_out: dict[tuple[str, str], int] = field(default_factory=dict)
 
 
 class Index:
@@ -108,6 +114,12 @@ class Index:
         db.execute("PRAGMA synchronous=NORMAL")
         db.execute("PRAGMA foreign_keys=ON")
         db.executescript(_SCHEMA)
+        # Columns added after the first release: added in place so an existing index is kept.
+        columns = {r["name"] for r in db.execute("PRAGMA table_info(roots)")}
+        if "excludes" not in columns:
+            db.execute("ALTER TABLE roots ADD COLUMN excludes TEXT NOT NULL DEFAULT '[]'")
+        if "exclude_hits" not in columns:
+            db.execute("ALTER TABLE roots ADD COLUMN exclude_hits TEXT")
         db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         return db
 
@@ -129,9 +141,18 @@ class Index:
             raise NotADirectoryError(str(root))
         root_key = path_key(root)
 
-        on_disk = {path_key(p): (p, st.st_mtime_ns, st.st_size) for p, st in _walk(root)}
+        stats = SyncStats()
+        matcher = self._matcher(root_key)
+        hits: dict[tuple[str, str], int] = {}
+        if rule := matcher.match(root_key):  # a parent folder's pattern leaves this whole folder out
+            stats.excluded_by = (self._root_path(rule[0]), rule[1])
+            hits[rule] = 1
+            on_disk = {}
+        else:
+            on_disk = {path_key(p): (p, st.st_mtime_ns, st.st_size) for p, st in _walk(root, matcher, hits)}
+        stats.left_out = {(self._root_path(k), p): hits.get((k, p), 0) for k, p in matcher.sources()}
         known = {r["key"]: r for r in self._files_under(root_key, "id, key, mtime_ns, size, version, error")}
-        stats = SyncStats(files=len(on_disk))
+        stats.files = len(on_disk)
 
         gone = [r["id"] for k, r in known.items() if k not in on_disk]
         todo = [(k, p, mtime, size) for k, (p, mtime, size) in on_disk.items() if not _current(known.get(k), mtime, size)]
@@ -160,20 +181,92 @@ class Index:
                 saved = time.monotonic()
             tick()
 
+        hits_json = json.dumps({p: hits.get((root_key, p), 0) for p in self._excludes(root_key)}, ensure_ascii=False)
         self.db.execute(
-            "INSERT INTO roots(key, path, synced_at) VALUES (?, ?, ?)"
-            " ON CONFLICT(key) DO UPDATE SET path = excluded.path, synced_at = excluded.synced_at",
-            (root_key, str(root), time.time()),
+            "INSERT INTO roots(key, path, synced_at, exclude_hits) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET path = excluded.path, synced_at = excluded.synced_at,"
+            " exclude_hits = excluded.exclude_hits",
+            (root_key, str(root), time.time(), hits_json),
         )
         self.db.commit()
         return stats
 
-    def forget(self, root: Path) -> None:
-        """Drop everything indexed under ``root`` (the next sync re-extracts it)."""
+    def forget(self, root: Path, keep_excludes: bool = False) -> None:
+        """Drop everything indexed under ``root`` (the next sync re-extracts it) and, unless
+        ``keep_excludes``, the folder's exclusion patterns."""
         root_key = path_key(Path(root).resolve())
         with self.db:
             self._delete_files([r["id"] for r in self._files_under(root_key, "id")])
-            self.db.execute("DELETE FROM roots WHERE key = ?", (root_key,))
+            if not keep_excludes:
+                self.db.execute("DELETE FROM roots WHERE key = ?", (root_key,))
+
+    # ---- exclusions --------------------------------------------------------------------
+
+    def excludes(self, root: Path) -> list[str]:
+        """The patterns set on ``root`` itself (see ``docwhere.excludes``)."""
+        return self._excludes(path_key(Path(root).resolve()))
+
+    def add_excludes(self, root: Path, patterns: list[str]) -> tuple[list[str], int]:
+        """Leave ``patterns`` out of ``root`` from now on. Indexed files they match are dropped
+        at once, without a sync. Returns the patterns that were new and the number of files dropped."""
+        root = Path(root).resolve()
+        if not root.is_dir():
+            raise NotADirectoryError(str(root))
+        key = path_key(root)
+        current = self._excludes(key)
+        added: list[str] = []
+        for p in map(normalize, patterns):
+            if p.lower() not in {c.lower() for c in current + added}:
+                added.append(p)
+        with self.db:
+            self.db.execute(
+                "INSERT INTO roots(key, path, excludes) VALUES (?, ?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET excludes = excluded.excludes",
+                (key, str(root), json.dumps(current + added, ensure_ascii=False)),
+            )
+            matcher = self._matcher(key)
+            dropped = [r["id"] for r in self._files_under(key, "id, key") if matcher.match(r["key"])]
+            self._delete_files(dropped)
+        return added, len(dropped)
+
+    def remove_excludes(self, root: Path, patterns: list[str] | None = None) -> tuple[list[str], list[str]]:
+        """Stop leaving ``patterns`` (all of them when None) out of ``root``; the next sync reads
+        their files. Returns the patterns removed and the given ones that were not set."""
+        key = path_key(Path(root).resolve())
+        current = self._excludes(key)
+        wanted = None if patterns is None else {normalize(p).lower() for p in patterns}
+        removed = [c for c in current if wanted is None or c.lower() in wanted]
+        set_now = {c.lower() for c in current}
+        unknown = [p for p in patterns or [] if normalize(p).lower() not in set_now]
+        keep = [c for c in current if c not in removed]
+        with self.db:
+            self.db.execute("UPDATE roots SET excludes = ? WHERE key = ?", (json.dumps(keep, ensure_ascii=False), key))
+            # a folder registered only to hold patterns goes away with its last one
+            self.db.execute("DELETE FROM roots WHERE key = ? AND synced_at IS NULL AND excludes = '[]'", (key,))
+        return removed, unknown
+
+    def excludes_applying(self, root: Path) -> list[dict]:
+        """Every pattern that leaves something out under ``root``, with the folder it is set on."""
+        rules = self._matcher(path_key(Path(root).resolve())).sources()
+        return [{"pattern": p, "set_on": self._root_path(k)} for k, p in rules]
+
+    def _excludes(self, root_key: str) -> list[str]:
+        row = self.db.execute("SELECT excludes FROM roots WHERE key = ?", (root_key,)).fetchone()
+        return json.loads(row["excludes"]) if row else []
+
+    def _matcher(self, root_key: str) -> Matcher:
+        """The patterns that apply while indexing ``root_key``: those set on it, on a folder
+        above it and on a folder below it."""
+        rules = []
+        for r in self.db.execute("SELECT key, excludes FROM roots WHERE excludes != '[]'"):
+            k = r["key"]
+            if k == root_key or root_key.startswith(prefix_of(k)) or k.startswith(prefix_of(root_key)):
+                rules += [(k, p) for p in json.loads(r["excludes"])]
+        return Matcher(rules)
+
+    def _root_path(self, root_key: str) -> str:
+        row = self.db.execute("SELECT path FROM roots WHERE key = ?", (root_key,)).fetchone()
+        return row["path"] if row else root_key
 
     def _store(self, key: str, path: Path, mtime: int, size: int, chunks: list[Chunk], error: str | None) -> None:
         row = self.db.execute("SELECT id FROM files WHERE key = ?", (key,)).fetchone()
@@ -211,7 +304,7 @@ class Index:
 
     def roots(self) -> list[dict]:
         out = []
-        for r in self.db.execute("SELECT key, path, synced_at FROM roots ORDER BY path"):
+        for r in self.db.execute("SELECT key, path, synced_at, excludes, exclude_hits FROM roots ORDER BY path"):
             prefix = prefix_of(r["key"])
             files, errors, chunks = self.db.execute(
                 "SELECT count(*), count(f.error),"
@@ -219,7 +312,12 @@ class Index:
                 " FROM files f WHERE substr(f.key, 1, ?) = ?",
                 (len(prefix), prefix, len(prefix), prefix),
             ).fetchone()
-            out.append({"path": r["path"], "synced_at": r["synced_at"], "files": files, "chunks": chunks, "errors": errors})
+            hits = json.loads(r["exclude_hits"] or "{}")
+            excludes = [{"pattern": p, "matched": hits.get(p)} for p in json.loads(r["excludes"])]
+            out.append({
+                "path": r["path"], "synced_at": r["synced_at"], "files": files, "chunks": chunks, "errors": errors,
+                "excludes": excludes,
+            })
         return out
 
     def errors(self, roots: list[Path] | None = None) -> list[tuple[str, str]]:
@@ -267,14 +365,27 @@ def _current(row: sqlite3.Row | None, mtime: int, size: int) -> bool:
     return OUTPUT_VERSION <= row["version"] <= EXTRACTOR_VERSION
 
 
-def _walk(root: Path) -> Iterator[tuple[Path, os.stat_result]]:
+def _walk(root: Path, matcher: Matcher, hits: dict) -> Iterator[tuple[Path, os.stat_result]]:
+    """Readable files under ``root``. ``hits`` counts, per (folder, pattern) rule, the folders
+    and files it left out; a left-out folder is not entered, so its contents are not counted."""
     exts = supported_extensions()
+
+    def left_out(path: str) -> bool:
+        rule = matcher.match(path_key(path)) if matcher else None
+        if rule:
+            hits[rule] = hits.get(rule, 0) + 1
+        return rule is not None
+
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS]
+        dirnames[:] = [
+            d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS and not left_out(os.path.join(dirpath, d))
+        ]
         for name in filenames:
             if name.startswith("~$") or os.path.splitext(name)[1].lower() not in exts:
                 continue  # ~$ = Office lock file
             path = Path(dirpath, name)
+            if left_out(str(path)):
+                continue
             try:
                 st = path.stat()
             except OSError:

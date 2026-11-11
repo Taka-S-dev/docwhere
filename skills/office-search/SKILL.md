@@ -1,6 +1,6 @@
 ---
 name: office-search
-description: Find which document in a folder tree covers a topic, and where (section, page, slide, cell), across PDF, Word, Excel, PowerPoint (including legacy .doc/.xls/.ppt) and text files, using the indexed `docwhere` CLI; then show that section or open the file at the spot. Use whenever the user asks which document describes something, where a spec / procedure / command / setting / error code is written, what a documented value or default is, or asks to remember where something is written — e.g. "このコマンドの仕様が書いてあるドキュメントどれ？", "〜の手順はどこ？", "このタイムアウトの既定値は？", "その箇所開いて", "〜は〜に書いてあるって覚えておいて", "資料の地図作って". Also searches an added team wiki (Confluence) ("wikiに書いてある？"). Prefer this over office-read's office_find.py for more than a handful of files.
+description: Find which document in a folder tree covers a topic, and where (section, page, slide, cell), across PDF, Word, Excel, PowerPoint (including legacy .doc/.xls/.ppt) and text files, using the indexed `docwhere` CLI; then show that section or open the file at the spot. Use whenever the user asks which document describes something, where a spec / procedure / command / setting / error code is written, what a documented value or default is, asks to remember where something is written, or wants folders kept out of searches — e.g. "このコマンドの仕様が書いてあるドキュメントどれ？", "〜の手順はどこ？", "このタイムアウトの既定値は？", "その箇所開いて", "〜は〜に書いてあるって覚えておいて", "資料の地図作って", "旧版フォルダは検索に出さないで". Also searches an added team wiki (Confluence) ("wikiに書いてある？"). Prefer this over office-read's office_find.py for more than a handful of files.
 ---
 
 # office-search
@@ -136,6 +136,13 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    files, files given up after taking too long) — not only new failures. When `unreadable_count` is above zero, end the answer with
    one line naming them (or the count, if many), because the answer could be in one of them.
    Never say that every file was searched when this list is not empty.
+   Likewise `excludes`: the patterns that applied to the searched folders, each with
+   `left_out`, the folders and files it kept out of this search (see Leaving files out).
+   When any `left_out` is above zero, end the answer with one line saying so —
+   「除外中：旧版（3 か所）、*_bak*（1 件）は検索していません」 — because the answer could be
+   in one of them, and the user may have forgotten the pattern. When nothing fits, offer to
+   search them by removing the pattern. When `excluded_roots` is not empty, the folder the
+   user asked about is itself excluded: say so first, before any answer.
 
 6. **Offer to remember a hard find.** When the answer took re-searching, or sits somewhere
    its wording would not lead (a different term, an appendix, a document of another kind),
@@ -188,6 +195,31 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
      *last* search at its spot — Acrobat at the page, Word with the paragraph selected, Excel
      with the cell selected, PowerPoint at the slide, VS Code at the line.
    If you ran another search since, search again first so the numbers match.
+
+## Leaving files out
+
+Old versions, backups and drafts slow the first index and push older answers into the hits.
+The user can keep them out per folder; a pattern set on a folder applies below it, whichever
+folder is searched, and is remembered in the index (nothing is written to the folder).
+
+- A name matches a folder or file of that name at any depth: `旧版`, `*_bak*`, `*.log`,
+  `*コピー*`. A pattern with `/` is a path from the folder: `設計/archive`. Case is ignored;
+  write `*旧*` to match part of a name.
+- To add, when the user asks ("旧版は検索に出さないで", "バックアップは除外して"): turn the
+  request into patterns, tell the user the patterns and the folder in one line, then run
+  `docwhere exclude "<folder>" <pattern>...`. Do not add patterns the user did not ask for;
+  when old versions crowd the hits, suggest a pattern and wait for a yes. Already indexed
+  files the pattern matches drop out at once.
+- To see what is excluded ("何を除外してる？"): `docwhere status --json`; each folder's
+  `excludes` lists `pattern` and `matched` (folders and files it left out the last time that
+  folder itself was indexed or searched; `null` until then — the pattern still applies). Answer in plain words, e.g. 「設計フォルダでは『旧版』フォルダ
+  （3 か所）と、名前に _bak が入るファイルを除外しています」. A pattern with `matched: 0`
+  matches nothing — say so, it is probably mistyped.
+- To undo ("さっきの除外戻して"): `docwhere exclude "<folder>" --remove <pattern>` (or `--clear`
+  for all of that folder's patterns). The next search reads those files again, which can
+  take a while for many Office files.
+- `docwhere forget` drops a folder's patterns along with its index; `index --rebuild` keeps
+  them.
 
 ## The notes file
 
