@@ -16,10 +16,12 @@ def extract(path: Path) -> list[Chunk]:
     chunks: list[Chunk] = []
     for no, slide in enumerate(Presentation(str(path)).slides, 1):
         title_shape = slide.shapes.title
-        title = norm(title_shape.text_frame.text) if title_shape is not None else ""
+        title = norm(title_shape.text_frame.text) if title_shape is not None and title_shape.has_text_frame else ""
         texts = list(_shape_texts(slide.shapes))
-        if slide.has_notes_slide:
-            texts += slide.notes_slide.notes_text_frame.text.splitlines()
+        # A notes page whose body placeholder was deleted has no notes text frame.
+        notes = slide.notes_slide.notes_text_frame if slide.has_notes_slide else None
+        if notes is not None:
+            texts += notes.text.splitlines()
         lines = [line for line in map(norm, texts) if line]
         if lines:
             chunks.append(Chunk(title, title, lines, [{"slide": no}]))

@@ -113,6 +113,19 @@ def test_powerpoint_includes_notes_and_normalises_width(docs):
     assert "ハンカク カナ" in chunks[0].lines
 
 
+def test_powerpoint_notes_page_without_a_body_is_read(tmp_path):
+    from pptx import Presentation
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.shapes.title.text = "構成"
+    slide.placeholders[1].text = "本文"
+    body = slide.notes_slide.notes_placeholder
+    body._element.getparent().remove(body._element)  # deleted in PowerPoint by the author
+    prs.save(tmp_path / "s.pptx")
+    assert [(c.title, c.lines) for c in extract(tmp_path / "s.pptx")] == [("構成", ["構成", "本文"])]
+
+
 def test_markdown_sections_and_line_numbers(docs):
     chunks = extract(docs / "notes.md")
     assert chunks[1].crumb == "Intro > deploy コマンド"
