@@ -10,7 +10,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from docwhere import background
+from docwhere import background, doctor
 from docwhere.extractors import is_serial
 from docwhere.index import FILE_TIMEOUT, Index, SyncProgress, SyncStats, default_db_path
 from docwhere.present import highlight, show_page
@@ -130,6 +130,7 @@ def _parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_forget)
 
     wiki_cli.register(sub)
+    doctor.register(sub)
 
     p = sub.add_parser("status", help="indexed folders and files that could not be read")
     p.add_argument("--errors", action="store_true", help="list unreadable files")

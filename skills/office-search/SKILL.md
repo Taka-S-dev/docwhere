@@ -209,6 +209,16 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
      with the cell selected, PowerPoint at the slide, VS Code at the line.
    If you ran another search since, search again first so the numbers match.
 
+## When something does not work on this PC
+
+Run `docwhere doctor` when Office files stay unreadable, a view does not open in the window,
+the background reading never seems to progress, or the user asks to check the setup
+("動作確認して"). It prints one line per check (`ok` / `FAIL` / `--`); each Office check takes a few
+seconds and is stopped after 60. Report each FAIL in plain words with what it means for searching. One
+check, whether background reading survives the command, is only known on the second run:
+when it says `--`, run it again after 10 seconds. Pass `--skill <the SKILL.md you were
+loaded from>` to check that copy is current.
+
 ## Leaving files out
 
 Old versions, backups and drafts slow the first index and push older answers into the hits.
