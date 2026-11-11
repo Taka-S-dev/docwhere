@@ -24,3 +24,9 @@ id_rsa*
 id_ed25519*
 secrets.*
 credentials.*
+api_key*
+*.token
+token.txt
+token.json
+*_token.txt
+*_token.json
