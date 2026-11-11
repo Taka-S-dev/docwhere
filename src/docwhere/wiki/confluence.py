@@ -1,6 +1,6 @@
 """Confluence Server / Data Center, read without logging in.
 
-The REST API (5.x and later) is used when the server answers it: one CQL search returns the
+The REST API is used when the server answers it: one CQL search returns the
 matching pages with their bodies, so a question costs one request. Servers without it, or
 with it switched off, are read through the pages people use: the site search page, then
 each result's page, keeping only its main content.
