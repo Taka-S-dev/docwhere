@@ -14,12 +14,15 @@ from docwhere.extractors.html import html_chunks
 from docwhere.model import norm
 from docwhere.viewer import (
     PAGE_TEMPLATE,
-    RAIL_QUOTE_CHARS,
     RESULT_BODY,
     STATIC_CSP,
     STYLE,
+    _note_html,
+    answer_section,
     esc,
+    fold_marks,
     quote_probe,
+    rail_label,
     section_html,
 )
 from docwhere.wiki import Page
@@ -33,9 +36,13 @@ def build_wiki_html(
     quotes: list[str] = (),
     answer: str = "",
     title: str = "",
+    steps: list[tuple[str, str, str]] | None = None,
 ) -> str:
-    """``hits`` are WikiHit dicts, ``pages`` the pages they came from keyed by (wiki, page id)."""
-    quotes = [q for q in (norm(q) for q in quotes) if q]
+    """``hits`` are WikiHit dicts, ``pages`` the pages they came from keyed by (wiki, page id).
+    ``steps``: the quotes in order with what each shows, ("quote", sentence, note)."""
+    given = steps if steps is not None else [("quote", q, "") for q in quotes]
+    steps = [(norm(t), n) for k, t, n in given if k == "quote" and norm(t)]
+    quotes = [t for t, _ in steps]
     sections: dict[tuple[str, str], list[dict]] = {}
     for key, page in pages.items():
         sections[key] = [
@@ -53,7 +60,7 @@ def build_wiki_html(
         return next((row["id"] for row in rows if row["crumb"] == hit["crumb"]), 0 if rows else None)
 
     owns = {hit["n"]: own_section(hit) for hit in hits}
-    evidence = [_locate(q, hits, sections, owns) for q in quotes]
+    evidence = [{**_locate(q, hits, sections, owns), "note": note} for q, note in steps]
     shown_title = title or " ".join(terms)
     answer_html = _answer(answer, evidence)
     rail = _rail(bool(answer_html), evidence, hits)
@@ -78,7 +85,7 @@ def _target(hit: dict, section_id: int | None) -> str:
 def _locate(quote: str, hits: list[dict], sections: dict, owns: dict) -> dict:
     """The hit and section whose text holds ``quote`` (its start, as for local files); the
     hit's own section is preferred, then the rest of its page, then the other pages."""
-    probe = quote_probe(quote).lower()
+    probe = fold_marks(quote_probe(quote).lower())
     candidates = []
     for hit in hits:
         rows = sections.get((hit["wiki"], hit["page_id"])) or []
@@ -86,7 +93,7 @@ def _locate(quote: str, hits: list[dict], sections: dict, owns: dict) -> dict:
         ordered = sorted(rows, key=lambda r: (r["id"] != own, abs(r["id"] - (own or 0))))
         candidates += [(hit, row) for row in ordered]
     for hit, row in candidates:
-        if probe and probe in row["body"].lower():
+        if probe and probe in fold_marks(row["body"].lower()):
             target = _target(hit, row["id"])
             return {"quote": quote, "hit": hit, "section": row["crumb"], "section_id": row["id"], "target": target,
                     "fragment": row["fragment"]}
@@ -128,12 +135,14 @@ def _citation(ev: dict) -> str:
 def _answer(answer: str, evidence: list[dict]) -> str:
     if not (answer or evidence):
         return ""
+    flow = any(ev.get("note") for ev in evidence)
     items = []
-    for ev in evidence:
+    for step, ev in enumerate(evidence, 1):
         hit = ev["hit"]
+        lead = _note_html(ev, step) if flow else ""
         if hit is None:
             items.append('<div class="evidence"><p class="missing">読んだページの中で位置を特定できませんでした。</p>'
-                         f'<blockquote>{esc(ev["quote"])}</blockquote></div>')
+                         f'<div>{lead}<blockquote>{esc(ev["quote"])}</blockquote></div></div>')
             continue
         section = ev["section"].split(" > ", 1)[1] if " > " in ev["section"] else ""
         parts = [f'<span class="file">{esc(hit["title"])}</span>']
@@ -142,11 +151,10 @@ def _answer(answer: str, evidence: list[dict]) -> str:
         button = f'<button type="button" class="cite" data-live hidden data-cite="{esc(_citation(ev))}">引用をコピー</button>'
         source = f'<p class="source">{"".join(parts)}{_open_controls(_url(hit, ev["fragment"]))}{button}</p>'
         shown = f'<a class="quote" href="#{ev["target"]}"><blockquote>{esc(ev["quote"])}</blockquote></a>'
-        items.append(f'<div class="evidence">{source}{shown}</div>')
-    head = f'<h2 class="evidence-head">根拠 {len(evidence)} 件</h2>' if len(evidence) > 1 else ""
+        items.append(f'<div class="evidence">{source}<div>{lead}{shown}</div></div>' if flow
+                     else f'<div class="evidence">{source}{shown}</div>')
     text = answer or evidence[0]["quote"]
-    return (f'<section class="answer" id="answer" aria-label="回答"><p class="answer-text"><span>{esc(text)}</span></p>'
-            f'{head}{"".join(items)}</section>')
+    return answer_section(text, evidence, items, flow and bool(answer))
 
 
 def _rail(has_answer: bool, evidence: list[dict], hits: list[dict]) -> str:
@@ -156,7 +164,7 @@ def _rail(has_answer: bool, evidence: list[dict], hits: list[dict]) -> str:
     if evidence:
         items = []
         for ev in evidence:
-            quote = ev["quote"] if len(ev["quote"]) <= RAIL_QUOTE_CHARS else ev["quote"][:RAIL_QUOTE_CHARS] + "…"
+            quote = rail_label(ev)
             if ev["hit"] is None:
                 items.append(f'<li><span class="item unplaced"><span class="pg">位置不明</span><span class="q">{esc(quote)}</span></span></li>')
                 continue

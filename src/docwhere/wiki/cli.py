@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from docwhere.index import default_db_path
-from docwhere.present import highlight, show_page
+from docwhere.present import EvidenceStep, highlight, show_page
 
 
 def register(sub) -> None:
@@ -72,7 +72,10 @@ def register(sub) -> None:
 
 def _wiki_view_options(p: argparse.ArgumentParser, prefix: str = "") -> None:
     p.add_argument("-C", "--context", type=int, default=1, help=f"{prefix}neighbouring sections to include, folded (default 1)")
-    p.add_argument("--quote", action="append", default=[], help=f"{prefix}sentence that answers the question; framed, repeatable")
+    p.add_argument("--quote", action=EvidenceStep, default=[], help=f"{prefix}sentence that answers the question; framed, repeatable")
+    p.add_argument("--note", action=EvidenceStep, default="", help=f"{prefix}what the --quote before it shows; "
+                   "with notes the evidence reads as steps leading to --answer")
+    p.set_defaults(steps=[])
     p.add_argument("--answer", default="", help=f"{prefix}one-line answer shown at the top of the page")
     p.add_argument("--title", default="", help=f"{prefix}the question, used as the page title (default: the terms)")
     p.add_argument("--browser", action="store_true", help=f"{prefix}open the saved page in the browser, not the docwhere window")
@@ -227,7 +230,8 @@ def _show_wiki_view(db: Path, terms: list[str], found: list[dict], pages: dict, 
 
     return show_page(
         db,
-        lambda in_window: build_wiki_html(found, pages, terms, options.context, options.quote, options.answer, options.title),
+        lambda in_window: build_wiki_html(found, pages, terms, options.context, options.quote, options.answer, options.title,
+                                          steps=getattr(options, "steps", None)),
         options.title or " ".join(terms), options, open_it,
     )
 

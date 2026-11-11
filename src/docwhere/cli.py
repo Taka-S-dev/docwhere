@@ -13,7 +13,7 @@ from pathlib import Path
 from docwhere import background, doctor
 from docwhere.extractors import is_serial
 from docwhere.index import FILE_TIMEOUT, Index, SyncProgress, SyncStats, default_db_path
-from docwhere.present import highlight, show_page
+from docwhere.present import EvidenceStep, highlight, show_page
 from docwhere.progress import duration
 from docwhere.wiki import cli as wiki_cli
 
@@ -141,7 +141,12 @@ def _parser() -> argparse.ArgumentParser:
 
 def _view_options(p: argparse.ArgumentParser, prefix: str = "") -> None:
     p.add_argument("-P", "--pages", type=int, default=0, help=f"{prefix}PDF pages either side of each hit page (default 0)")
-    p.add_argument("--quote", action="append", default=[], help=f"{prefix}sentence that answers the question; marked above the terms, repeatable")
+    p.add_argument("--quote", action=EvidenceStep, default=[], help=f"{prefix}sentence that answers the question; marked above the terms, repeatable")
+    p.add_argument("--figure", action=EvidenceStep, default=[], help=f"{prefix}a figure that answers it, ringed: its caption "
+                   "(図3 構成) or a label in it, or p.12#2 for the second figure on page 12; repeatable")
+    p.add_argument("--note", action=EvidenceStep, default="", help=f"{prefix}what the --quote or --figure before it shows; "
+                   "with notes the evidence reads as steps leading to --answer")
+    p.set_defaults(steps=[])
     p.add_argument("--answer", default="", help=f"{prefix}one-line answer shown at the top of the page")
     p.add_argument("--title", default="", help=f"{prefix}the question, used as the page and tab title (default: the terms)")
     p.add_argument("--browser", action="store_true", help=f"{prefix}open the saved page in the browser, not the docwhere window")
@@ -572,7 +577,8 @@ def _write_view(
     return show_page(
         index.path,
         lambda in_window: build_html(index, terms, hits, context, options.pages, options.quote, options.answer,
-                                     options.title, cut_excerpts=not in_window, reading=reading),
+                                     options.title, cut_excerpts=not in_window, reading=reading,
+                                     steps=getattr(options, "steps", None)),
         options.title or " ".join(terms), options, open_it,
     )
 

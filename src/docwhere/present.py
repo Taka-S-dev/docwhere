@@ -3,9 +3,28 @@ opened in the docwhere window or the browser."""
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from pathlib import Path
+
+
+class EvidenceStep(argparse.Action):
+    """--quote and --figure add a piece of evidence to ``steps`` in the order given (and
+    --quote also to ``quote``); --note says what the piece before it shows."""
+
+    def __call__(self, parser, namespace, value, option_string=None):
+        steps = list(getattr(namespace, "steps", None) or [])
+        if self.dest == "note":
+            if not steps:
+                parser.error("--note explains the --quote or --figure before it: give that first")
+            if steps[-1][2]:
+                parser.error("one --note per --quote or --figure")
+            steps[-1] = (steps[-1][0], steps[-1][1], value)
+        else:
+            steps.append((self.dest, value, ""))
+            setattr(namespace, self.dest, [*(getattr(namespace, self.dest, None) or []), value])
+        namespace.steps = steps
 
 
 def show_page(db: Path, build, title: str, options, open_it: bool) -> str:

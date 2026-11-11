@@ -30,7 +30,7 @@ uv tool install -e .
 | `show N [-C K]` | 直前の検索の N 件目の節を全文表示（`-C` で前後の節も） |
 | `show --id ID [-C K]` | `search --json` の `id` で節を全文表示。複数の検索が並行していても番号がずれない |
 | `open N` | N 件目を該当箇所で開く |
-| `view [N...] [-C K] [-P K] [--quote Q] [--answer A] [--title T] [--no-open]` | 直前の検索結果を 1 枚の HTML でブラウザの新しいタブに表示（`--title` は質問文で、タブ名になる）。節の抜粋（検索語を強調）、PDF はページ画像付き（`-P` で前後 K ページも）。`--quote` に回答の根拠の文を渡すと、その文を枠と太字で示し、検索語は下線に下げる。`--answer` は先頭に出す一行の回答。`search --view` でも同じオプションが使える |
+| `view [N...] [-C K] [-P K] [--quote Q [--note T]] [--figure F [--note T]] [--answer A] [--title T] [--no-open]` | 直前の検索結果を 1 枚の HTML でブラウザの新しいタブに表示（`--title` は質問文で、タブ名になる）。節の抜粋（検索語を強調）、PDF はページ画像付き（`-P` で前後 K ページも）。`--quote` に回答の根拠の文を渡すと、その文を枠と太字で示し、検索語は下線に下げる。`--answer` は先頭に出す一行の回答。`--figure` は図そのものを根拠にするときに使い、図の見出し（`図2 再試行の流れ`）か `p.12#2`（12 ページの上から 2 つ目の図）で指定すると、その図を丸で囲んで拡大する（図は文字ではなくページ上の画像・線のまとまりから探すので、文字を含まない図でもよい）。`--quote` / `--figure` の直後の `--note` には、その箇所が示していることを書く。`--note` があると根拠を番号付きの手順として並べ、最後に「つまり〈--answer〉」で締める（「ここに A、別のページに B、つまり C」）。`search --view` でも同じオプションが使える |
 | `viewer window\|browser\|status` | ビューを docwhere の専用ウィンドウで開くか（既定）、ブラウザで開くか。`view --browser` で 1 回だけブラウザで開く |
 | `viewer pdf <プログラム> <引数...>` / `viewer pdf auto`（ウィンドウ右上の「設定」からも変えられる） | 「PDF アプリで開く」で使うアプリ。引数の `{page}` にページ番号、`{file}` に PDF のパスが入る（例: `viewer pdf "D:\Tools\SumatraPDF\SumatraPDF.exe" -reuse-instance -page {page} {file}`、Acrobat なら `/A page={page} {file}`）。シェルを通さずに起動する。`auto`（既定）は Acrobat があれば Acrobat、なければ既定のアプリ（ページ指定なし） |
 | `clean` | 保存したビュー、snap の画像、Word / PowerPoint から書き出した PDF をすべて削除（普段は自動で間引かれる） |

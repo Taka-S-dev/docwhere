@@ -111,7 +111,7 @@ def test_rail_lists_every_piece_of_evidence_and_jumps_to_its_page(docs, tmp_path
     html = _view(capsys, "1", "--quote", "system outline", "--quote", "config --force skips checks", "--quote", "書かれていない文")
     rail = html[html.index('<nav class="rail"') : html.index("</nav>")]
     assert '<a class="to-answer" href="#answer">' in rail and 'id="answer"' in html
-    links = re.findall(r'<a class="item" href="#([^"]+)"><span class="pg">([^<]*)</span>', rail)
+    links = re.findall(r'<a class="item" href="#([^"]+)" title="[^"]*"><span class="pg">([^<]*)</span>', rail)
     assert links == [("hit1-p1", "p.1"), ("hit1-p3", "p.3")]
     assert all(f'id="{target}"' in html for target, _ in links)  # every link lands on a page
     assert "位置不明" in rail  # the quote that was not found is listed, without a link

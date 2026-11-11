@@ -50,8 +50,12 @@ def render_page(
     quotes: list[str] = (),
     closeup: bool = False,
     source=None,
+    circles: list = (),
+    around: list = (),
 ) -> bytes:
     """Page ``page_no`` (1-based) of a PDF with ``terms`` marked and each ``quotes`` highlighted.
+    Each of ``circles`` (a figure's rectangle) is ringed; with ``closeup`` and no quotes the
+    close-up is the ringed figure and ``around`` (its caption).
 
     A quote is the sentence that answers the question, chosen by whoever read the hit; the
     terms only show why the page matched. With ``closeup`` only a strip of the page around
@@ -74,7 +78,7 @@ def render_page(
             raise LookupError(f"{Path(path).name} has no page {page_no}")
         page = doc[page_no - 1]
         quote_rects = _find(page, quotes)
-        if closeup and not quote_rects:
+        if closeup and not quote_rects and not circles:
             raise LookupError(f"the quote is not on p.{page_no}")
         for rects in _find(page, terms):
             for rect in rects:
@@ -91,13 +95,23 @@ def render_page(
             frame.set_colors(stroke=QUOTE_BORDER)
             frame.set_border(width=1.2)
             frame.update()
+        rings = [_ring(pymupdf.Rect(r)) & page.rect for r in circles]
+        for rect in rings:
+            ring = page.add_circle_annot(rect)
+            ring.set_colors(stroke=QUOTE_BORDER)
+            ring.set_border(width=2.5)
+            ring.update()
         clip = None
         if closeup:
-            around = _union([r for rects in quote_rects for r in rects])
+            if quote_rects:
+                around, margin = _union([r for rects in quote_rects for r in rects]), CLOSEUP_MARGIN
+            else:  # a figure: the ring and the caption
+                around, margin = _union(rings + [pymupdf.Rect(r) for r in around]), 10
+            # the full width of the text column (or of the ring, when wider), so no line is cut short
             text = [pymupdf.Rect(b[:4]) for b in page.get_text("blocks")]
-            left = min((r.x0 for r in text), default=page.rect.x0)
-            right = max((r.x1 for r in text), default=page.rect.x1)
-            top, bottom = around.y0 - CLOSEUP_MARGIN, around.y1 + CLOSEUP_MARGIN
+            left = min([r.x0 for r in text] + [around.x0], default=page.rect.x0)
+            right = max([r.x1 for r in text] + [around.x1], default=page.rect.x1)
+            top, bottom = around.y0 - margin, around.y1 + margin
             # move each edge out to the line it would cut through, so no line is sliced in half
             for block in page.get_text("dict")["blocks"]:
                 for line in block.get("lines", []):
@@ -125,7 +139,7 @@ def _find(page, needles: list[str]) -> list[list]:
         for li, line in enumerate(block.get("lines", [])):
             for span in line["spans"]:
                 for ch in span["chars"]:
-                    for c in unicodedata.normalize("NFKC", ch["c"]).lower():
+                    for c in fold_marks(unicodedata.normalize("NFKC", ch["c"]).lower()):
                         if not c.isspace():
                             chars.append(c)
                             boxes.append(ch["bbox"])
@@ -133,7 +147,7 @@ def _find(page, needles: list[str]) -> list[list]:
     hay = "".join(chars)
     found = []
     for needle in needles:
-        needle = "".join(unicodedata.normalize("NFKC", needle).lower().split())
+        needle = "".join(fold_marks(unicodedata.normalize("NFKC", needle).lower()).split())
         start = 0
         while needle and (i := hay.find(needle, start)) >= 0:
             per_line: dict[tuple, pymupdf.Rect] = {}
@@ -144,11 +158,85 @@ def _find(page, needles: list[str]) -> list[list]:
     return found
 
 
+# Marks Japanese text writes with either of two code points that look alike (Windows and other
+# systems map the same Shift_JIS character differently): a quote typed with one must still find
+# the page that holds the other. NFKC already folds the full-width forms (～ to ~, － to -).
+_LOOKALIKES = {"〜": "~", "−": "-", "―": "—", "∥": "‖"}
+_FOLD_MARKS = str.maketrans(_LOOKALIKES)
+_AMBIGUOUS = set(_LOOKALIKES) | set(_LOOKALIKES.values())
+
+
+def fold_marks(text: str) -> str:
+    """``text`` with each look-alike mark replaced by one form, for comparing quotes with text."""
+    return text.translate(_FOLD_MARKS)
+
+
 def _union(rects: list):
     out = rects[0]
     for r in rects[1:]:
         out = out | r
     return out
+
+
+# what opening or rendering a PDF that moved or changed since indexing raises (PyMuPDF's
+# FileDataError is a RuntimeError; a page past the end is a LookupError from render_page)
+UNREADABLE_PDF = (OSError, RuntimeError, ValueError, LookupError)
+FIGURE_RING = 4  # points between a figure's corners and the ring drawn around it
+
+
+def _ring(rect):
+    """The ellipse box whose ellipse passes just outside the corners of ``rect``: an ellipse
+    drawn in ``rect`` itself would cut them off."""
+    import pymupdf
+
+    rx, ry = rect.width / 2 * 2**0.5 + FIGURE_RING, rect.height / 2 * 2**0.5 + FIGURE_RING
+    c = (rect.tl + rect.br) / 2
+    return pymupdf.Rect(c.x - rx, c.y - ry, c.x + rx, c.y + ry)
+FIGURE_MIN = (40, 30)  # smaller images and drawings (icons, rules, bullets) are not figures
+FIGURE_NEAR = 144  # a caption further than this (2 inches) from every figure names none of them
+
+
+def figures_on(page) -> list:
+    """The figures of a page, top to bottom then left to right: embedded images and clusters of
+    vector drawings (diagrams, charts), merged where they overlap. Found from the page's layout,
+    not its text, so a figure that is only a picture is found too; a full-page image (a scan)
+    is not taken for a figure."""
+    import pymupdf
+
+    rects = [pymupdf.Rect(i["bbox"]) for i in page.get_image_info()]
+    try:
+        rects += [pymupdf.Rect(r) for r in page.cluster_drawings()]
+    except (AttributeError, ValueError, RuntimeError):
+        pass  # an older PyMuPDF, or drawings it cannot group
+    whole = page.rect.get_area()
+    rects = [r & page.rect for r in rects]
+    rects = [r for r in rects if r.width >= FIGURE_MIN[0] and r.height >= FIGURE_MIN[1] and r.get_area() < 0.9 * whole]
+    merged: list = []
+    for r in rects:
+        r = pymupdf.Rect(r)
+        while (other := next((m for m in merged if m.intersects(r)), None)) is not None:
+            merged.remove(other)
+            r |= other
+        merged.append(r)
+    return sorted(merged, key=lambda r: (round(r.y0 / 20), r.x0))
+
+
+def figure_near(page, label: str):
+    """(figure, the label's rectangle) for the figure that ``label`` (its caption, or a label
+    inside it) names on ``page``, or None."""
+    found = _find(page, [label])
+    figures = figures_on(page)
+    if not (found and figures):
+        return None
+    text = _union(found[0])
+
+    def gap(fig) -> float:
+        dx = max(fig.x0 - text.x1, text.x0 - fig.x1, 0)
+        dy = max(fig.y0 - text.y1, text.y0 - fig.y1, 0)
+        return (dx * dx + dy * dy) ** 0.5
+
+    best = min(figures, key=gap)
+    return (best, text) if gap(best) <= FIGURE_NEAR else None
 
 
 def page_range(page: int, pages: int) -> range:
@@ -167,6 +255,7 @@ def build_html(
     title: str = "",
     cut_excerpts: bool = True,
     reading: dict | None = None,
+    steps: list[tuple[str, str, str]] | None = None,
 ) -> str:
     """With ``cut_excerpts`` off (the page will be read in the docwhere window, which turns pages
     itself) PDF links point at the whole file and no excerpt is cut.
@@ -175,9 +264,17 @@ def build_html(
     both from whoever read the hits. The page opens with the answer and, for each quote, where
     it is written with a close-up of it; the hits follow, each with its pages in page order.
     Every page that holds a quote is shown, so each piece of evidence links to its page."""
-    quotes = [q for q in (norm(q) for q in quotes) if q]
+    # the evidence in the order given: ("quote", sentence, note) or ("figure", caption or p.N#K, note)
+    given = steps if steps is not None else [("quote", q, "") for q in quotes]
+    steps = []
+    for kind, text, note in given:
+        text = norm(text) if kind == "quote" else text.strip()
+        if text:
+            steps.append((kind, text, note))
+    quotes = [t for k, t, _ in steps if k == "quote"]
     images_left = MAX_PAGE_IMAGES
     rendered: dict[tuple[str, int], str] = {}
+    circles: dict[tuple[str, int], list] = {}  # (pdf, page) -> the figures given as evidence there
 
     def page_image(path: str, p: int, hit_terms: list[str]) -> str:
         nonlocal images_left
@@ -185,7 +282,8 @@ def build_html(
         if key not in rendered and images_left > 0:
             images_left -= 1
             try:
-                rendered[key] = _data_uri(render_page(path, p, hit_terms, VIEW_DPI, "jpeg", quotes))
+                rendered[key] = _data_uri(render_page(path, p, hit_terms, VIEW_DPI, "jpeg", quotes,
+                                                      circles=circles.get(key, ())))
             except Exception:
                 rendered[key] = ""  # past the last page, or the file changed since indexing
         return rendered.get(key, "")
@@ -198,7 +296,13 @@ def build_html(
     cards_by_path: dict[str, dict] = {}  # each file is shown once, in the card of its first hit
     for hit in hits:
         cards_by_path.setdefault(hit["path"], hit)
-    evidence = [_locate(index, q, hits, cards_by_path) for q in quotes]
+    evidence = []
+    for kind, text, note in steps:
+        ev = _locate(index, text, hits, cards_by_path) if kind == "quote" else _locate_figure(text, hits, cards_by_path)
+        ev["note"] = note
+        evidence.append(ev)
+        if ev.get("rect") and ev["hit"] is not None:
+            circles.setdefault((ev["hit"]["pdf"], ev["page"]), []).append(ev["rect"])
     evidence_pages: dict[int, set[int]] = {}
     evidence_rows: dict[int, set[tuple[str, int]]] = {}
     for ev in evidence:
@@ -432,7 +536,7 @@ def _locate(index: Index, quote: str, hits: list[dict], cards_by_path: dict[str,
             continue
         for p in (page, page + 1, page - 1):
             if image := _closeup(hit, p, quote):
-                return _evidence(quote, cards_by_path[hit["path"]], p, hit["crumb"] or hit["title"], image)
+                return _evidence(quote, cards_by_path[hit["path"]], p, _section_on(hits, hit, p), image)
     for row in _sections_containing(index, quote, list(cards_by_path)):
         card = cards_by_path[row["path"]]
         crumb = row["crumb"] or row["title"]
@@ -452,10 +556,67 @@ def _locate(index: Index, quote: str, hits: list[dict], cards_by_path: dict[str,
     return _evidence(quote, None, None, "", "")
 
 
+def _section_on(hits: list[dict], hit: dict, page: int) -> str:
+    """The heading of a hit of the same file on ``page``; empty when no hit is on that page
+    (a neighbouring page may already belong to another section)."""
+    same = [h for h in hits if h["path"] == hit["path"] and h["anchor"].get("page") == page]
+    return (same[0]["crumb"] or same[0]["title"]) if same else ""
+
+
 def _evidence(quote: str, hit: dict | None, page: int | None, crumb: str, image: str, row: tuple | None = None) -> dict:
     # the section's own heading is enough here; the card below carries the full path
     return {"quote": quote, "hit": hit, "page": page, "row": row, "section": crumb.split(" > ")[-1],
-            "image": image, "table": "", "target": ""}
+            "image": image, "table": "", "target": "", "kind": "quote", "rect": None, "note": ""}
+
+
+def _locate_figure(spec: str, hits: list[dict], cards_by_path: dict[str, dict]) -> dict:
+    """The figure ``spec`` names, ringed in a close-up: ``p.12#2`` (the second figure on page 12
+    of the first hit with pages; ``3:p.12#2`` of hit 3), or the text of its caption or of a label
+    inside it, looked for on the hit pages first and then on every page of the hit files."""
+    import re
+
+    import pymupdf
+
+    def found(card: dict, page: int, rect, caption=None) -> dict:
+        if caption is not None:
+            rect = rect | caption  # ring the caption with its figure, rather than cut across it
+        ev = _evidence(shown, card, page, _section_on(hits, card, page), "")
+        ev.update(kind="figure", rect=tuple(rect))
+        try:
+            ev["image"] = _data_uri(render_page(card["pdf"], page, [], CLOSEUP_DPI, "jpeg", closeup=True, circles=[rect],
+                                                around=[caption] if caption is not None else []))
+        except UNREADABLE_PDF:
+            pass  # the file changed since indexing: the ring still shows on the page below
+        return ev
+
+    paged = [h for h in hits if h.get("pdf")]
+    if m := re.fullmatch(r"(?:(\d+):)?p\.?\s*(\d+)(?:#(\d+))?", spec.strip(), re.IGNORECASE):
+        n, page, k = int(m[1] or 0), int(m[2]), int(m[3] or 1)
+        shown = f"p.{page} の{k}番目の図"
+        card = next((h for h in paged if h["n"] == n), None) if n else (paged[0] if paged else None)
+        if card is not None:
+            card = cards_by_path[card["path"]]
+            try:
+                with pymupdf.open(card["pdf"]) as doc:
+                    figures = figures_on(doc[page - 1]) if 1 <= page <= doc.page_count else []
+            except UNREADABLE_PDF:
+                figures = []  # moved or changed since indexing
+            if 1 <= k <= len(figures):
+                return found(card, page, figures[k - 1])
+        return {**_evidence(shown, None, None, "", ""), "kind": "figure"}
+    shown = spec.strip()
+    for card in dict.fromkeys(cards_by_path[h["path"]]["path"] for h in paged):
+        card = cards_by_path[card]
+        first = [h["anchor"]["page"] for h in paged if h["path"] == card["path"] and h["anchor"].get("page")]
+        try:
+            with pymupdf.open(card["pdf"]) as doc:
+                order = list(dict.fromkeys([p + d for p in first for d in (0, 1, -1)] + list(range(1, doc.page_count + 1))))
+                for page in (p for p in order if 1 <= p <= doc.page_count):
+                    if (near := figure_near(doc[page - 1], shown)) is not None:
+                        return found(card, page, *near)
+        except UNREADABLE_PDF:
+            continue  # moved or changed since indexing: try the next file
+    return {**_evidence(shown, None, None, "", ""), "kind": "figure"}
 
 
 SHEET_CONTEXT_ROWS = 3  # rows shown above and below a hit row
@@ -564,7 +725,8 @@ def quote_probe(quote: str) -> str:
 
 def _sections_containing(index: Index, quote: str, paths: list[str]) -> list:
     probe = quote_probe(quote)
-    like = "%" + probe.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    like = probe.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = "%" + "".join("_" if c in _AMBIGUOUS else c for c in like) + "%"  # either look-alike matches
     marks = ",".join("?" * len(paths))
     return index.db.execute(
         "SELECT c.crumb, c.title, c.body, c.anchors, f.path FROM chunks c JOIN files f ON f.id = c.file_id"
@@ -575,10 +737,10 @@ def _sections_containing(index: Index, quote: str, paths: list[str]) -> list:
 
 def _anchor_of_line(row, quote: str) -> dict:
     """The anchor (page, or sheet and row) of the first line in ``row`` holding the quote."""
-    probe = quote_probe(quote).lower()
+    probe = fold_marks(quote_probe(quote).lower())
     anchors = json.loads(row["anchors"])
     for i, line in enumerate(row["body"].split("\n")):
-        if probe in line.lower():
+        if probe in fold_marks(line.lower()):
             return anchors[i] if len(anchors) > 1 and i < len(anchors) else (anchors[0] if anchors else {})
     return {}
 
@@ -602,17 +764,20 @@ def _answer_html(answer: str, evidence: list[dict], excerpts=None) -> str:
     jumping to that page further down."""
     if not (answer or evidence):
         return ""
+    flow = any(ev.get("note") for ev in evidence)
     items = []
-    for ev in evidence:
+    for step, ev in enumerate(evidence, 1):
         hit = ev["hit"]
+        lead = _note_html(ev, step) if flow else ""
         if hit is None:
+            what = "図" if ev.get("kind") == "figure" else "位置"
             items.append(
-                '<div class="evidence"><p class="missing">資料の中で位置を特定できませんでした。</p>'
-                f'<blockquote>{esc(ev["quote"])}</blockquote></div>'
+                f'<div class="evidence"><p class="missing">資料の中で{what}を特定できませんでした。</p>'
+                f'<div>{lead}<blockquote>{esc(ev["quote"])}</blockquote></div></div>'
             )
             continue
         at_page = {**hit, "anchor": {**hit["anchor"], "page": ev["page"]}} if ev["page"] else hit
-        parts = [f'<span class="file">{esc(Path(hit["path"]).name)}</span>']
+        parts = [_place(hit["path"])]
         if ev["section"]:
             parts.append(f"<span>{esc(ev['section'])}</span>")
         if ev["page"]:
@@ -621,9 +786,10 @@ def _answer_html(answer: str, evidence: list[dict], excerpts=None) -> str:
             parts.append(f'<a href="#{ev["target"]}">{esc(ev["row"][0])} {ev["row"][1]}行目</a>')
         source = f'<p class="source">{"".join(parts)}{_open_link(at_page, excerpts)}</p>'
         if ev["image"]:
+            what = "根拠の図（丸で囲んだもの）" if ev.get("kind") == "figure" else "根拠の箇所"
             shown = (
                 f'<a class="closeup" href="#{ev["target"]}" title="このページへ移動">'
-                f'<img src="{ev["image"]}" alt="根拠の箇所の拡大。クリックするとページ全体へ移動します"></a>'
+                f'<img src="{ev["image"]}" alt="{what}の拡大。クリックするとページ全体へ移動します"></a>'
             )
         elif ev["table"]:
             shown = ev["table"]
@@ -632,13 +798,36 @@ def _answer_html(answer: str, evidence: list[dict], excerpts=None) -> str:
         cite = _citation(hit, ev)
         button = f'<button type="button" class="cite" data-live hidden data-cite="{esc(cite)}">引用をコピー</button>'
         source = source.replace("</p>", f"{button}</p>", 1)
-        items.append(f'<div class="evidence">{source}{shown}</div>')
-    head = f'<h2 class="evidence-head">根拠 {len(evidence)} 件</h2>' if len(evidence) > 1 else ""
+        items.append(f'<div class="evidence">{source}<div>{lead}{shown}</div></div>' if flow
+                     else f'<div class="evidence">{source}{shown}</div>')
     text = answer or evidence[0]["quote"]
+    return answer_section(text, evidence, items, flow and bool(answer))
+
+
+def _note_html(ev: dict, step: int) -> str:
+    """The step's number and what this piece of evidence says, in the reader's words."""
+    note = f'<span class="says">{esc(ev["note"])}</span>' if ev.get("note") else ""
+    return f'<p class="step"><span class="no">{step}</span>{note}</p>'
+
+
+def answer_section(text: str, evidence: list[dict], items: list[str], therefore: bool) -> str:
+    """The answer, then its evidence. When the evidence carries notes it reads as a line of
+    reasoning: numbered steps, each saying what that place shows, closing with the conclusion."""
+    if any(ev.get("note") for ev in evidence):
+        head = '<h2 class="evidence-head">根拠の流れ</h2>'
+    else:
+        head = f'<h2 class="evidence-head">根拠 {len(evidence)} 件</h2>' if len(evidence) > 1 else ""
+    end = f'<p class="therefore"><span class="so">つまり</span><span>{esc(text)}</span></p>' if therefore else ""
     return (
         f'<section class="answer" id="answer" aria-label="回答"><p class="answer-text"><span>{esc(text)}</span></p>'
-        f'{head}{"".join(items)}</section>'
+        f'{head}{"".join(items)}{end}</section>'
     )
+
+
+def rail_label(ev: dict) -> str:
+    """What the side list shows for a piece of evidence: its note when there is one."""
+    text = ev.get("note") or ev["quote"]
+    return text if len(text) <= RAIL_QUOTE_CHARS else text[:RAIL_QUOTE_CHARS] + "…"
 
 
 RAIL_QUOTE_CHARS = 36
@@ -654,7 +843,7 @@ def _rail_html(has_answer: bool, evidence: list[dict], hits: list[dict], targets
     if evidence:
         items = []
         for ev in evidence:
-            quote = ev["quote"] if len(ev["quote"]) <= RAIL_QUOTE_CHARS else ev["quote"][:RAIL_QUOTE_CHARS] + "…"
+            quote = rail_label(ev)
             if ev["hit"] is None:
                 items.append(f'<li><span class="item unplaced"><span class="pg">位置不明</span><span class="q">{esc(quote)}</span></span></li>')
                 continue
@@ -665,18 +854,26 @@ def _rail_html(has_answer: bool, evidence: list[dict], hits: list[dict], targets
             else:
                 where = Path(ev["hit"]["path"]).name
             items.append(
-                f'<li><a class="item" href="#{ev["target"]}"><span class="pg">{esc(where)}</span>'
-                f'<span class="q">{esc(quote)}</span><span class="sec">{esc(ev["section"])}</span></a></li>'
+                f'<li><a class="item" href="#{ev["target"]}" title="{esc(ev["hit"]["path"])}"><span class="pg">{esc(where)}</span>'
+                f'<span class="q">{esc(quote)}</span>{_place(ev["hit"]["path"])}'
+                f'<span class="sec">{esc(ev["section"])}</span></a></li>'
             )
         parts.append(f'<h2>根拠</h2><ol class="evidence-list">{"".join(items)}</ol>')
     if len(hits) > 1:
         items = "".join(
-            f'<li><a class="item" href="#{targets[h["n"]]}"><span class="pg">{esc(h["location"] or "")}</span>'
-            f'<span class="q">{esc(Path(h["path"]).name)}</span><span class="sec">{esc((h["crumb"] or h["title"]).split(" > ")[-1])}</span></a></li>'
+            f'<li><a class="item" href="#{targets[h["n"]]}" title="{esc(h["path"])}"><span class="pg">{esc(h["location"] or "")}</span>'
+            f'{_place(h["path"], "q")}<span class="sec">{esc((h["crumb"] or h["title"]).split(" > ")[-1])}</span></a></li>'
             for h in hits
         )
         parts.append(f'<h2>資料 {len(hits)} 件</h2><ol class="candidate-list">{items}</ol>')
     return f'<nav class="rail" aria-label="根拠と候補">{"".join(parts)}</nav>'
+
+
+def _place(path: str, cls: str = "file") -> str:
+    """Which document it is and where it lives: the file name, then its folder."""
+    p = Path(path)
+    return (f'<span class="{cls} place"><span class="name">{esc(p.name)}</span>'
+            f'<span class="dir">{esc(str(p.parent))}</span></span>')
 
 
 def _card(
@@ -863,6 +1060,7 @@ def esc(text: str) -> str:
 
 STYLE = """
 :root {
+  color-scheme: light dark;  /* native scrollbars and controls follow the theme */
   --bg: #eef1f4; --surface: #ffffff; --ink: #1b2430; --muted: #5b6675; --rule: #d5dbe3;
   --blue: #1f4e8c; --marker: #ffb000; --marker-soft: #ffe39a; --term: #dbe6f5; --warn: #a8431a;
 }
@@ -919,7 +1117,9 @@ blockquote { margin: 14px 0 0; padding: 2px 0 2px 14px; border-left: 3px solid v
 
 .layout.has-rail { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1340px; margin: 0 auto; }
 .layout.has-rail .wrap { margin: 0; }
-.rail { position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto; padding: 28px 8px 28px 20px; }
+.rail { position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto; padding: 28px 8px 28px 20px;
+  scrollbar-width: thin; scrollbar-color: var(--rule) transparent; scrollbar-gutter: stable; }
+.rail:hover { scrollbar-color: var(--muted) transparent; }
 .rail .to-answer { display: inline-block; font-size: 13px; text-decoration: none; }
 .rail .to-answer::before { content: "↑ "; }
 .rail h2 { margin: 20px 0 6px; font-size: 13px; color: var(--muted); font-weight: 700; }
@@ -932,6 +1132,12 @@ blockquote { margin: 14px 0 0; padding: 2px 0 2px 14px; border-left: 3px solid v
 .rail .q { display: block; font-size: 13px; line-height: 1.55; }
 .rail .sec { display: block; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .rail .unplaced { border-left-color: var(--warn); }
+/* a document: its name, then the folder it is in */
+.place { display: block; word-break: break-all; }
+.place .name { display: block; color: var(--ink); font-weight: 600; }
+.place .dir { display: block; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.rail .place { font-size: 12px; line-height: 1.5; }
+.rail .q.place { font-size: 13px; }  /* a candidate is named by its file */
 .rail .unplaced .pg { color: var(--warn); }
 
 .region { margin: 56px 0 0; font-size: 20px; }
@@ -980,7 +1186,15 @@ a.closeup:hover img { border-left-color: var(--blue); }
 .evidence .source { margin: 0; flex-direction: column; align-items: flex-start; gap: 2px; }
 .evidence .source .file { word-break: break-all; }
 .evidence .sheet, .evidence blockquote, .evidence .missing { margin-top: 0; }
-.evidence .sheet figcaption { display: none; }  /* the sheet is already named in the source */
+.evidence .sheet figcaption { display: none; }
+/* the line of reasoning: each step says what its place shows, then the conclusion */
+.step { display: flex; gap: 10px; align-items: baseline; margin: 0 0 10px; font-size: 16px; line-height: 1.6; }
+.step .no { flex: none; display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--marker); color: #1b2430; font-size: 14px; font-weight: 700; }
+.step .says { font-weight: 600; }
+.therefore { display: flex; gap: 12px; align-items: baseline; margin: 20px 0 0; padding-top: 16px;
+  border-top: 2px solid var(--marker); font-size: 19px; font-weight: 700; line-height: 1.5; }
+.therefore .so { flex: none; color: var(--muted); font-size: 15px; }  /* the sheet is already named in the source */
 a.quote { color: inherit; text-decoration: none; }
 a.quote:hover blockquote { border-left-color: var(--blue); }
 .missing { margin: 6px 0 0; color: var(--warn); font-size: 13px; }
