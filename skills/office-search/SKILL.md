@@ -190,8 +190,8 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
 ## When something does not work on this PC
 
 Office files stay unreadable, a view does not open in the window, background reading never
-progresses, or the user asks to check the setup ("動作確認して"): read
-`references/troubleshooting.md` first.
+progresses, the user asks to check the setup ("動作確認して"), or asks why reading or searching
+is slow ("何が遅い？", "インデックスに時間かかる"): read `references/troubleshooting.md` first.
 
 ## Leaving files out
 

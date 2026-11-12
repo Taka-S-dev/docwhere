@@ -147,6 +147,8 @@ class Index:
             db.execute("ALTER TABLE roots ADD COLUMN excludes TEXT NOT NULL DEFAULT '[]'")
         if "exclude_hits" not in columns:
             db.execute("ALTER TABLE roots ADD COLUMN exclude_hits TEXT")
+        if "read_ms" not in {r["name"] for r in db.execute("PRAGMA table_info(files)")}:
+            db.execute("ALTER TABLE files ADD COLUMN read_ms INTEGER")  # how long reading the file took
         db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         return db
 
@@ -225,8 +227,8 @@ class Index:
 
         outcomes = _extract_all(todo, workers, timeout, tick)
         try:
-            for key, path, mtime, size, chunks, error, timed_out in outcomes:
-                self._store(key, path, mtime, size, chunks, error)
+            for key, path, mtime, size, chunks, error, timed_out, seconds in outcomes:
+                self._store(key, path, mtime, size, chunks, error, seconds)
                 done += 1
                 stats.updated += 1
                 stats.failed += error is not None
@@ -334,19 +336,22 @@ class Index:
         row = self.db.execute("SELECT path FROM roots WHERE key = ?", (root_key,)).fetchone()
         return row["path"] if row else root_key
 
-    def _store(self, key: str, path: Path, mtime: int, size: int, chunks: list[Chunk], error: str | None) -> None:
+    def _store(
+        self, key: str, path: Path, mtime: int, size: int, chunks: list[Chunk], error: str | None, seconds: float = 0.0
+    ) -> None:
         row = self.db.execute("SELECT id FROM files WHERE key = ?", (key,)).fetchone()
+        read_ms = round(seconds * 1000)
         if row:
             file_id = row["id"]
             self.db.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))
             self.db.execute(
-                "UPDATE files SET path = ?, mtime_ns = ?, size = ?, version = ?, error = ? WHERE id = ?",
-                (str(path), mtime, size, EXTRACTOR_VERSION, error, file_id),
+                "UPDATE files SET path = ?, mtime_ns = ?, size = ?, version = ?, error = ?, read_ms = ? WHERE id = ?",
+                (str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, file_id),
             )
         else:
             file_id = self.db.execute(
-                "INSERT INTO files(key, path, mtime_ns, size, version, error) VALUES (?, ?, ?, ?, ?, ?)",
-                (key, str(path), mtime, size, EXTRACTOR_VERSION, error),
+                "INSERT INTO files(key, path, mtime_ns, size, version, error, read_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (key, str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms),
             ).lastrowid
         self.db.executemany(
             "INSERT INTO chunks(file_id, title, crumb, body, anchors) VALUES (?, ?, ?, ?, ?)",
@@ -385,6 +390,20 @@ class Index:
                 "excludes": excludes,
             })
         return out
+
+    def read_times(self) -> dict[str, dict]:
+        """Per extension, the files whose reading time is known and the seconds they took, the
+        slowest kind first: where indexing spends its time on this PC."""
+        totals: dict[str, list] = {}
+        for r in self.db.execute("SELECT path, read_ms FROM files WHERE read_ms IS NOT NULL"):
+            ext = os.path.splitext(r["path"])[1].lower()
+            entry = totals.setdefault(ext, [0, 0])
+            entry[0] += 1
+            entry[1] += r["read_ms"]
+        return {
+            ext: {"files": n, "seconds": round(ms / 1000, 1), "average": round(ms / n / 1000, 2)}
+            for ext, (n, ms) in sorted(totals.items(), key=lambda kv: -kv[1][1])
+        }
 
     def errors(self, roots: list[Path] | None = None) -> list[tuple[str, str]]:
         """Files that could not be read (all of them, not only those that failed in the last sync)."""
@@ -470,7 +489,7 @@ def _extract_job(path: str) -> tuple[list[Chunk], str | None]:
 
 
 def _extract_all(todo: list[tuple], workers: int | None, timeout: float, tick) -> Iterator[tuple]:
-    """(key, path, mtime, size, chunks, error, timed_out) for every file in ``todo``."""
+    """(key, path, mtime, size, chunks, error, timed_out, seconds) for every file in ``todo``."""
     job = _extract_job  # looked up here so a test can put a slow reader in its place
     tasks = [worker_pool.Task(str(item[1]), is_serial(item[1]), item) for item in todo]
     pooled = sum(not t.serial for t in tasks)
@@ -478,6 +497,6 @@ def _extract_all(todo: list[tuple], workers: int | None, timeout: float, tick) -
     for out in worker_pool.run(tasks, job, max(1, workers), timeout, tick):
         key, path, mtime, size = out.task.data
         if out.failure:
-            yield key, path, mtime, size, [], out.failure, out.timed_out
+            yield key, path, mtime, size, [], out.failure, out.timed_out, out.seconds
         else:
-            yield key, path, mtime, size, *out.result, False
+            yield key, path, mtime, size, *out.result, False, out.seconds

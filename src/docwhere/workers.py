@@ -40,6 +40,7 @@ class Outcome:
     result: Any = None  # what the job returned
     failure: str | None = None  # set instead when the worker was stopped or died
     timed_out: bool = False
+    seconds: float = 0.0  # how long the worker took on the file
 
 
 def _serve(conn: Connection, job: Job, serial: bool) -> None:
@@ -49,10 +50,13 @@ def _serve(conn: Connection, job: Job, serial: bool) -> None:
     extractors.on_process_started(lambda pid: conn.send(("pid", pid)))
     try:
         while (path := conn.recv()) is not None:
+            started = time.perf_counter()  # timed here: the worker's own start-up is not the file's
             try:
-                conn.send(("done", job(path)))
+                result = job(path)
             except extractors.NeedsApplication:
                 conn.send(("serial", None))
+                continue
+            conn.send(("done", (result, time.perf_counter() - started)))
     except (EOFError, KeyboardInterrupt):
         pass
     finally:
@@ -158,13 +162,15 @@ def run(
                         pool.append(_Worker(True, job))
                 else:
                     task, w.task = w.task, None
-                    yield Outcome(task, result=value)
+                    result, seconds = value
+                    yield Outcome(task, result=result, seconds=seconds)
             now = time.monotonic()
             for w in pool:
                 if w.task is not None and now - w.started > timeout:
                     task = w.task
                     w.kill()
-                    yield Outcome(task, failure=f"timed out after {timeout:.0f}s and was stopped", timed_out=True)
+                    yield Outcome(task, failure=f"timed out after {timeout:.0f}s and was stopped", timed_out=True,
+                                  seconds=now - w.started)
             if now >= next_tick:
                 next_tick = now + TICK
                 if tick:

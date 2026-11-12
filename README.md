@@ -40,7 +40,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 | `index DIR... [--rebuild] [--timeout SEC]` / `index --stop` | インデックスを明示的に作成・再作成（読み終わるまで待つ） / 裏の読み込みを止める |
 | `exclude DIR [PATTERN...] [--remove \| --clear]` | DIR の下のフォルダやファイルを、インデックスと検索から外す（パターンなしで一覧）。下の「除外」 |
 | `doctor [DIR...] [--skill SKILL.md] [--no-office]` | この PC で動くかの確認。下の「動作確認」 |
-| `status [--errors]` | インデックス済みフォルダ、各フォルダの除外パターン、読めなかったファイル |
+| `status [--errors]` | インデックス済みフォルダ、各フォルダの除外パターン、読めなかったファイル、形式ごとの読み込み時間（遅い順。どこに時間がかかっているかの目安） |
 | `wiki add NAME URL [--space KEY]` / `wiki list` / `wiki remove NAME` | 検索する wiki の登録（下の「社内 wiki」） |
 | `wiki check [NAME] [--term T]` | wiki に届くか、バージョン、REST API の有無、スペース、試しの検索の結果 |
 | `wiki spaces [NAME] [--json]` | ログインせずに見られるスペースのキーと名前の一覧 |

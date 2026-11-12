@@ -499,9 +499,10 @@ def cmd_status(args) -> int:
     reading = None if reader is None else {
         "folder": reader.current, "read": reader.done, "files": reader.total, "queued": reader.queued,
     }
+    times = index.read_times()
     if args.json:
-        print(json.dumps({"db": str(index.path), "roots": roots, "errors": errors, "background": reading},
-                         ensure_ascii=False, indent=1))
+        print(json.dumps({"db": str(index.path), "roots": roots, "errors": errors, "background": reading,
+                          "read_times": times}, ensure_ascii=False, indent=1))
         return 0
     print(f"index: {index.path}")
     if reader is not None:
@@ -523,6 +524,12 @@ def cmd_status(args) -> int:
             print("    excluding: " + ", ".join(_described(e) for e in r["excludes"]))
     for path, error in errors:
         print(f"  ! {path}: {error}")
+    if times:
+        # where indexing spends its time on this PC, the slowest kind first
+        print("reading time by kind: " + ", ".join(
+            f"{ext or '(none)'} {t['files']} files {duration(t['seconds'])} (avg {t['average']:.2f}s)"
+            for ext, t in list(times.items())[:6]
+        ))
     if stale:
         # never removed automatically: the next search there would have to rebuild it
         print("\nto free their space: docwhere forget " + " ".join(f'"{p}"' for p in stale))
