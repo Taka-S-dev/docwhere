@@ -8,6 +8,10 @@ Extractors that drive a desktop application (``serial=True``) run one file at a 
 process and may hold the application open between files; ``release()`` closes it. They report
 the application's process through ``process_started`` so that a file stuck in it can be
 stopped together with the application.
+
+An extractor that reads most files on its own but needs the application for some (``.xls``)
+is registered without ``serial`` and raises ``NeedsApplication`` for those when it runs in a
+pooled worker; the file is then read again in the application's worker.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from docwhere.model import Chunk
 
 # Bump on every extractor change: files that could not be read are tried again, since the
 # change may let them be read.
-EXTRACTOR_VERSION = 6
+EXTRACTOR_VERSION = 7
 # The oldest version whose output is still current. Set it to EXTRACTOR_VERSION when the
 # output changes, so that every file is re-extracted.
 OUTPUT_VERSION = 5
@@ -38,6 +42,21 @@ _REGISTRY: dict[str, Extractor] = {}
 _SERIAL: set[str] = set()
 _RELEASERS: list[Callable[[], None]] = []
 _PROCESS_LISTENERS: list[Callable[[int], None]] = []
+_worker: str | None = None  # "pooled" or "serial" inside a worker process, None outside one
+
+
+class NeedsApplication(Exception):
+    """This file can only be read through a desktop application: read it in the serial worker."""
+
+
+def set_worker(kind: str | None) -> None:
+    global _worker
+    _worker = kind
+
+
+def may_start_application() -> bool:
+    """False in a pooled worker, where several applications would run at once."""
+    return _worker != "pooled"
 
 
 def register(*exts: str, serial: bool = False) -> Callable[[Extractor], Extractor]:

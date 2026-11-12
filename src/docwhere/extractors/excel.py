@@ -26,13 +26,13 @@ def extract(path: Path) -> list[Chunk]:
     chunks: list[Chunk] = []
     try:
         for ws in wb.worksheets:
-            chunks += _sheet_chunks(ws)
+            chunks += sheet_chunks(ws)
     finally:
         wb.close()
     return chunks
 
 
-def _sheet_chunks(ws) -> list[Chunk]:
+def sheet_chunks(ws) -> list[Chunk]:
     chunks: list[Chunk] = []
     header: tuple[str, dict] | None = None
     looking_for_header = True

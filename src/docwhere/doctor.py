@@ -197,7 +197,7 @@ def _office_checks() -> list[Check]:
     from docwhere import workers
 
     if os.name != "nt":
-        return [Check("Office", None, "legacy .doc/.xls/.ppt need Microsoft Office on Windows")]
+        return [Check("Office", None, "legacy .doc/.ppt (and .xls saved as HTML or XML) need Microsoft Office on Windows")]
     names = {"word": "Word (.doc)", "excel": "Excel (.xls)", "powerpoint": "PowerPoint (.ppt)"}
     tasks = [workers.Task(kind, serial=True) for kind in names]
     checks = []
@@ -214,18 +214,24 @@ def _office_checks() -> list[Check]:
 
 
 def office_probe(kind: str) -> tuple[bool | None, str]:
-    """Runs in a worker: make a legacy file with Office and read it back through the extractor."""
+    """Runs in a worker: make a legacy file with Office and read it back through the extractor.
+    An .xls is read back through Excel, the way the .xls files xlrd cannot read are."""
     import pywintypes
 
     from docwhere.extractors import extract
+    from docwhere.extractors import legacy as legacy_module
+
+    read = legacy_module._xls_through_excel if kind == "excel" else extract
 
     started = time.monotonic()
     try:
         with tempfile.TemporaryDirectory() as tmp:
             legacy = _make_legacy(kind, Path(tmp))
-            text = "\n".join(line for chunk in extract(legacy) for line in [chunk.title, *chunk.lines])
+            text = "\n".join(line for chunk in read(legacy) for line in [chunk.title, *chunk.lines])
     except pywintypes.com_error as e:
         if e.hresult == -2147221005:  # CO_E_CLASSSTRING: the application is not installed
+            if kind == "excel":
+                return None, "not installed; .xls files are still read, except those saved as HTML or XML"
             return None, "not installed; these files are listed as unreadable"
         return False, f"Office refused: {e}"
     except Exception as e:  # noqa: BLE001 - report any failure as the result instead of losing the worker

@@ -5,6 +5,8 @@ worker is reading and for how long. A worker still on its file after the timeout
 together with any application it started (Office, for the legacy formats), and its file is
 reported as timed out; a new worker takes the next file. Files whose reader drives a desktop
 application go to one worker of their own, which keeps the application open between files.
+A pooled worker whose reader finds that a file needs the application hands the file on to
+that worker.
 """
 
 from __future__ import annotations
@@ -40,13 +42,17 @@ class Outcome:
     timed_out: bool = False
 
 
-def _serve(conn: Connection, job: Job) -> None:
+def _serve(conn: Connection, job: Job, serial: bool) -> None:
     from docwhere import extractors
 
+    extractors.set_worker("serial" if serial else "pooled")
     extractors.on_process_started(lambda pid: conn.send(("pid", pid)))
     try:
         while (path := conn.recv()) is not None:
-            conn.send(("done", job(path)))
+            try:
+                conn.send(("done", job(path)))
+            except extractors.NeedsApplication:
+                conn.send(("serial", None))
     except (EOFError, KeyboardInterrupt):
         pass
     finally:
@@ -66,7 +72,7 @@ class _Worker:
     def start(self) -> None:
         ctx = multiprocessing.get_context("spawn")
         self.conn, child = ctx.Pipe()
-        self.proc = ctx.Process(target=_serve, args=(child, self.job), daemon=True)
+        self.proc = ctx.Process(target=_serve, args=(child, self.job, self.serial), daemon=True)
         self.proc.start()
         child.close()
 
@@ -145,6 +151,11 @@ def run(
                     continue
                 if kind == "pid":
                     w.apps.add(value)
+                elif kind == "serial":
+                    task, w.task = w.task, None
+                    queues[True].append(Task(task.path, True, task.data))
+                    if not any(p.serial for p in pool):
+                        pool.append(_Worker(True, job))
                 else:
                     task, w.task = w.task, None
                     yield Outcome(task, result=value)

@@ -1,6 +1,10 @@
 """Legacy binary Office files (.doc .xls .ppt): converted to OOXML by Office itself, then read
 by the regular extractors.
 
+An .xls is read directly instead (xlrd), with no Office and alongside the other files; only an
+.xls that xlrd cannot read (an HTML or XML table saved under that name, an encrypted workbook)
+goes through Excel.
+
 Needs Microsoft Office on Windows. One instance of each application is started on first use,
 reused for every file in the sync and closed by ``release()``. Macros are force-disabled and
 alerts suppressed so an unattended conversion never runs document code or waits on a dialog;
@@ -16,7 +20,13 @@ import os
 import tempfile
 from pathlib import Path
 
-from docwhere.extractors import on_release, process_started, register
+from docwhere.extractors import (
+    NeedsApplication,
+    may_start_application,
+    on_release,
+    process_started,
+    register,
+)
 from docwhere.model import Chunk
 
 _FORCE_DISABLE_MACROS = 3  # msoAutomationSecurityForceDisable
@@ -137,8 +147,76 @@ def extract_doc(path: Path) -> list[Chunk]:
         return from_docx(out)
 
 
-@register(".xls", serial=True)
+@register(".xls")
 def extract_xls(path: Path) -> list[Chunk]:
+    import xlrd
+    from xlrd.compdoc import CompDocError
+
+    from docwhere.extractors.excel import sheet_chunks
+
+    try:
+        book = xlrd.open_workbook(str(path), on_demand=True)
+    except (xlrd.XLRDError, CompDocError) as e:
+        if not may_start_application():
+            raise NeedsApplication from e
+        return _xls_through_excel(path)
+    try:
+        chunks: list[Chunk] = []
+        for i in range(book.nsheets):
+            chunks += sheet_chunks(_XlsSheet(book.get_sheet(i), book.datemode))
+            book.unload_sheet(i)
+        return chunks
+    finally:
+        book.release_resources()
+
+
+class _XlsCell:
+    __slots__ = ("column_letter", "row", "value")
+
+    def __init__(self, value, row: int, column_letter: str) -> None:
+        self.value, self.row, self.column_letter = value, row, column_letter
+
+
+class _XlsSheet:
+    """An xlrd sheet seen through the parts of an openpyxl worksheet that ``sheet_chunks``
+    uses, with cell values as openpyxl gives them (30, not 30.0; dates as datetimes)."""
+
+    def __init__(self, sheet, datemode: int) -> None:
+        self.sheet, self.datemode, self.title = sheet, datemode, sheet.name
+
+    def iter_rows(self):
+        from openpyxl.utils import get_column_letter
+
+        letters = [get_column_letter(c + 1) for c in range(self.sheet.ncols)]
+        for r in range(self.sheet.nrows):
+            yield [_XlsCell(self._value(cell), r + 1, letters[c]) for c, cell in enumerate(self.sheet.row(r))]
+
+    def _value(self, cell):
+        import xlrd
+
+        kind, value = cell.ctype, cell.value
+        if kind in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+            return None
+        if kind == xlrd.XL_CELL_NUMBER:
+            return int(value) if float(value).is_integer() else value
+        if kind == xlrd.XL_CELL_BOOLEAN:
+            return bool(value)
+        if kind == xlrd.XL_CELL_ERROR:
+            return xlrd.error_text_from_code.get(value, "#VALUE!")
+        if kind == xlrd.XL_CELL_DATE:
+            try:
+                parts = xlrd.xldate_as_tuple(value, self.datemode)
+            except xlrd.xldate.XLDateError:
+                return value
+            if parts[:3] == (0, 0, 0):
+                import datetime
+
+                return datetime.time(*parts[3:])
+            return xlrd.xldate_as_datetime(value, self.datemode)
+        return value
+
+
+def _xls_through_excel(path: Path) -> list[Chunk]:
     from docwhere.extractors.excel import extract as from_xlsx
 
     app = _app("Excel.Application")

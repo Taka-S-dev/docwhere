@@ -16,7 +16,14 @@ from pathlib import Path
 
 from docwhere import workers as worker_pool
 from docwhere.excludes import Matcher, normalize
-from docwhere.extractors import EXTRACTOR_VERSION, OUTPUT_VERSION, extract, is_serial, supported_extensions
+from docwhere.extractors import (
+    EXTRACTOR_VERSION,
+    OUTPUT_VERSION,
+    NeedsApplication,
+    extract,
+    is_serial,
+    supported_extensions,
+)
 from docwhere.model import Chunk
 
 SCHEMA_VERSION = 1
@@ -456,6 +463,8 @@ def _walk(root: Path, matcher: Matcher, hits: dict) -> Iterator[tuple[Path, os.s
 def _extract_job(path: str) -> tuple[list[Chunk], str | None]:
     try:
         return extract(Path(path)), None
+    except NeedsApplication:
+        raise  # the worker hands the file on to the application's worker
     except Exception as e:  # one unreadable file must not stop the sync
         return [], f"{type(e).__name__}: {e}"
 

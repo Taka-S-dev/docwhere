@@ -91,7 +91,7 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
 
    **A folder not read yet.** The first search on a new folder (or after many files changed)
    waits at most 20 seconds, then answers from the files read so far and leaves the rest to a
-   background reader, which keeps going after the command returns (legacy .doc/.xls/.ppt are
+   background reader, which keeps going after the command returns (legacy .doc/.ppt are
    converted through Office, about a second each). The JSON's `reading` says how much the
    search saw: `complete` is true once every file was read; while it is false, `read` of
    `files` were searched, `remaining` are not yet, `remaining_types` tells which kinds and

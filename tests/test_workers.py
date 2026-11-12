@@ -90,3 +90,23 @@ def test_files_that_failed_are_tried_again_when_the_extractors_change(docs, inde
     assert index.sync(docs).updated == 1  # only the unreadable one; the others' output still holds
     monkeypatch.setattr(index_module, "OUTPUT_VERSION", index_module.EXTRACTOR_VERSION)
     assert index.sync(docs).updated == len(index.files_in([docs])) - 1  # the broken one was just tried
+
+
+def _needs_app_when_named(path):
+    """Reads a file in a pooled worker unless its name says it needs the application."""
+    from docwhere.extractors import NeedsApplication, may_start_application
+
+    if "app" in Path(path).name and not may_start_application():
+        raise NeedsApplication
+    return f"{Path(path).name} in {os.getpid()}"
+
+
+def test_a_file_that_needs_the_application_is_handed_to_its_worker():
+    tasks = [workers.Task(name, False) for name in ("a.xls", "app.xls", "b.xls", "app2.xls")]
+    outcomes = {o.task.path: o for o in workers.run(tasks, _needs_app_when_named, 2, timeout=60)}
+    assert set(outcomes) == {"a.xls", "app.xls", "b.xls", "app2.xls"}
+    assert all(o.failure is None for o in outcomes.values())
+    pids = {name: o.result.split(" in ")[1] for name, o in outcomes.items()}
+    assert outcomes["app.xls"].task.serial and outcomes["app2.xls"].task.serial
+    assert pids["app.xls"] == pids["app2.xls"]  # one application worker, kept for both
+    assert pids["app.xls"] not in (pids["a.xls"], pids["b.xls"])
