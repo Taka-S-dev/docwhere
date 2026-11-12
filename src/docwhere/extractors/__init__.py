@@ -25,7 +25,7 @@ from docwhere.model import Chunk
 
 # Bump on every extractor change: files that could not be read are tried again, since the
 # change may let them be read.
-EXTRACTOR_VERSION = 7
+EXTRACTOR_VERSION = 8
 # The oldest version whose output is still current. Set it to EXTRACTOR_VERSION when the
 # output changes, so that every file is re-extracted.
 OUTPUT_VERSION = 5

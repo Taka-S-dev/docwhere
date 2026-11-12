@@ -66,6 +66,10 @@ def legacy(tmp_path_factory) -> Path:
             wb = excel.Workbooks.Open(str(out / f"{name}.xlsx"))
             wb.SaveAs(str(out / f"{name}.xls"), FileFormat=56)  # xlExcel8
             wb.Close(False)
+        excel.DisplayAlerts = False
+        wb = excel.Workbooks.Open(str(out / "c.xlsx"))
+        wb.SaveAs(str(out / "locked.xls"), FileFormat=56, Password="pw")
+        wb.Close(False)
     finally:
         excel.Quit()
     ppt = _office("PowerPoint.Application")
@@ -117,3 +121,15 @@ def test_an_xls_that_is_really_html_is_read_through_excel(legacy, tmp_path):
     bodies = {r["path"]: r["body"] for r in index.db.execute(
         "SELECT f.path, group_concat(c.body) AS body FROM files f JOIN chunks c ON c.file_id = f.id GROUP BY f.id")}
     assert "再送回数" in bodies[str(folder / "web.xls")]
+
+
+def test_a_password_protected_xls_is_given_up_at_once(legacy, tmp_path):
+    # through Excel it would wait on the password prompt until the timeout
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    (folder / "locked.xls").write_bytes((legacy / "locked.xls").read_bytes())
+    index = Index(tmp_path / "index.db")
+    stats = index.sync(folder, workers=1, timeout=30)
+    assert stats.failed == 1 and not stats.timed_out
+    [(_, error)] = index.errors()
+    assert "password-protected" in error

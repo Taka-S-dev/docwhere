@@ -2,15 +2,15 @@
 by the regular extractors.
 
 An .xls is read directly instead (xlrd), with no Office and alongside the other files; only an
-.xls that xlrd cannot read (an HTML or XML table saved under that name, an encrypted workbook)
-goes through Excel.
+.xls that xlrd cannot read (an HTML or XML table saved under that name) goes through Excel.
+A password-protected .xls is given up at once: Excel would ask for the password and wait.
 
 Needs Microsoft Office on Windows. One instance of each application is started on first use,
 reused for every file in the sync and closed by ``release()``. Macros are force-disabled and
-alerts suppressed so an unattended conversion never runs document code or waits on a dialog;
-a password-protected file fails instead of prompting. Some dialogs still appear (Word asks
-whether to update a document's links to other files), so each application's process is
-reported: the caller stops it when a file takes too long.
+alerts suppressed so an unattended conversion never runs document code or waits on a dialog.
+Some dialogs still appear (Word asks whether to update a document's links to other files, Excel
+asks for the password of a protected workbook), so each application's process is reported: the
+caller stops it when a file takes too long.
 """
 
 from __future__ import annotations
@@ -30,7 +30,9 @@ from docwhere.extractors import (
 from docwhere.model import Chunk
 
 _FORCE_DISABLE_MACROS = 3  # msoAutomationSecurityForceDisable
-_DUMMY_PASSWORD = "docwhere"  # ignored by unprotected files; makes protected ones fail fast
+# Ignored by unprotected files; passed so that a protected file is refused rather than asked
+# for, though an application that still asks is stopped at the timeout.
+_DUMMY_PASSWORD = "docwhere"
 _apps: dict[str, object] = {}
 
 
@@ -157,6 +159,8 @@ def extract_xls(path: Path) -> list[Chunk]:
     try:
         book = xlrd.open_workbook(str(path), on_demand=True)
     except (xlrd.XLRDError, CompDocError) as e:
+        if "encrypted" in str(e).lower():
+            raise ValueError("password-protected; save it without a password to search it") from e
         if not may_start_application():
             raise NeedsApplication from e
         return _xls_through_excel(path)
