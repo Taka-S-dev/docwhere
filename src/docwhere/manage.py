@@ -12,6 +12,7 @@ the background reader that searches use, so the window never reads files on its 
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import threading
@@ -25,6 +26,7 @@ from urllib.request import url2pathname
 from docwhere import background
 from docwhere.index import Index, path_key, prefix_of
 from docwhere.settings import load_settings, private, save_settings
+from docwhere.window import bridge_method
 
 KIND = "manage"  # the window's pipe and settings are kept apart from the viewer's
 STORAGE = "webview-manage"
@@ -61,24 +63,18 @@ def open_manager(db: Path) -> bool:
         return False
     write_page(db)
     window.allow_foreground()
-    if window._send(db, {"show": True}, KIND):
+    if window.send(db, {"show": True}, KIND):
         return True
     background.spawn_detached(["--db", str(db), "manage-window"])
     deadline = time.monotonic() + START_TIMEOUT
     while time.monotonic() < deadline:
         time.sleep(0.3)
-        if window._send(db, {"ping": True}, KIND):
+        if window.send(db, {"ping": True}, KIND):
             return True
     return False
 
 
 # ---- what the page may ask -------------------------------------------------------------------
-
-
-def _bridge(method):
-    from docwhere.window import _logged
-
-    return _logged(method)
 
 
 class ManageApi:
@@ -102,7 +98,7 @@ class ManageApi:
             raise LookupError("このフォルダはインデックスにありません")
         return Path(row["path"])
 
-    @_bridge
+    @bridge_method
     def overview(self) -> dict:
         index = self._index()
         try:
@@ -135,7 +131,7 @@ class ManageApi:
         finally:
             index.close()
 
-    @_bridge
+    @bridge_method
     def changes(self, path: str) -> dict:
         index = self._index()
         try:
@@ -143,7 +139,7 @@ class ManageApi:
         finally:
             index.close()
 
-    @_bridge
+    @bridge_method
     def times(self, path: str | None = None) -> dict:
         """Where reading spent its time, for one folder or (``path`` None) the whole index: per
         kind of file, and the slowest files. Asked for apart from ``overview``, which runs every
@@ -160,7 +156,7 @@ class ManageApi:
         finally:
             index.close()
 
-    @_bridge
+    @bridge_method
     def update(self, paths: list) -> dict:
         """Hand the folders to the background reader (it reads only what changed)."""
         index = self._index()
@@ -172,7 +168,7 @@ class ManageApi:
         finally:
             index.close()
 
-    @_bridge
+    @bridge_method
     def stop(self) -> dict:
         index = self._index()
         try:
@@ -180,7 +176,7 @@ class ManageApi:
         finally:
             index.close()
 
-    @_bridge
+    @bridge_method
     def add_folder(self) -> dict:
         import webview
 
@@ -199,7 +195,7 @@ class ManageApi:
         finally:
             index.close()
 
-    @_bridge
+    @bridge_method
     def add_exclude(self, path: str, pattern: str) -> dict:
         index = self._index()
         try:
@@ -209,7 +205,7 @@ class ManageApi:
         finally:
             index.close()
 
-    @_bridge
+    @bridge_method
     def remove_exclude(self, path: str, pattern: str) -> dict:
         index = self._index()
         try:
@@ -218,7 +214,7 @@ class ManageApi:
         finally:
             index.close()
 
-    @_bridge
+    @bridge_method
     def rebuild(self, path: str) -> dict:
         """Read the folder again from nothing, keeping what it leaves out."""
         index = self._index()
@@ -230,7 +226,7 @@ class ManageApi:
         finally:
             index.close()
 
-    @_bridge
+    @bridge_method
     def forget(self, path: str) -> dict:
         index = self._index()
         try:
@@ -240,7 +236,7 @@ class ManageApi:
         finally:
             index.close()
 
-    @_bridge
+    @bridge_method
     def unreadable(self, path: str) -> dict:
         index = self._index()
         try:
@@ -249,7 +245,7 @@ class ManageApi:
         finally:
             index.close()
 
-    @_bridge
+    @bridge_method
     def reveal(self, path: str) -> bool:
         """Show an indexed folder, or an indexed file selected in its folder, in Explorer."""
         index = self._index()
@@ -280,16 +276,16 @@ def run(db: Path) -> None:
         return
     page = write_page(db).resolve()
     try:
-        listener = Listener(viewer_window._address(db, KIND), family="AF_PIPE", authkey=viewer_window._key(db))
+        listener = Listener(viewer_window.pipe_address(db, KIND), family="AF_PIPE", authkey=viewer_window.pipe_key(db))
     except OSError:
-        viewer_window._send(db, {"show": True}, KIND)  # another manager took the pipe first
+        viewer_window.send(db, {"show": True}, KIND)  # another manager took the pipe first
         return
-    viewer_window._setup_log(db)  # bridge errors and slow calls go to window.log, as the viewer's do
-    log = viewer_window._log
+    viewer_window.setup_log(db)  # bridge errors and slow calls go to window.log, as the viewer's do
+    log = logging.getLogger("docwhere.window")  # the viewer's log: one window.log for both
     log.info("index window started")
     win32_errors = (OSError, pywintypes.error)
 
-    geometry = viewer_window._usable_geometry(load_settings(db).get("manage_window") or {})
+    geometry = viewer_window.usable_geometry(load_settings(db).get("manage_window") or {})
     api = ManageApi(db)
     win = webview.create_window(
         f"{viewer_window.title(db)} - インデックス", url=page.as_uri(), js_api=api,
@@ -311,8 +307,8 @@ def run(db: Path) -> None:
 
     def remember() -> None:
         try:
-            if (hwnd := viewer_window._own_window()) is not None:
-                save_settings(db, manage_window=viewer_window._placement(hwnd))
+            if (hwnd := viewer_window.own_window()) is not None:
+                save_settings(db, manage_window=viewer_window.placement(hwnd))
         except win32_errors:
             log.exception("saving the index window's placement failed")
 
@@ -336,13 +332,13 @@ def run(db: Path) -> None:
             finally:
                 conn.close()
             try:
-                viewer_window._bring_to_front(False)
+                viewer_window.bring_to_front(False)
             except win32_errors:
                 log.exception("raising the index window failed")
 
     win.events.before_load += distrust
     win.events.loaded += inject
-    win.events.shown += lambda: viewer_window._bring_to_front(False)
+    win.events.shown += lambda: viewer_window.bring_to_front(False)
     win.events.closing += remember
     win.events.closing += closing.set
     threading.Thread(target=serve, daemon=True).start()

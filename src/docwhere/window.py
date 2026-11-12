@@ -131,7 +131,7 @@ def available() -> bool:
 # ---- handing pages to the window -----------------------------------------------------------
 
 
-def _address(db: Path, kind: str = "") -> str:
+def pipe_address(db: Path, kind: str = "") -> str:
     """The pipe of the window of ``kind`` ("" the viewer, "manage" the index manager)."""
     digest = hashlib.sha1(str(db.resolve()).lower().encode()).hexdigest()[:16]
     suffix = f"-{kind}" if kind else ""
@@ -142,7 +142,7 @@ KEY_BYTES = 32
 MAX_MESSAGE = 4096
 
 
-def _key(db: Path) -> bytes:
+def pipe_key(db: Path) -> bytes:
     """The pipe's shared secret, readable by the current user only.
 
     Created exclusively (a second process racing to create it reads the first one's key) and,
@@ -195,7 +195,7 @@ def _owned_by_me(path: Path) -> bool:
 
 
 def _signing_key(db: Path) -> bytes:
-    return hmac.new(_key(db), b"docwhere page signature", hashlib.sha256).digest()
+    return hmac.new(pipe_key(db), b"docwhere page signature", hashlib.sha256).digest()
 
 
 def _signature_path(page: Path) -> Path:
@@ -246,9 +246,9 @@ def _unpack(data: bytes) -> dict:
     return message
 
 
-def _send(db: Path, message: dict, kind: str = "") -> bool:
+def send(db: Path, message: dict, kind: str = "") -> bool:
     try:
-        conn = Client(_address(db, kind), family="AF_PIPE", authkey=_key(db))
+        conn = Client(pipe_address(db, kind), family="AF_PIPE", authkey=pipe_key(db))
     except Exception:
         return False  # no window running
     try:
@@ -267,7 +267,7 @@ def show(db: Path, page: Path) -> bool:
     if not private(db.parent):
         return False
     allow_foreground()
-    if _send(db, {"page": str(page)}):
+    if send(db, {"page": str(page)}):
         return True
     flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
     subprocess.Popen(
@@ -278,7 +278,7 @@ def show(db: Path, page: Path) -> bool:
     deadline = time.monotonic() + START_TIMEOUT
     while time.monotonic() < deadline:
         time.sleep(0.3)
-        if _send(db, {"ping": True}):
+        if send(db, {"ping": True}):
             return True
     return False
 
@@ -293,7 +293,7 @@ SLOW_CALL = 3.0  # seconds; slower bridge calls are logged
 _log = logging.getLogger("docwhere.window")
 
 
-def _setup_log(db: Path) -> None:
+def setup_log(db: Path) -> None:
     """Bridge errors and slow calls go to window.log next to the index, for diagnosing a window
     that stops responding; the log is small and rotated."""
     from logging.handlers import RotatingFileHandler
@@ -304,7 +304,7 @@ def _setup_log(db: Path) -> None:
     _log.setLevel(logging.INFO)
 
 
-def _logged(method):
+def bridge_method(method):
     """A bridge method: refused unless the page showing is one docwhere signed, and logged
     when it fails or is slow."""
 
@@ -359,7 +359,7 @@ class Api:
         self._docs[pdf] = (mtime, doc)
         return doc
 
-    @_logged
+    @bridge_method
     def page(self, pdf: str, page: int, terms: list, quotes: list, dpi: int = 0) -> str:
         """The page as an image; ``dpi`` follows the zoom so enlarged text stays sharp."""
         from docwhere.viewer import VIEW_DPI, _data_uri, render_page
@@ -371,7 +371,7 @@ class Api:
             data = render_page(pdf, int(page), _texts(terms), dpi, "jpeg", _texts(quotes), source=doc)
         return _data_uri(data)
 
-    @_logged
+    @bridge_method
     def zoom(self) -> dict:
         """The page size last chosen in the viewer: {"mode": "width" | "fit", "scale": float}."""
         saved = load_settings(self._db).get("zoom") or {}
@@ -382,7 +382,7 @@ class Api:
             scale = 1.0
         return {"mode": mode, "scale": scale}
 
-    @_logged
+    @bridge_method
     def save_zoom(self, mode: str, scale: float) -> dict:
         save_settings(self._db, zoom={"mode": "fit" if mode == "fit" else "width",
                                        "scale": min(MAX_ZOOM, max(MIN_ZOOM, float(scale)))})
@@ -396,14 +396,14 @@ class Api:
             self._facts[pdf] = {"offset": printed_offset(doc) or 0, "toc": [[lvl, title, page] for lvl, title, page, *_ in doc.get_toc()]}
         return self._facts[pdf]
 
-    @_logged
+    @bridge_method
     def toc(self, pdf: str) -> list:
         """The PDF's outline as [level, title, page] rows."""
         allowed(self._db, pdf, renditions=True, pdf_only=True)
         with self._pdf_lock:
             return self._facts_of(pdf, self._open_pdf(pdf))["toc"]
 
-    @_logged
+    @bridge_method
     def links(self, pdf: str, page: int) -> dict:
         import pymupdf
 
@@ -427,7 +427,7 @@ class Api:
             return {"pages": doc.page_count, "links": out, "offset": facts["offset"],
                     "printed": printed(facts["offset"], page), "trail": _outline_trail(facts["toc"], page)}
 
-    @_logged
+    @bridge_method
     def open(self, spec: str) -> str:
         from docwhere.opener import open_at
 
@@ -448,7 +448,7 @@ class Api:
             if pythoncom is not None:
                 pythoncom.CoUninitialize()
 
-    @_logged
+    @bridge_method
     def open_url(self, url: str) -> str:
         """Open a page of an added wiki in the browser; any other address is refused."""
         import webbrowser
@@ -462,7 +462,7 @@ class Api:
         webbrowser.open(safe_url(url))
         return "ブラウザで開きました"
 
-    @_logged
+    @bridge_method
     def copy(self, text: str) -> bool:
         import win32clipboard
 
@@ -474,7 +474,7 @@ class Api:
             win32clipboard.CloseClipboard()
         return True
 
-    @_logged
+    @bridge_method
     def settings(self) -> dict:
         command = pdf_app(self._db).get("command")
         return {
@@ -484,11 +484,11 @@ class Api:
             "pdf_args": subprocess.list2cmdline(command[1:]) if command else "",
         }
 
-    @_logged
+    @bridge_method
     def preset(self, program: str) -> str:
         return preset_args(str(program))
 
-    @_logged
+    @bridge_method
     def choose_program(self) -> str | None:
         import webview
 
@@ -497,7 +497,7 @@ class Api:
         chosen = self._window.create_file_dialog(webview.FileDialog.OPEN, file_types=("プログラム (*.exe)",))
         return str(chosen[0]) if chosen else None
 
-    @_logged
+    @bridge_method
     def save_settings(self, values: dict) -> dict:
         """Validate everything first, then save; a bad entry changes nothing."""
         program = str(values.get("pdf_program") or "").strip()
@@ -509,7 +509,7 @@ class Api:
         _set_window_title(title(self._db))
         return self.settings()
 
-    @_logged
+    @bridge_method
     def try_pdf(self, program: str, args: str, pdf: str, page: int) -> str:
         """Open ``pdf`` at ``page`` with the program being set up, before it is saved."""
         from docwhere.opener import open_at
@@ -519,14 +519,14 @@ class Api:
         command = checked_command([program, *_split_args(str(args or ""))]) if program else None
         return f"{Path(pdf).name}: {open_at(pdf, {'page': int(page)}, {'command': command} if command else None)}"
 
-    @_logged
+    @bridge_method
     def pin(self, on: bool) -> bool:
         self._pinned = bool(on)
         _set_topmost(self._pinned)
         save_settings(self._db, pinned=self._pinned)
         return self._pinned
 
-    @_logged
+    @bridge_method
     def pinned(self) -> bool:
         return self._pinned
 
@@ -551,7 +551,7 @@ def allowed(db: Path, path: str, renditions: bool, pdf_only: bool = False) -> No
         raise PermissionError("not an indexed file")
 
 
-def _own_window() -> int | None:
+def own_window() -> int | None:
     """This process's top-level window, found through Win32.
 
     pywebview's own window calls (on_top, restore, show) marshal onto the UI thread and wait
@@ -572,7 +572,7 @@ def _own_window() -> int | None:
     return found[0] if found else None
 
 
-def _placement(hwnd: int) -> dict:
+def placement(hwnd: int) -> dict:
     """The window's restored size and position, and whether it is maximized.
 
     GetWindowPlacement gives the normal (restored) rectangle even while maximized or
@@ -588,7 +588,7 @@ def _placement(hwnd: int) -> dict:
             "maximized": show == win32con.SW_SHOWMAXIMIZED}
 
 
-def _usable_geometry(geometry: dict) -> dict:
+def usable_geometry(geometry: dict) -> dict:
     """``geometry`` if its title bar would land on a connected monitor, else size only.
 
     A position saved on a monitor that has since been unplugged would open the window out of
@@ -611,7 +611,7 @@ def _usable_geometry(geometry: dict) -> dict:
 def _set_window_title(text: str) -> None:
     import win32gui
 
-    if (hwnd := _own_window()) is not None:
+    if (hwnd := own_window()) is not None:
         win32gui.SetWindowText(hwnd, text)
 
 
@@ -619,13 +619,13 @@ def _set_topmost(on: bool) -> None:
     import win32con
     import win32gui
 
-    if (hwnd := _own_window()) is None:
+    if (hwnd := own_window()) is None:
         return
     flags = win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE | win32con.SWP_ASYNCWINDOWPOS
     win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST if on else win32con.HWND_NOTOPMOST, 0, 0, 0, 0, flags)
 
 
-def _bring_to_front(pinned: bool) -> None:
+def bring_to_front(pinned: bool) -> None:
     """Raise and activate the window when it opens or is handed a new page: the answer was
     just asked for.
 
@@ -639,7 +639,7 @@ def _bring_to_front(pinned: bool) -> None:
     import win32gui
     import win32process
 
-    if (hwnd := _own_window()) is None:
+    if (hwnd := own_window()) is None:
         return
     if win32gui.IsIconic(hwnd):
         win32gui.ShowWindowAsync(hwnd, win32con.SW_RESTORE)
@@ -715,15 +715,15 @@ def run(db: Path, page: Path) -> None:
     if not private(db.parent):
         return  # see private(): pages there may have been swapped after they were signed
     try:
-        listener = Listener(_address(db), family="AF_PIPE", authkey=_key(db))
+        listener = Listener(pipe_address(db), family="AF_PIPE", authkey=pipe_key(db))
     except Exception:
-        _send(db, {"page": str(page)})  # another window took the pipe first
+        send(db, {"page": str(page)})  # another window took the pipe first
         return
 
-    _setup_log(db)
+    setup_log(db)
     _log.info("window started on %s", page.name)
     settings = load_settings(db)
-    geometry = _usable_geometry(settings.get("window") or {})
+    geometry = usable_geometry(settings.get("window") or {})
     api = Api(db)
     api._pinned = bool(settings.get("pinned"))
     window = webview.create_window(
@@ -749,8 +749,8 @@ def run(db: Path, page: Path) -> None:
 
     def remember() -> None:
         try:
-            if (hwnd := _own_window()) is not None:
-                save_settings(db, window=_placement(hwnd))
+            if (hwnd := own_window()) is not None:
+                save_settings(db, window=placement(hwnd))
         except Exception:
             pass
 
@@ -786,14 +786,14 @@ def run(db: Path, page: Path) -> None:
             return
         _log.info("showing %s", target.name)
         try:
-            _bring_to_front(api._pinned)  # before loading, so the window comes up even if the load is slow
+            bring_to_front(api._pinned)  # before loading, so the window comes up even if the load is slow
         except Exception:
             _log.exception("raising the window failed")
         window.load_url(target.resolve().as_uri())
 
     window.events.before_load += distrust
     window.events.loaded += inject
-    window.events.shown += lambda: _bring_to_front(api._pinned)  # started behind the terminal
+    window.events.shown += lambda: bring_to_front(api._pinned)  # started behind the terminal
     window.events.closing += remember
     window.events.closing += closing.set
     threading.Thread(target=serve, daemon=True).start()

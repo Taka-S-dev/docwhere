@@ -52,7 +52,7 @@ def test_open_runs_only_for_indexed_files(api, monkeypatch, tmp_path):
 def test_later_pages_are_handed_to_the_running_window_with_the_key(tmp_path):
     db = tmp_path / "index.db"
     received = []
-    listener = Listener(window._address(db), family="AF_PIPE", authkey=window._key(db))
+    listener = Listener(window.pipe_address(db), family="AF_PIPE", authkey=window.pipe_key(db))
 
     def accept_one():
         conn = listener.accept()
@@ -62,11 +62,11 @@ def test_later_pages_are_handed_to_the_running_window_with_the_key(tmp_path):
 
     thread = threading.Thread(target=accept_one, daemon=True)
     thread.start()
-    assert window._send(db, {"page": "x.html"})
+    assert window.send(db, {"page": "x.html"})
     thread.join(5)
     listener.close()
     assert received == [{"page": "x.html"}]
-    assert not window._send(db, {"ping": True})  # nobody listening any more
+    assert not window.send(db, {"ping": True})  # nobody listening any more
 
 
 def test_page_script_uses_the_bridge_not_the_network():
@@ -88,8 +88,8 @@ def test_key_file_is_private_and_reused(tmp_path):
 
     db = tmp_path / "index.db"
     (tmp_path / "window.key").write_bytes(b"k" * window.KEY_BYTES)  # left by an older version, inherited ACL
-    key = window._key(db)
-    assert key == b"k" * window.KEY_BYTES and window._key(db) == key
+    key = window.pipe_key(db)
+    assert key == b"k" * window.KEY_BYTES and window.pipe_key(db) == key
     sd = win32security.GetFileSecurity(str(tmp_path / "window.key"), win32security.DACL_SECURITY_INFORMATION)
     dacl = sd.GetSecurityDescriptorDacl()
     owner = win32security.GetTokenInformation(
@@ -165,9 +165,9 @@ def test_settings_button_is_live_only():
 
 def test_saved_position_off_every_monitor_is_dropped():
     on_screen = {"width": 900, "height": 700, "x": 100, "y": 100, "maximized": True}
-    assert window._usable_geometry(on_screen) == on_screen
+    assert window.usable_geometry(on_screen) == on_screen
     unplugged = {"width": 900, "height": 700, "x": 50000, "y": 50000, "maximized": False}
-    assert window._usable_geometry(unplugged) == {"width": 900, "height": 700, "maximized": False}
+    assert window.usable_geometry(unplugged) == {"width": 900, "height": 700, "maximized": False}
 
 
 def test_zoom_is_remembered_and_kept_in_range(api):
@@ -240,7 +240,7 @@ def test_shared_index_folder_gets_no_window(tmp_path, monkeypatch):
     monkeypatch.setattr(window, "private", lambda folder: False)
     assert window.show(db, tmp_path / "views" / "x.html") is False
     with pytest.raises(PermissionError):
-        window._key(db)
+        window.pipe_key(db)
     assert not (tmp_path / "window.key").exists()
 
 
