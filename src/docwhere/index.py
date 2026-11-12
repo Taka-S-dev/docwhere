@@ -6,6 +6,7 @@ mtime and size on every sync, and is simply rebuilt when its schema version chan
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -99,6 +100,7 @@ def prefix_of(root_key: str) -> str:
 class SyncStats:
     files: int = 0
     updated: int = 0
+    unchanged: int = 0  # of updated: modified, but the content is what was read, so not read again
     removed: int = 0
     failed: int = 0
     timed_out: list[str] = field(default_factory=list)
@@ -111,7 +113,9 @@ class SyncStats:
 @dataclass
 class Scan:
     root: Path
-    todo: list[tuple]  # (key, path, mtime_ns, size) of every file still to read
+    # (key, path, mtime_ns, size, sha256) of every file still to read; sha256 is that of the
+    # content read before, when it is worth comparing (same size, read by the current extractors)
+    todo: list[tuple]
     stats: SyncStats
     # the entries of ``todo`` read before and modified since (not new, not a retry after an
     # extractor update): a search can leave these as last read
@@ -149,6 +153,8 @@ class Index:
             db.execute("ALTER TABLE roots ADD COLUMN exclude_hits TEXT")
         if "read_ms" not in {r["name"] for r in db.execute("PRAGMA table_info(files)")}:
             db.execute("ALTER TABLE files ADD COLUMN read_ms INTEGER")  # how long reading the file took
+        if "sha256" not in {r["name"] for r in db.execute("PRAGMA table_info(files)")}:
+            db.execute("ALTER TABLE files ADD COLUMN sha256 TEXT")  # of the content that was read
         db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         return db
 
@@ -185,11 +191,15 @@ class Index:
         else:
             on_disk = {path_key(p): (p, st.st_mtime_ns, st.st_size) for p, st in _walk(root, matcher, hits)}
         stats.left_out = {(self._root_path(k), p): hits.get((k, p), 0) for k, p in matcher.sources()}
-        known = {r["key"]: r for r in self._files_under(root_key, "id, key, mtime_ns, size, version, error")}
+        known = {r["key"]: r for r in self._files_under(root_key, "id, key, mtime_ns, size, version, error, sha256")}
         stats.files = len(on_disk)
 
         gone = [r["id"] for k, r in known.items() if k not in on_disk]
-        todo = [(k, p, mtime, size) for k, (p, mtime, size) in on_disk.items() if not _current(known.get(k), mtime, size)]
+        todo = [
+            (k, p, mtime, size, _comparable_hash(known.get(k), size))
+            for k, (p, mtime, size) in on_disk.items()
+            if not _current(known.get(k), mtime, size)
+        ]
         changed = [t for t in todo if t[0] in known and (known[t[0]]["mtime_ns"], known[t[0]]["size"]) != (t[2], t[3])]
         stats.removed = len(gone)
         hits_json = json.dumps({p: hits.get((root_key, p), 0) for p in self._excludes(root_key)}, ensure_ascii=False)
@@ -227,8 +237,12 @@ class Index:
 
         outcomes = _extract_all(todo, workers, timeout, tick)
         try:
-            for key, path, mtime, size, chunks, error, timed_out, seconds in outcomes:
-                self._store(key, path, mtime, size, chunks, error, seconds)
+            for key, path, mtime, size, chunks, error, timed_out, seconds, digest in outcomes:
+                if chunks is None:  # the same content as before: keep what was read
+                    self._touch(key, path, mtime, seconds)
+                    stats.unchanged += 1
+                else:
+                    self._store(key, path, mtime, size, chunks, error, seconds, digest)
                 done += 1
                 stats.updated += 1
                 stats.failed += error is not None
@@ -337,7 +351,15 @@ class Index:
         return row["path"] if row else root_key
 
     def _store(
-        self, key: str, path: Path, mtime: int, size: int, chunks: list[Chunk], error: str | None, seconds: float = 0.0
+        self,
+        key: str,
+        path: Path,
+        mtime: int,
+        size: int,
+        chunks: list[Chunk],
+        error: str | None,
+        seconds: float = 0.0,
+        digest: str | None = None,
     ) -> None:
         row = self.db.execute("SELECT id FROM files WHERE key = ?", (key,)).fetchone()
         read_ms = round(seconds * 1000)
@@ -345,17 +367,26 @@ class Index:
             file_id = row["id"]
             self.db.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))
             self.db.execute(
-                "UPDATE files SET path = ?, mtime_ns = ?, size = ?, version = ?, error = ?, read_ms = ? WHERE id = ?",
-                (str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, file_id),
+                "UPDATE files SET path = ?, mtime_ns = ?, size = ?, version = ?, error = ?, read_ms = ?, sha256 = ?"
+                " WHERE id = ?",
+                (str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, digest, file_id),
             )
         else:
             file_id = self.db.execute(
-                "INSERT INTO files(key, path, mtime_ns, size, version, error, read_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (key, str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms),
+                "INSERT INTO files(key, path, mtime_ns, size, version, error, read_ms, sha256)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (key, str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, digest),
             ).lastrowid
         self.db.executemany(
             "INSERT INTO chunks(file_id, title, crumb, body, anchors) VALUES (?, ?, ?, ?, ?)",
             [(file_id, c.title, c.crumb, "\n".join(c.lines), _pack_anchors(c.anchors)) for c in chunks],
+        )
+
+    def _touch(self, key: str, path: Path, mtime: int, seconds: float) -> None:
+        """Only the file's date changed: record the new date, keep its sections (or its error)."""
+        self.db.execute(
+            "UPDATE files SET path = ?, mtime_ns = ?, read_ms = ? WHERE key = ?",
+            (str(path), mtime, round(seconds * 1000), key),
         )
 
     def _delete_files(self, ids: list[int]) -> None:
@@ -479,24 +510,52 @@ def _walk(root: Path, matcher: Matcher, hits: dict) -> Iterator[tuple[Path, os.s
                 yield path, st
 
 
-def _extract_job(path: str) -> tuple[list[Chunk], str | None]:
+def _extract_job(path: str, previous: str | None = None) -> tuple[list[Chunk] | None, str | None, str | None]:
+    """(sections, error, sha256 of the content). Sections are None when the content hashes to
+    ``previous``: a checkout or a copy that only changed the file's date is not read again."""
     try:
-        return extract(Path(path)), None
+        digest = _sha256(Path(path))
+    except OSError as e:
+        return [], f"{type(e).__name__}: {e}", None
+    if previous is not None and digest == previous:
+        return None, None, digest
+    try:
+        return extract(Path(path)), None, digest
     except NeedsApplication:
         raise  # the worker hands the file on to the application's worker
     except Exception as e:  # one unreadable file must not stop the sync
-        return [], f"{type(e).__name__}: {e}"
+        return [], f"{type(e).__name__}: {e}", digest
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while block := f.read(1 << 20):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _comparable_hash(row: sqlite3.Row | None, size: int) -> str | None:
+    """The hash of what was read before, when the file may still hold the same content: same
+    size, and read by extractors whose output is still current (or failed with these ones)."""
+    if row is None or row["sha256"] is None or row["size"] != size or not _current(row, row["mtime_ns"], size):
+        return None
+    return row["sha256"]
 
 
 def _extract_all(todo: list[tuple], workers: int | None, timeout: float, tick) -> Iterator[tuple]:
-    """(key, path, mtime, size, chunks, error, timed_out, seconds) for every file in ``todo``."""
+    """(key, path, mtime, size, chunks, error, timed_out, seconds, sha256) for every file in
+    ``todo``; chunks is None when the content is what was read before."""
     job = _extract_job  # looked up here so a test can put a slow reader in its place
-    tasks = [worker_pool.Task(str(item[1]), is_serial(item[1]), item) for item in todo]
+    tasks = [
+        worker_pool.Task(str(item[1]), is_serial(item[1]), item, () if item[4] is None else (item[4],)) for item in todo
+    ]
     pooled = sum(not t.serial for t in tasks)
     workers = workers or min(MAX_WORKERS, os.cpu_count() or 1, -(-pooled // FILES_PER_WORKER))
     for out in worker_pool.run(tasks, job, max(1, workers), timeout, tick):
-        key, path, mtime, size = out.task.data
+        key, path, mtime, size, _ = out.task.data
         if out.failure:
-            yield key, path, mtime, size, [], out.failure, out.timed_out, out.seconds
+            yield key, path, mtime, size, [], out.failure, out.timed_out, out.seconds, None
         else:
-            yield key, path, mtime, size, *out.result, False, out.seconds
+            chunks, error, digest = out.result
+            yield key, path, mtime, size, chunks, error, False, out.seconds, digest

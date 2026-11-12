@@ -31,10 +31,10 @@ def _hang_in_app(path):
     time.sleep(600)
 
 
-def _hang_on_named(path):
+def _hang_on_named(path, *args):
     if "hang" in Path(path).name:
         time.sleep(600)
-    return index_module._extract_job(path)
+    return index_module._extract_job(path, *args)
 
 
 def _alive(pid: int) -> bool:

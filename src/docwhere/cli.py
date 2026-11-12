@@ -485,7 +485,9 @@ def cmd_index(args) -> int:
         started = time.perf_counter()
         s = _sync(index, root, workers=args.workers, timeout=args.timeout)
         print(
-            f"{Path(root).resolve()}: {s.files} files, {s.updated} extracted, {s.removed} removed,"
+            f"{Path(root).resolve()}: {s.files} files, {s.updated - s.unchanged} extracted,"
+            + (f" {s.unchanged} only re-dated (content unchanged, not read again)," if s.unchanged else "")
+            + f" {s.removed} removed,"
             f" {s.failed} unreadable ({time.perf_counter() - started:.1f}s)"
         )
     return 0

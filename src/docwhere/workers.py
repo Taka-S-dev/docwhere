@@ -32,6 +32,7 @@ class Task:
     path: str
     serial: bool
     data: Any = None  # handed back with the result
+    args: tuple = ()  # passed to the job after the path
 
 
 @dataclass
@@ -49,10 +50,11 @@ def _serve(conn: Connection, job: Job, serial: bool) -> None:
     extractors.set_worker("serial" if serial else "pooled")
     extractors.on_process_started(lambda pid: conn.send(("pid", pid)))
     try:
-        while (path := conn.recv()) is not None:
+        while (message := conn.recv()) is not None:
+            path, args = message
             started = time.perf_counter()  # timed here: the worker's own start-up is not the file's
             try:
-                result = job(path)
+                result = job(path, *args)
             except extractors.NeedsApplication:
                 conn.send(("serial", None))
                 continue
@@ -84,7 +86,7 @@ class _Worker:
         if self.proc is None:
             self.start()
         self.task, self.started = task, time.monotonic()
-        self.conn.send(task.path)
+        self.conn.send((task.path, task.args))
 
     def kill(self) -> None:
         for pid in self.apps:
@@ -122,7 +124,7 @@ def run(
     timeout: float,
     tick: Callable[[list[tuple[str, float]]], None] | None = None,
 ) -> Iterator[Outcome]:
-    """Run ``job(path)`` for every task, yielding outcomes as they finish.
+    """Run ``job(path, *task.args)`` for every task, yielding outcomes as they finish.
 
     ``tick`` is called about every second with the files being read and how long each has
     taken so far, so a caller can show progress even while no file finishes.
@@ -157,7 +159,7 @@ def run(
                     w.apps.add(value)
                 elif kind == "serial":
                     task, w.task = w.task, None
-                    queues[True].append(Task(task.path, True, task.data))
+                    queues[True].append(Task(task.path, True, task.data, task.args))
                     if not any(p.serial for p in pool):
                         pool.append(_Worker(True, job))
                 else:
