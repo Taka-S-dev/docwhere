@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import subprocess
 import sys
@@ -12,7 +13,14 @@ from pathlib import Path
 
 from docwhere import background, doctor
 from docwhere.extractors import is_serial
-from docwhere.index import FILE_TIMEOUT, Index, SyncProgress, SyncStats, default_db_path
+from docwhere.index import (
+    FILE_TIMEOUT,
+    Index,
+    SyncProgress,
+    SyncStats,
+    default_db_path,
+    path_key,
+)
 from docwhere.present import EvidenceStep, highlight, show_page
 from docwhere.progress import duration
 from docwhere.wiki import cli as wiki_cli
@@ -20,6 +28,7 @@ from docwhere.wiki import cli as wiki_cli
 HINT = "docwhere show --id ID prints the whole section; docwhere open N opens the hit"
 STALE_DAYS = 90  # status flags folders not searched for this long
 MAX_UNREADABLE_LISTED = 20
+MAX_CHANGED_LISTED = 10
 # A search waits this long for new or changed files to be read, then answers from what is read
 # and leaves the rest to the background reader, saying how much it has not seen yet.
 WAIT = 20
@@ -56,6 +65,9 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("-n", "--limit", type=int, default=10)
     p.add_argument("--per-file", type=int, default=3, help="max hits per file (default 3)")
     p.add_argument("--no-update", action="store_true", help="search the index as is, skip the change scan")
+    p.add_argument("--keep-changed", action="store_true",
+                   help="search files modified since they were read as last read (new files are still read); "
+                        "the JSON's changed says how many")
     p.add_argument("--wait", type=float, default=WAIT, metavar="SEC",
                    help=f"seconds to wait for new files to be read before answering from what is read (default {WAIT})")
     p.add_argument("--wait-all", action="store_true", help="wait until every file is read, however long it takes")
@@ -162,12 +174,17 @@ def cmd_search(args) -> int:
     index = Index(args.db)
     updates: list[SyncStats] = []
     reading = {"complete": None}  # not checked with --no-update
+    changed: list[tuple] = []  # files modified since they were read: read again, or kept as read
     if not args.no_update:
         waiting = []
         for root in roots:
             scan = index.scan(root)
             _note_excluded(root, scan.stats)
             updates.append(scan.stats)
+            changed += scan.changed
+            if args.keep_changed and scan.changed:
+                skip = {t[0] for t in scan.changed}
+                scan = dataclasses.replace(scan, todo=[t for t in scan.todo if t[0] not in skip])
             if not scan.todo:
                 continue
             # Little to read: read it here, as before, even while the background reader works on
@@ -189,6 +206,7 @@ def cmd_search(args) -> int:
     unreadable = index.errors(roots)
     # What the exclusion patterns kept out of this search, so a miss caused by one is noticed.
     excludes = _left_out(index, roots, updates)
+    kept = {t[0] for t in changed} if args.keep_changed else set()
     if args.view:
         path = _write_view(index, args.terms, [h.to_dict() for h in hits], 1, args, open_it=True, reading=reading)
         print(f"view: {path}", file=sys.stderr)
@@ -197,6 +215,12 @@ def cmd_search(args) -> int:
             "terms": args.terms,
             "roots": [str(Path(r).resolve()) for r in roots],
             "reading": reading,
+            # None: not checked (--no-update). kept: searched as last read (--keep-changed)
+            "changed": None if args.no_update else {
+                "count": len(changed),
+                "kept": bool(kept),
+                "files": [str(t[1]) for t in changed[:MAX_CHANGED_LISTED]],
+            },
             "index": {k: sum(getattr(u, k) for u in updates) for k in ("files", "updated", "removed")},
             "timed_out": [p for u in updates for p in u.timed_out],
             "excludes": excludes,
@@ -205,7 +229,9 @@ def cmd_search(args) -> int:
                 for r, u in zip(roots, updates) if u.excluded_by
             ],
             "hits": [
-                {"id" if k == "chunk_id" else k: v for k, v in h.to_dict().items() if k != "anchor"} for h in hits
+                {"id" if k == "chunk_id" else k: v for k, v in h.to_dict().items() if k != "anchor"}
+                | ({"changed_since_read": True} if path_key(h.path) in kept else {})
+                for h in hits
             ],
             "unreadable": [{"path": p, "error": e} for p, e in unreadable[:MAX_UNREADABLE_LISTED]],
             "unreadable_count": len(unreadable),
@@ -223,11 +249,16 @@ def cmd_search(args) -> int:
         print(f"    {h.path}")
         if h.newer_version:
             print(f"    ! newer version: {Path(h.newer_version).name}")
+        if path_key(h.path) in kept:
+            print("    ! modified since it was read; this is the earlier content")
     if unreadable:
         print(f"\n{len(unreadable)} file(s) here could not be searched; see: docwhere status --errors", file=sys.stderr)
     if any(e["left_out"] for e in excludes):
         listed = ", ".join(f"{e['pattern']} ({e['left_out']})" for e in excludes if e["left_out"])
         print(f"left out by exclusions, not searched: {listed}; see: docwhere status", file=sys.stderr)
+    if kept:
+        print(f"{len(kept)} file(s) modified since they were read were searched as last read;"
+              " search without --keep-changed to read them again", file=sys.stderr)
     if reading["complete"] is False:
         print("\n" + _not_finished(reading), file=sys.stderr)
     return 0

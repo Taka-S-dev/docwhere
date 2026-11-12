@@ -28,7 +28,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 
 | コマンド | 内容 |
 |---|---|
-| `search TERM... [--in DIR] [--all] [--ext pdf,docx] [--json] [--wait SEC \| --wait-all]` | 検索。実行前にフォルダの変更分だけインデックスを更新する。読む量が多いときは最大 20 秒（`--wait`）待ってから、そこまでに読めた分で答え、残りは裏で読み続ける。`--wait-all` は全部読み終わるまで待つ |
+| `search TERM... [--in DIR] [--all] [--ext pdf,docx] [--json] [--wait SEC \| --wait-all]` | 検索。実行前にフォルダの変更分だけインデックスを更新する。読む量が多いときは最大 20 秒（`--wait`）待ってから、そこまでに読めた分で答え、残りは裏で読み続ける。`--wait-all` は全部読み終わるまで待つ。`--keep-changed` は前回読んだ後に更新されたファイルを読み直さず、前回の内容のまま探す（新しいファイルは読む）。更新された件数は JSON の `changed` に出る |
 | `show N [-C K]` | 直前の検索の N 件目の節を全文表示（`-C` で前後の節も） |
 | `show --id ID [-C K]` | `search --json` の `id` で節を全文表示。複数の検索が並行していても番号がずれない |
 | `open N` | N 件目を該当箇所で開く |

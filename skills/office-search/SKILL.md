@@ -80,8 +80,11 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    Full-width/half-width differences are already normalised; do not add those variants.
 
    ```
-   docwhere search config 設定コマンド configuration --in "D:\docs\仕様書" --json
+   docwhere search config 設定コマンド configuration --in "D:\docs\仕様書" --json --keep-changed
    ```
+
+   Pass `--keep-changed` until the user decides otherwise (see "Files changed since they
+   were read" below).
 
    Add `--all` when every term must appear (narrowing), `--ext pdf,docx` to limit formats,
    `-n 20` for more results. Later searches take well under a second.
@@ -107,6 +110,19 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    `docwhere status` shows the reader's progress, `docwhere index --stop` stops it (what it
    read is kept; the next search continues). A file that takes over 3 minutes is given up
    and listed in `unreadable`; the rest is still read.
+
+   **Files changed since they were read.** A document edited since docwhere read it often
+   still says the same thing on the question asked, so do not make the user wait for it to be
+   read again without asking. With `--keep-changed`, such files are searched as last read
+   (new files are still read). The JSON's `changed` has `count`, `kept` and the first `files`;
+   a hit from such a file has `changed_since_read: true`.
+   - `changed.kept` is true and you have not asked yet in this conversation: answer from what
+     was read, and end with one question: 「前回読んだ後に更新されたファイルが <count> 件あります
+     （<names, up to 3>）。読み直して探し直しますか？」. An answer that rests on a hit with
+     `changed_since_read` says so: 「（<file> は更新前の内容です）」.
+   - The user says yes: search again without `--keep-changed`, and leave it off for the rest
+     of this conversation. No: keep passing it and do not ask again in this conversation.
+   - Ask once per conversation; a new conversation asks again.
 
 3. **Judge the hits, do not just relay them.** Each hit has:
    - `crumb` (heading path) and `location` (`p.12`, `slide 4`, `Sheet!D5`, `L40`; empty for

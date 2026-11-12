@@ -106,6 +106,9 @@ class Scan:
     root: Path
     todo: list[tuple]  # (key, path, mtime_ns, size) of every file still to read
     stats: SyncStats
+    # the entries of ``todo`` read before and modified since (not new, not a retry after an
+    # extractor update): a search can leave these as last read
+    changed: list[tuple] = field(default_factory=list)
 
 
 class Stopped(Exception):
@@ -178,6 +181,7 @@ class Index:
 
         gone = [r["id"] for k, r in known.items() if k not in on_disk]
         todo = [(k, p, mtime, size) for k, (p, mtime, size) in on_disk.items() if not _current(known.get(k), mtime, size)]
+        changed = [t for t in todo if t[0] in known and (known[t[0]]["mtime_ns"], known[t[0]]["size"]) != (t[2], t[3])]
         stats.removed = len(gone)
         hits_json = json.dumps({p: hits.get((root_key, p), 0) for p in self._excludes(root_key)}, ensure_ascii=False)
         with self.db:
@@ -188,7 +192,7 @@ class Index:
                 " exclude_hits = excluded.exclude_hits",
                 (root_key, str(root), time.time(), hits_json),
             )
-        return Scan(root, todo, stats)
+        return Scan(root, todo, stats, changed)
 
     def extract(
         self,
