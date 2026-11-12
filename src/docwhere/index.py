@@ -155,6 +155,8 @@ class Index:
             db.execute("ALTER TABLE files ADD COLUMN read_ms INTEGER")  # how long reading the file took
         if "sha256" not in {r["name"] for r in db.execute("PRAGMA table_info(files)")}:
             db.execute("ALTER TABLE files ADD COLUMN sha256 TEXT")  # of the content that was read
+        if "reading" not in {r["name"] for r in db.execute("PRAGMA table_info(reader)")}:
+            db.execute("ALTER TABLE reader ADD COLUMN reading TEXT")  # files being read now, as JSON
         db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         return db
 
@@ -435,6 +437,29 @@ class Index:
             ext: {"files": n, "seconds": round(ms / 1000, 1), "average": round(ms / n / 1000, 2)}
             for ext, (n, ms) in sorted(totals.items(), key=lambda kv: -kv[1][1])
         }
+
+    def changes(self, root: Path) -> dict:
+        """What reading ``root`` again would do, without doing it: how many files are new, how
+        many changed (or are due again after an extractor update) and how many are gone.
+
+        Read only, unlike ``scan``, which also records the visit and drops the files that are
+        gone, so that looking at a folder does not count as reading it. ``exists`` is false
+        when the folder cannot be reached.
+        """
+        root = Path(root).resolve()
+        if not root.is_dir():
+            return {"exists": False}
+        root_key = path_key(root)
+        matcher = self._matcher(root_key)
+        if matcher.match(root_key):  # left out by a pattern on a parent folder
+            on_disk = {}
+        else:
+            on_disk = {path_key(p): (st.st_mtime_ns, st.st_size) for p, st in _walk(root, matcher, {})}
+        known = {r["key"]: r for r in self._files_under(root_key, "key, mtime_ns, size, version, error")}
+        new = sum(k not in known for k in on_disk)
+        changed = sum(k in known and not _current(known[k], *on_disk[k]) for k in on_disk)
+        gone = sum(k not in on_disk for k in known)
+        return {"exists": True, "files": len(on_disk), "new": new, "changed": changed, "gone": gone}
 
     def errors(self, roots: list[Path] | None = None) -> list[tuple[str, str]]:
         """Files that could not be read (all of them, not only those that failed in the last sync)."""

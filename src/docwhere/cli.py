@@ -115,6 +115,13 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("page", type=Path)
     p.set_defaults(func=cmd_window)
 
+    p = sub.add_parser("manage", help="open the index window: each folder's state and changes, the reading in "
+                       "progress, and updating, stopping, adding folders and exclusions")
+    p.set_defaults(func=cmd_manage)
+
+    p = sub.add_parser("manage-window", help=argparse.SUPPRESS)  # the index window process (started by manage)
+    p.set_defaults(func=cmd_manage_window)
+
     p = sub.add_parser("clean", help="delete every saved view page, snapshot and Word/PowerPoint PDF export (all are also pruned automatically)")
     p.set_defaults(func=cmd_clean)
 
@@ -453,6 +460,30 @@ def cmd_window(args) -> int:
     path = index.path
     index.close()
     window.run(path, args.page)
+    return 0
+
+
+def cmd_manage(args) -> int:
+    from docwhere import manage
+
+    index = Index(args.db)
+    path = index.path
+    index.close()
+    if not manage.open_manager(path):
+        print("docwhere: the index window cannot open here (pywebview or WebView2 missing, or the index folder"
+              " can be written by others); use docwhere status and docwhere index instead", file=sys.stderr)
+        return 1
+    print("opened the index window")
+    return 0
+
+
+def cmd_manage_window(args) -> int:
+    from docwhere import manage
+
+    index = Index(args.db)
+    path = index.path
+    index.close()
+    manage.run(path)
     return 0
 
 

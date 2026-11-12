@@ -193,6 +193,13 @@ Office files stay unreadable, a view does not open in the window, background rea
 progresses, the user asks to check the setup ("動作確認して"), or asks why reading or searching
 is slow ("何が遅い？", "インデックスに時間かかる"): read `references/troubleshooting.md` first.
 
+## The index window
+
+To show which folders are indexed, what changed since they were read, or how far the
+background reading has got ("インデックスの状態見せて", "読み込みどこまで進んだ？", "インデックスの画面開いて"),
+run `docwhere manage`: it opens a window where the user can also update, stop, add folders
+and change exclusions. Say in one line that it opened; it needs no follow-up from you.
+
 ## Leaving files out
 
 To keep old versions, backups or drafts out ("旧版は検索に出さないで"), to say what is

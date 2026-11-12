@@ -13,13 +13,14 @@ which then continues from what was saved.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from docwhere.index import FILE_TIMEOUT, Index, Stopped, SyncProgress, path_key
@@ -37,6 +38,7 @@ class ReaderState:
     total: int
     started: float
     queued: list[str]  # folders waiting, the current one excluded
+    reading: list[tuple[str, float]] = field(default_factory=list)  # files being read and for how long
 
     def rate(self) -> float | None:
         """Files per second over this reader's current folder, once it has read a few."""
@@ -46,12 +48,18 @@ class ReaderState:
 
 def state(index: Index) -> ReaderState | None:
     """The running reader, or None."""
-    row = index.db.execute("SELECT pid, heartbeat, started, current, done, total FROM reader WHERE id = 1").fetchone()
+    row = index.db.execute(
+        "SELECT pid, heartbeat, started, current, done, total, reading FROM reader WHERE id = 1"
+    ).fetchone()
     if not _alive(row):
         return None
     queued = [r["path"] for r in index.db.execute("SELECT path FROM queue ORDER BY requested_at")]
+    try:
+        reading = [(str(p), float(s)) for p, s in json.loads(row["reading"] or "[]")]
+    except (ValueError, TypeError):
+        reading = []
     return ReaderState(row["pid"], row["current"], row["done"], row["total"], row["started"] or time.time(),
-                       [q for q in queued if q != row["current"]])
+                       [q for q in queued if q != row["current"]], reading)
 
 
 def request(index: Index, root: Path) -> bool:
@@ -108,8 +116,10 @@ def serve(index: Index, timeout: float = FILE_TIMEOUT) -> int:
             if job is None or _stop_asked(index):
                 break
             with index.db:
-                index.db.execute("UPDATE reader SET current = ?, done = 0, total = 0, started = ? WHERE id = 1",
-                                 (job["path"], time.time()))
+                index.db.execute(
+                "UPDATE reader SET current = ?, done = 0, total = 0, started = ?, reading = NULL WHERE id = 1",
+                (job["path"], time.time()),
+            )
             report = Reporter(f"reading {job['path']}", stream=log, live=False)
             try:
                 scan = index.scan(Path(job["path"]))
@@ -141,7 +151,10 @@ class _Progress:
         if now - self.last >= 2 or p.done == p.total:
             self.last = now
             with self.index.db:
-                self.index.db.execute("UPDATE reader SET done = ?, total = ? WHERE id = 1", (p.done, p.total))
+                reading = json.dumps([[str(path), round(seconds, 1)] for path, seconds in p.reading], ensure_ascii=False)
+                self.index.db.execute(
+                    "UPDATE reader SET done = ?, total = ?, reading = ? WHERE id = 1", (p.done, p.total, reading)
+                )
 
 
 def _alive(row) -> bool:

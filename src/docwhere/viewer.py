@@ -1058,7 +1058,8 @@ def esc(text: str) -> str:
     return html.escape(text or "", quote=True)
 
 
-STYLE = """
+# The colours every docwhere page shares (the viewer, the history, the index manager).
+THEME = """
 :root {
   color-scheme: light dark;  /* native scrollbars and controls follow the theme */
   --bg: #eef1f4; --surface: #ffffff; --ink: #1b2430; --muted: #5b6675; --rule: #d5dbe3;
@@ -1070,7 +1071,9 @@ STYLE = """
     --blue: #8db4ea; --marker: #ffb000; --marker-soft: #5a4512; --term: #23364f; --warn: #f0a07a;
   }
 }
-* { box-sizing: border-box; }
+"""
+
+STYLE = THEME + """* { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink);
   font: 15px/1.75 "BIZ UDPGothic", "Yu Gothic UI", "Meiryo", sans-serif; }
 .wrap { max-width: 1040px; margin: 0 auto; padding: 28px 24px 96px; }

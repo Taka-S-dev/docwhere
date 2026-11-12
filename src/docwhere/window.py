@@ -131,9 +131,11 @@ def available() -> bool:
 # ---- handing pages to the window -----------------------------------------------------------
 
 
-def _address(db: Path) -> str:
+def _address(db: Path, kind: str = "") -> str:
+    """The pipe of the window of ``kind`` ("" the viewer, "manage" the index manager)."""
     digest = hashlib.sha1(str(db.resolve()).lower().encode()).hexdigest()[:16]
-    return rf"\\.\pipe\docwhere-{getpass.getuser()}-{digest}"
+    suffix = f"-{kind}" if kind else ""
+    return rf"\\.\pipe\docwhere{suffix}-{getpass.getuser()}-{digest}"
 
 
 KEY_BYTES = 32
@@ -244,9 +246,9 @@ def _unpack(data: bytes) -> dict:
     return message
 
 
-def _send(db: Path, message: dict) -> bool:
+def _send(db: Path, message: dict, kind: str = "") -> bool:
     try:
-        conn = Client(_address(db), family="AF_PIPE", authkey=_key(db))
+        conn = Client(_address(db, kind), family="AF_PIPE", authkey=_key(db))
     except Exception:
         return False  # no window running
     try:
@@ -689,7 +691,7 @@ def _texts(values) -> list[str]:
 # ---- the window process ----------------------------------------------------------------------
 
 
-def fresh_storage(db: Path) -> Path:
+def fresh_storage(db: Path, name: str = "webview") -> Path:
     """An empty folder for WebView2's own files, next to the index.
 
     Left to itself, pywebview's private mode hands WebView2 a temporary folder name that is
@@ -697,7 +699,7 @@ def fresh_storage(db: Path) -> Path:
     several MB in %TEMP%. One folder, emptied at each start, keeps that to one window's worth.
     Only one window runs per index, so nothing is using the old contents by then.
     """
-    folder = db.with_name("webview")
+    folder = db.with_name(name)
     shutil.rmtree(folder, ignore_errors=True)
     folder.mkdir(parents=True, exist_ok=True)
     return folder
