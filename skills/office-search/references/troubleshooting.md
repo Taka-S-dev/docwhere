@@ -22,6 +22,8 @@ that take most of the time, in plain words: 「時間の大半は .doc（312 件
   make them faster
 - the reading was already done: a later search reads only new and changed files, so it is
   slow once
+- to see it as a chart, with the slowest files of each folder: `docwhere manage` opens the
+  index window, which shows the same numbers
 
 `read_times` only covers files read since this was added; when it is empty or small, say
 the numbers fill in as files are read, and that `docwhere index --rebuild <folder>` reads

@@ -32,6 +32,7 @@ PAGE_NAME = "manage.html"
 DEFAULT_SIZE = (1040, 800)
 START_TIMEOUT = 15.0
 MAX_UNREADABLE = 200  # unreadable files listed per folder; the count is always given
+SLOWEST_SHOWN = 5  # files that took longest, listed per folder
 
 
 def page_path(db: Path) -> Path:
@@ -139,6 +140,23 @@ class ManageApi:
         index = self._index()
         try:
             return {"path": str(self._root(index, path)), **index.changes(self._root(index, path))}
+        finally:
+            index.close()
+
+    @_bridge
+    def times(self, path: str | None = None) -> dict:
+        """Where reading spent its time, for one folder or (``path`` None) the whole index: per
+        kind of file, and the slowest files. Asked for apart from ``overview``, which runs every
+        second, because it adds up every file read."""
+        index = self._index()
+        try:
+            root = self._root(index, path) if path else None
+            kinds = index.read_times(root)
+            return {
+                "total": round(sum(k["seconds"] for k in kinds.values()), 1),
+                "kinds": [{"ext": ext, **k} for ext, k in kinds.items()],
+                "slowest": index.slowest(root, SLOWEST_SHOWN) if root else [],
+            }
         finally:
             index.close()
 
@@ -350,6 +368,7 @@ BODY = """<div class="wrap" id="app">
     <button type="button" class="btn primary" data-act="update-all" hidden>変更のあるフォルダを更新</button>
   </div>
 </header>
+<section class="costs" id="costs" hidden></section>
 <section class="band" id="band" hidden aria-live="polite"></section>
 <div class="filter" id="filter-box" hidden>
   <input type="search" id="filter" placeholder="フォルダを絞り込む（名前やパスの一部。/ で移動）" autocomplete="off" spellcheck="false"
@@ -425,6 +444,33 @@ mark { color: inherit; background: var(--marker-soft); border-radius: 2px; }
   overflow: hidden; }
 .row-bar > span { display: block; height: 100%; width: 0; background: var(--marker); transition: width .6s ease; }
 .row-bar.scanning > span { width: 30%; animation: sweep 1.4s ease-in-out infinite; }
+/* where reading time goes: one bar of shares, the largest in the accent, the rest quieter */
+.costs { margin: 0 0 18px; }
+.costs-head { display: flex; align-items: baseline; gap: 12px; margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+.costs-head strong { color: var(--ink); font-weight: 700; }
+.share { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--bg); }
+.share > span { height: 100%; }
+.share > span + span { border-left: 2px solid var(--bg); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 8px 0 0; padding: 0; list-style: none; font-size: 13px;
+  font-variant-numeric: tabular-nums; }
+.legend li::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 6px; border-radius: 2px;
+  background: var(--dot); vertical-align: 0; }
+.legend small { color: var(--muted); }
+.cost-table { width: 100%; max-width: 560px; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.cost-table th { color: var(--muted); font-weight: 400; text-align: right; padding: 2px 10px 4px 0; }
+.cost-table th:first-child, .cost-table td:first-child { text-align: left; }
+.cost-table td { text-align: right; padding: 3px 10px 3px 0; border-top: 1px solid var(--rule); }
+.cost-table .pct { width: 150px; }
+.cost-table .pct > span { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.cost-table .track { flex: 1; height: 6px; border-radius: 3px; background: var(--bg); overflow: hidden; }
+.cost-table .track i { display: block; height: 100%; background: var(--marker); }
+.cost-table .pct b { min-width: 3.2em; font-weight: 400; text-align: right; }
+.slow-files { max-width: 560px; margin: 0; padding: 0; list-style: none; }
+.slow-files li { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-top: 1px solid var(--rule);
+  font-size: 13px; font-variant-numeric: tabular-nums; }
+.slow-files button { padding: 0; border: 0; background: none; color: var(--blue); cursor: pointer; text-align: left;
+  word-break: break-all; }
+.slow-files .gave-up { color: var(--warn); white-space: nowrap; }
 .folders { margin: 0; padding: 0; list-style: none; background: var(--surface); border: 1px solid var(--rule);
   border-radius: 8px; }
 .folders:empty { display: none; }
@@ -611,6 +657,13 @@ MANAGE_JS = r"""(() => {
     const d = new Date(t * 1000);
     return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
   };
+  const kindName = (ext) => ext || "(拡張子なし)";
+  const seconds = (sec) => (sec < 0.1 ? "0.1 秒未満" : sec < 60 ? `${sec.toFixed(1)} 秒` : duration(sec));
+  const share = (part, whole) => (whole ? Math.round((part / whole) * 100) : 0);
+  // the largest kind in the accent, the next ones in steps of the link colour, the rest grey
+  const SHADES = ["var(--marker)", "var(--blue)", "color-mix(in srgb, var(--blue) 60%, var(--bg))",
+    "color-mix(in srgb, var(--blue) 35%, var(--bg))"];
+  const OTHER = "var(--muted)";
   const duration = (sec) => {
     sec = Math.max(1, Math.round(sec));
     if (sec < 60) return `${sec} 秒`;
@@ -663,6 +716,12 @@ MANAGE_JS = r"""(() => {
   const rows = new Map();    // folder key -> row parts
   const expanded = new Set();
   const loaded = new Map();  // folder key -> unreadable list, loaded when the row is opened
+  const costs = new Map();   // folder key -> where its reading time went, loaded when the row is opened
+  const loadCost = (root, parts) => api.times(root.path).then((t) => {
+    costs.set(keyOf(root.path), t);
+    parts.sig = "";
+    fillRow(parts.root, parts);
+  }).catch(failed("読み込み時間を表示できませんでした"));
   let lastCurrent = null;
 
   const readerOf = () => (data && data.reader) || null;
@@ -776,6 +835,33 @@ MANAGE_JS = r"""(() => {
   const reveal = (path) => api.reveal(path).catch(failed("開けませんでした"));
 
   // ---- rendering: rows are kept and updated in place, so focus and typed text survive refreshes
+  let totals = null;  // where the whole index spends its time; asked for when it may have changed
+  const loadTotals = () => api.times(null).then((t) => { totals = t; renderCosts(); }).catch(() => {});
+  const renderCosts = () => {
+    const box = $("#costs");
+    if (!totals || !data || !data.roots.length) { box.hidden = true; return; }
+    box.hidden = false;
+    if (!totals.total) {
+      put(box, h("p", { class: "costs-head", text: "読み込みにかかった時間は、次に更新したファイルから記録されます。全体を測るには、フォルダを「作り直す」と記録されます。" }));
+      return;
+    }
+    const top = totals.kinds.slice(0, SHADES.length);
+    const rest = totals.kinds.slice(SHADES.length);
+    const parts = top.map((k, i) => ({ label: kindName(k.ext), files: k.files, seconds: k.seconds, color: SHADES[i] }));
+    if (rest.length) {
+      parts.push({ label: "その他", files: rest.reduce((n, k) => n + k.files, 0),
+        seconds: rest.reduce((n, k) => n + k.seconds, 0), color: OTHER });
+    }
+    put(box,
+      h("p", { class: "costs-head" }, h("strong", { text: "読み込みにかかった時間" }), `合計 ${duration(totals.total)}`),
+      h("div", { class: "share", role: "img", "aria-label": parts.map((x) => `${x.label} ${share(x.seconds, totals.total)}%`).join("、") },
+        parts.map((x) => h("span", { style: `width:${(x.seconds / totals.total) * 100}%;background:${x.color}`,
+          title: `${x.label} ${share(x.seconds, totals.total)}%（${fmt(x.files)} 件、${duration(x.seconds)}）` }))),
+      h("ul", { class: "legend" }, parts.map((x) => h("li", { style: `--dot:${x.color}` },
+        `${x.label} ${share(x.seconds, totals.total)}% `, h("small", { text: `${fmt(x.files)} 件、${duration(x.seconds)}` })))),
+    );
+  };
+
   const band = $("#band");
   const renderBand = () => {
     const reader = readerOf();
@@ -824,12 +910,34 @@ MANAGE_JS = r"""(() => {
           h("button", { type: "button", text: base(f.path), title: `${f.path}\nエクスプローラーで表示`, onclick: () => reveal(f.path) }),
           h("span", { text: f.error }))),
           errors.count > errors.files.length ? h("li", {}, h("span", { text: `ほか ${fmt(errors.count - errors.files.length)} 件（docwhere status --errors）` })) : null);
+    const cost = costs.get(key);
+    let costSection = null;
+    const slow = cost ? cost.slowest.filter((f) => f.seconds >= 1) : [];  // a list of 0.1 s files tells nothing
+    if (cost && cost.total) {
+      costSection = h("section", {}, h("h3", { text: `読み込みにかかった時間（合計 ${duration(cost.total)}）` }),
+        h("table", { class: "cost-table" },
+          h("thead", {}, h("tr", {}, ["形式", "件数", "合計", "1 件平均", "割合"].map((t) => h("th", { text: t })))),
+          h("tbody", {}, cost.kinds.map((k) => h("tr", {},
+            h("td", { text: kindName(k.ext) }), h("td", { text: `${fmt(k.files)} 件` }), h("td", { text: duration(k.seconds) }),
+            h("td", { text: seconds(k.average) }),
+            h("td", { class: "pct" }, h("span", {}, h("span", { class: "track" }, h("i", { style: `width:${share(k.seconds, cost.total)}%` })),
+              h("b", { text: `${share(k.seconds, cost.total)}%` }))))))),
+        slow.length ? h("h3", { text: "1 秒以上かかったファイル（長い順）", style: "margin-top:12px" }) : null,
+        slow.length ? h("ul", { class: "slow-files" }, slow.map((f) => h("li", {},
+          h("button", { type: "button", text: base(f.path), title: `${f.path}\nエクスプローラーで表示`, onclick: () => reveal(f.path) }),
+          f.error && /timed out/.test(f.error) ? h("span", { class: "gave-up", text: `${seconds(f.seconds)}で打ち切り` })
+            : h("span", { text: seconds(f.seconds) })))) : null);
+    } else if (cost) {
+      costSection = h("section", {}, h("h3", { text: "読み込みにかかった時間" }),
+        h("p", { class: "none", text: "まだ記録がありません。次に更新したファイルから記録されます（全体を測るには「作り直す」）。" }));
+    }
     put(box,
       h("section", {}, h("h3", { text: "除外するもの" }),
         chips.length ? h("ul", { class: "chips" }, chips) : h("p", { class: "none", text: "除外しているものはありません" }),
         h("div", { class: "add-row" }, input, h("button", { type: "button", class: "btn", text: "追加", onclick: () => addExclude(root, input) })),
         h("p", { class: "hint", text: "名前はどの深さのフォルダやファイルにも当たります。/ を含めると、このフォルダからのパスになります。大文字小文字は区別しません。" })),
       h("section", {}, h("h3", { text: `読めないファイル${root.errors ? `（${fmt(root.errors)} 件）` : ""}` }), errorList),
+      costSection,
       h("section", {}, h("h3", { text: "場所" }), h("p", { class: "place", text: root.path })),
       h("section", {}, h("h3", { text: "操作" }), h("div", { class: "ops" },
         h("button", { type: "button", class: "btn", text: "今すぐ更新", disabled: Boolean(statusOf(root).busy) || !root.exists,
@@ -854,6 +962,7 @@ MANAGE_JS = r"""(() => {
         api.unreadable(root.path).then((r) => { loaded.set(key, r); parts.sig = ""; fillRow(parts.root, parts); })
           .catch(failed("読めないファイルを表示できませんでした"));
       }
+      if (!costs.has(key)) loadCost(root, parts);
     }
   };
 
@@ -920,7 +1029,7 @@ MANAGE_JS = r"""(() => {
       api.unreadable(root.path).then((r) => { loaded.set(keyOf(root.path), r); parts.sig = ""; fillRow(parts.root, parts); })
         .catch(failed("読めないファイルを表示できませんでした"));
     }
-    const sig = JSON.stringify([root.excludes, root.errors, Boolean(loaded.get(keyOf(root.path)))]);
+    const sig = JSON.stringify([root.excludes, root.errors, Boolean(loaded.get(keyOf(root.path))), costs.get(keyOf(root.path)) || null]);
     if (sig !== parts.sig) { parts.sig = sig; detailsOf(root, parts); }
   };
 
@@ -984,6 +1093,7 @@ MANAGE_JS = r"""(() => {
     all.hidden = changed.length === 0;
     all.textContent = changed.length > 1 ? `変更のあるフォルダを更新（${changed.length}）` : "変更のあるフォルダを更新";
     renderBand();
+    renderCosts();
   };
 
   // ---- polling: every second while reading, every few seconds otherwise
@@ -997,7 +1107,8 @@ MANAGE_JS = r"""(() => {
       if (!before) recheckAll();
       // a folder the reader just finished (or a reader that just ended): look at it again
       const current = next.reader && next.reader.current;
-      if (lastCurrent && keyOf(lastCurrent) !== keyOf(current || "")) queueCheck(lastCurrent);
+      const finished = [];
+      if (lastCurrent && keyOf(lastCurrent) !== keyOf(current || "")) { queueCheck(lastCurrent); finished.push(keyOf(lastCurrent)); }
       lastCurrent = current || null;
       // tell when each folder asked for here is done, however quickly it went
       let told = false;
@@ -1008,11 +1119,18 @@ MANAGE_JS = r"""(() => {
           checks.delete(key);
           const root = next.roots.find((r) => keyOf(r.path) === key);
           if (root) queueCheck(root.path);
+          finished.push(key);
           toast(`「${req.name}」の更新が終わりました`);
           told = true;
         }
       }
       if (before && before.reader && !next.reader && !told) toast("更新が終わりました");
+      if (!before || finished.length || (before.reader && !next.reader)) loadTotals();
+      for (const key of finished) {
+        costs.delete(key);
+        const parts = rows.get(key);
+        if (parts && expanded.has(key)) loadCost(parts.root, parts);
+      }
       for (const root of next.roots) if (!checks.has(keyOf(root.path)) && root.exists && !statusOf(root).busy) queueCheck(root.path);
       render();
     } catch (e) {
@@ -1027,7 +1145,7 @@ MANAGE_JS = r"""(() => {
     if (!act) return;
     const what = act.dataset.act;
     if (what === "add") addFolder();
-    else if (what === "recheck") { recheckAll(); toast("変更を確認しています"); }
+    else if (what === "recheck") { recheckAll(); loadTotals(); toast("変更を確認しています"); }
     else if (what === "update-all") update(data.roots.filter((r) => statusOf(r).changes).map((r) => r.path));
   });
   filterInput.addEventListener("input", () => render());

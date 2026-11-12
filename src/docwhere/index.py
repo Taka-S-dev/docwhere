@@ -424,11 +424,19 @@ class Index:
             })
         return out
 
-    def read_times(self) -> dict[str, dict]:
+    def read_times(self, root: Path | None = None) -> dict[str, dict]:
         """Per extension, the files whose reading time is known and the seconds they took, the
-        slowest kind first: where indexing spends its time on this PC."""
+        slowest kind first: where indexing spends its time on this PC (or under ``root``)."""
         totals: dict[str, list] = {}
-        for r in self.db.execute("SELECT path, read_ms FROM files WHERE read_ms IS NOT NULL"):
+        if root is None:
+            rows = self.db.execute("SELECT path, read_ms FROM files WHERE read_ms IS NOT NULL")
+        else:
+            prefix = prefix_of(path_key(Path(root).resolve()))
+            rows = self.db.execute(
+                "SELECT path, read_ms FROM files WHERE read_ms IS NOT NULL AND substr(key, 1, ?) = ?",
+                (len(prefix), prefix),
+            )
+        for r in rows:
             ext = os.path.splitext(r["path"])[1].lower()
             entry = totals.setdefault(ext, [0, 0])
             entry[0] += 1
@@ -437,6 +445,18 @@ class Index:
             ext: {"files": n, "seconds": round(ms / 1000, 1), "average": round(ms / n / 1000, 2)}
             for ext, (n, ms) in sorted(totals.items(), key=lambda kv: -kv[1][1])
         }
+
+    def slowest(self, root: Path | None = None, limit: int = 5) -> list[dict]:
+        """The files that took longest to read (under ``root``), with the error of those given up."""
+        where, args = "read_ms IS NOT NULL", []
+        if root is not None:
+            prefix = prefix_of(path_key(Path(root).resolve()))
+            where += " AND substr(key, 1, ?) = ?"
+            args = [len(prefix), prefix]
+        rows = self.db.execute(
+            f"SELECT path, read_ms, error FROM files WHERE {where} ORDER BY read_ms DESC LIMIT ?", (*args, limit)
+        )
+        return [{"path": r["path"], "seconds": round(r["read_ms"] / 1000, 1), "error": r["error"]} for r in rows]
 
     def changes(self, root: Path) -> dict:
         """What reading ``root`` again would do, without doing it: how many files are new, how

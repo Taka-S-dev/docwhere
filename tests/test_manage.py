@@ -55,6 +55,18 @@ def test_changes_counts_new_changed_and_gone_files_without_touching_the_index(tm
     assert index.changes(folder / "missing") == {"exists": False}
 
 
+def test_read_times_can_be_limited_to_one_folder(tmp_path, folder):
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "x.txt").write_text("x", encoding="utf-8")
+    index = Index(tmp_path / "index.db")
+    index.sync(folder)
+    index.sync(other)
+    assert set(index.read_times(folder)) == {".md", ".docx"}
+    assert set(index.read_times(other)) == {".txt"}
+    assert set(index.read_times()) == {".md", ".docx", ".txt"}
+
+
 def test_the_reader_records_the_files_it_is_reading(tmp_path):
     from docwhere.index import SyncProgress
 
@@ -133,4 +145,23 @@ def test_the_page_is_signed_and_runs_no_script_of_its_own(tmp_path):
     assert re.search(r"Content-Security-Policy\" content=\"default-src 'none'", text)
     page.write_text(text + "<!-- changed -->", encoding="utf-8")
     assert not window.page_signed(db, page)
+
+
+def test_times_tells_where_reading_went_for_a_folder_and_the_whole_index(api, folder, tmp_path):
+    index = Index(tmp_path / "db" / "index.db")
+    with index.db:
+        index.db.execute("UPDATE files SET read_ms = 100")
+        index.db.execute("UPDATE files SET read_ms = 180000, error = 'timed out after 180s and was stopped'"
+                         " WHERE path LIKE '%broken.docx'")
+    index.close()
+    out = api.times(str(folder))
+    assert out["total"] == 180.4
+    assert [(k["ext"], k["files"]) for k in out["kinds"]] == [(".docx", 1), (".md", 4)]  # the most time first
+    assert out["slowest"][0] == {"path": str(folder / "broken.docx"), "seconds": 180.0,
+                                 "error": "timed out after 180s and was stopped"}
+    assert len(out["slowest"]) == 5
+    whole = api.times(None)
+    assert whole["total"] == 180.4 and whole["slowest"] == []
+    with pytest.raises(LookupError):
+        api.times(str(tmp_path))
 
