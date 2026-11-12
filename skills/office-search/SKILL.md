@@ -200,6 +200,16 @@ background reading has got ("インデックスの状態見せて", "読み込�
 run `docwhere manage`: it opens a window where the user can also update, stop, add folders
 and change exclusions. Say in one line that it opened; it needs no follow-up from you.
 
+To update the index ("インデックス更新して", "〜のフォルダを読み込んで", "新しいフォルダを追加して"), run
+`docwhere manage --update "<folder>"` (several folders may follow; none means every indexed
+folder). It hands the folders to the background reading, which reads only what is new or
+changed (a folder not indexed yet is added), and opens the window showing the progress. Do not
+wait for it, and do not use `docwhere index` for this: that reads in your shell, out of the
+window's sight, and a large folder outlasts your command's time limit. Tell the user in one or
+two lines that the window shows how far it got and that searches meanwhile answer from what is
+read. If the window cannot open (exit 0 with a message on stderr), the update still runs; say
+`docwhere status` shows its progress.
+
 ## Leaving files out
 
 To keep old versions, backups or drafts out ("旧版は検索に出さないで"), to say what is

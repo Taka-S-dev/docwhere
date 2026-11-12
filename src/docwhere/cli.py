@@ -117,6 +117,9 @@ def _parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("manage", help="open the index window: each folder's state and changes, the reading in "
                        "progress, and updating, stopping, adding folders and exclusions")
+    p.add_argument("--update", nargs="*", type=Path, metavar="FOLDER",
+                   help="first hand these folders (default: every indexed folder) to the background reading, which "
+                        "reads what is new or changed; a folder not indexed yet is added. The window shows the progress")
     p.set_defaults(func=cmd_manage)
 
     p = sub.add_parser("manage-window", help=argparse.SUPPRESS)  # the index window process (started by manage)
@@ -468,11 +471,24 @@ def cmd_manage(args) -> int:
 
     index = Index(args.db)
     path = index.path
+    queued: list[Path] = []
+    if args.update is not None:
+        # handed over before the window opens, so the reading goes on even where no window can
+        folders = [Path(f).resolve() for f in args.update] or [Path(r["path"]) for r in index.roots()]
+        for folder in folders:
+            if not folder.is_dir():
+                raise NotADirectoryError(f"not a folder: {folder}")
+        for folder in folders:
+            background.request(index, folder)
+        queued = folders
     index.close()
+    if queued:
+        print(f"updating in the background: {', '.join(str(f) for f in queued)}"
+              " (searches meanwhile answer from what is read; docwhere status shows how far it got)")
     if not manage.open_manager(path):
         print("docwhere: the index window cannot open here (pywebview or WebView2 missing, or the index folder"
-              " can be written by others); use docwhere status and docwhere index instead", file=sys.stderr)
-        return 1
+              " can be written by others); use docwhere status to follow the reading", file=sys.stderr)
+        return 0 if queued else 1
     print("opened the index window")
     return 0
 

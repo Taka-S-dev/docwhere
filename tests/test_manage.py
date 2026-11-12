@@ -165,3 +165,25 @@ def test_times_tells_where_reading_went_for_a_folder_and_the_whole_index(api, fo
     with pytest.raises(LookupError):
         api.times(str(tmp_path))
 
+
+def test_manage_update_hands_folders_over_before_opening_the_window(tmp_path, folder, monkeypatch, capsys):
+    from docwhere.cli import main
+
+    db = tmp_path / "db" / "index.db"
+    index = Index(db)
+    index.sync(folder)
+    index.close()
+    queued, opened = [], []
+    monkeypatch.setattr(background, "request", lambda index, root: queued.append(Path(root)) or True)
+    monkeypatch.setattr(manage, "open_manager", lambda path: opened.append(list(queued)) or True)
+    new = tmp_path / "new"
+    new.mkdir()
+    assert main(["--db", str(db), "manage", "--update", str(new)]) == 0
+    assert queued == [new] and opened == [[new]]  # handed over first, then the window
+    assert main(["--db", str(db), "manage", "--update"]) == 0  # no folder: every indexed one
+    assert queued[-1] == folder
+    assert main(["--db", str(db), "manage", "--update", str(tmp_path / "missing")]) == 2
+    monkeypatch.setattr(manage, "open_manager", lambda path: False)
+    assert main(["--db", str(db), "manage", "--update", str(folder)]) == 0  # no window, but the update runs
+    assert main(["--db", str(db), "manage"]) == 1
+    assert "docwhere status" in capsys.readouterr().err
