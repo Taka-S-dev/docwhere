@@ -284,14 +284,35 @@ class Index:
             left += [t for t in batch if not _current(rows.get(t[0]), t[2], t[3])]
         return left
 
-    def forget(self, root: Path, keep_excludes: bool = False) -> None:
+    def forget(self, root: Path, keep_excludes: bool = False) -> dict:
         """Drop everything indexed under ``root`` (the next sync re-extracts it) and, unless
-        ``keep_excludes``, the folder's exclusion patterns."""
+        ``keep_excludes``, the folder's exclusion patterns.
+
+        Forgetting a folder also forgets the indexed folders inside it (``inside``). A folder
+        inside another indexed one (``kept_by``) only stops being listed: its files are still
+        the outer folder's, so they stay searchable.
+        """
         root_key = path_key(Path(root).resolve())
+        outer = None if keep_excludes else self.enclosing(root_key)
+        prefix = prefix_of(root_key)
+        inside = [] if keep_excludes else [
+            r["path"] for r in self.db.execute("SELECT key, path FROM roots ORDER BY path") if r["key"].startswith(prefix)
+        ]
         with self.db:
-            self._delete_files([r["id"] for r in self._files_under(root_key, "id")])
+            if outer is None:
+                self._delete_files([r["id"] for r in self._files_under(root_key, "id")])
             if not keep_excludes:
-                self.db.execute("DELETE FROM roots WHERE key = ?", (root_key,))
+                self.db.execute("DELETE FROM roots WHERE key = ? OR substr(key, 1, ?) = ?", (root_key, len(prefix), prefix))
+        return {"inside": inside, "kept_by": outer}
+
+    def enclosing(self, root_key: str) -> str | None:
+        """The nearest indexed folder that ``root_key`` lies inside, or None."""
+        best = None
+        for r in self.db.execute("SELECT key, path FROM roots"):
+            inside = r["key"] != root_key and root_key.startswith(prefix_of(r["key"]))
+            if inside and (best is None or len(r["key"]) > len(best["key"])):
+                best = r
+        return best["path"] if best else None
 
     # ---- exclusions --------------------------------------------------------------------
 
@@ -467,13 +488,14 @@ class Index:
         )
         return [{"path": r["path"], "seconds": round(r["read_ms"] / 1000, 1), "error": r["error"]} for r in rows]
 
-    def changes(self, root: Path) -> dict:
+    def changes(self, root: Path, inside: list[Path] = ()) -> dict:
         """What reading ``root`` again would do, without doing it: how many files are new, how
         many changed (or are due again after an extractor update) and how many are gone.
 
         Read only, unlike ``scan``, which also records the visit and drops the files that are
         gone, so that looking at a folder does not count as reading it. ``exists`` is false
-        when the folder cannot be reached.
+        when the folder cannot be reached. For each folder of ``inside`` (indexed folders within
+        ``root``) the same counts are given under ``inside``, from the same look at the disk.
         """
         root = Path(root).resolve()
         if not root.is_dir():
@@ -485,10 +507,23 @@ class Index:
         else:
             on_disk = {path_key(p): (st.st_mtime_ns, st.st_size) for p, st in _walk(root, matcher, {})}
         known = {r["key"]: r for r in self._files_under(root_key, "key, mtime_ns, size, version, error")}
-        new = sum(k not in known for k in on_disk)
-        changed = sum(k in known and not _current(known[k], *on_disk[k]) for k in on_disk)
-        gone = sum(k not in on_disk for k in known)
-        return {"exists": True, "files": len(on_disk), "new": new, "changed": changed, "gone": gone}
+        def counts(within: str) -> dict:
+            disk = [k for k in on_disk if k.startswith(within)]
+            return {
+                "exists": True,
+                "files": len(disk),
+                "new": sum(k not in known for k in disk),
+                "changed": sum(k in known and not _current(known[k], *on_disk[k]) for k in disk),
+                "gone": sum(k not in on_disk for k in known if k.startswith(within)),
+            }
+
+        out = counts(prefix_of(root_key))
+        if inside:
+            out["inside"] = {}
+            for folder in map(Path, inside):
+                folder = folder.resolve()
+                out["inside"][str(folder)] = counts(prefix_of(path_key(folder))) if folder.is_dir() else {"exists": False}
+        return out
 
     def errors(self, roots: list[Path] | None = None) -> list[tuple[str, str]]:
         """Files that could not be read (all of them, not only those that failed in the last sync)."""

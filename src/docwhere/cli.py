@@ -639,8 +639,15 @@ def cmd_forget(args) -> int:
             print(f"{path}: not indexed")
             continue
         excludes = index.excludes(Path(path))
-        index.forget(Path(path))
-        print(f"{path}: index removed" + (f", and no longer excluding {', '.join(excludes)}" if excludes else ""))
+        gone = index.forget(Path(path))
+        stopped = f", and no longer excluding {', '.join(excludes)}" if excludes else ""
+        if gone["kept_by"]:
+            print(f"{path}: no longer listed on its own{stopped}; its files stay searchable as part of {gone['kept_by']}")
+        else:
+            print(f"{path}: index removed{stopped}")
+        if inner := [p for p in gone["inside"] if p != path]:
+            print("  also forgotten, being inside it: " + ", ".join(inner))
+        known -= set(gone["inside"])
     index.db.execute("VACUUM")  # give the space back to the disk; deleting rows alone does not
     return 0
 
