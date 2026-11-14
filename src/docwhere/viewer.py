@@ -468,7 +468,7 @@ def _is_sheet(hit: dict) -> bool:
     return Path(hit["path"]).suffix.lower() in (".xlsx", ".xlsm")
 
 
-def _paged(hit: dict, renditions: Path) -> dict:
+def _paged(hit: dict, renditions: Path, export: bool = True) -> dict:
     """``hit`` with ``pdf`` set to the PDF its pages are drawn from, and a page in its anchor.
 
     A PDF is its own; Word and PowerPoint files get an exported PDF (see rendition), in which
@@ -479,7 +479,10 @@ def _paged(hit: dict, renditions: Path) -> dict:
     ext = Path(hit["path"]).suffix.lower()
     if ext == ".pdf":
         return {**hit, "pdf": hit["path"]} if hit["anchor"].get("page") else hit
-    if ext not in WORD_EXTS | SLIDE_EXTS or (pdf := as_pdf(hit["path"], renditions)) is None:
+    if ext not in WORD_EXTS | SLIDE_EXTS:
+        return hit
+    pdf = as_pdf(hit["path"], renditions) if export else as_pdf(hit["path"], renditions, export=False)
+    if pdf is None:
         return hit
     if ext in SLIDE_EXTS:
         page = hit["anchor"].get("slide") or 1

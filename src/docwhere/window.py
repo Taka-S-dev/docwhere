@@ -239,7 +239,7 @@ def _pack(message: dict) -> bytes:
     return json.dumps(message).encode()
 
 
-def _unpack(data: bytes) -> dict:
+def unpack(data: bytes) -> dict:
     message = json.loads(data.decode())
     if not isinstance(message, dict):
         raise ValueError("bad message")
@@ -776,7 +776,7 @@ def run(db: Path, page: Path) -> None:
     def handle(conn) -> None:
         target = None
         try:
-            message = _unpack(conn.recv_bytes(MAX_MESSAGE))
+            message = unpack(conn.recv_bytes(MAX_MESSAGE))
             target = Path(str(message.get("page", ""))) if isinstance(message, dict) else None
             # answer first: the sender (a docwhere view in the terminal) must not wait on the page load
             conn.send_bytes(b"ok")

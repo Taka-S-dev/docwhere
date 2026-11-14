@@ -56,7 +56,7 @@ def test_later_pages_are_handed_to_the_running_window_with_the_key(tmp_path):
 
     def accept_one():
         conn = listener.accept()
-        received.append(window._unpack(conn.recv_bytes(window.MAX_MESSAGE)))
+        received.append(window.unpack(conn.recv_bytes(window.MAX_MESSAGE)))
         conn.send_bytes(b"ok")
         conn.close()
 
@@ -102,9 +102,9 @@ def test_key_file_is_private_and_reused(tmp_path):
 def test_pipe_messages_are_json_not_pickle():
     import pickle
 
-    assert window._unpack(window._pack({"page": "x.html"})) == {"page": "x.html"}
+    assert window.unpack(window._pack({"page": "x.html"})) == {"page": "x.html"}
     with pytest.raises(ValueError):
-        window._unpack(pickle.dumps({"page": "x.html"}))
+        window.unpack(pickle.dumps({"page": "x.html"}))
 
 
 def test_window_title_names_no_tool_and_can_be_changed(tmp_path):

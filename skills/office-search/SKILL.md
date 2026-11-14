@@ -215,6 +215,12 @@ To show which folders are indexed, what changed since they were read, or how far
 background reading has got ("インデックスの状態見せて", "読み込みどこまで進んだ？", "インデックスの画面開いて"),
 run `docwhere manage`: it opens a window where the user can also update, stop, add folders
 and change exclusions. Say in one line that it opened; it needs no follow-up from you.
+`docwhere manage --map` opens it on the notes map, where the user sees and edits its rows
+("地図見せて", "地図を編集したい"); a map the user changed there is read again from the file.
+`docwhere manage --search` opens it on a search box for the user to search on their own
+("自分で検索したい", "検索画面開いて"). Its other wordings come from `synonyms.csv` beside the
+index (one group per line, comma separated); when the user says two words mean the same thing
+("帳票とレポートは同じ"), add that line there.
 
 To update the index ("インデックス更新して", "〜のフォルダを読み込んで", "新しいフォルダを追加して"), run
 `docwhere manage --update "<folder>"` (several folders may follow; none means every indexed

@@ -128,13 +128,16 @@ def _parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_window)
 
     p = sub.add_parser("manage", help="open the index window: each folder's state and changes, the reading in "
-                       "progress, and updating, stopping, adding folders and exclusions")
+                       "progress, and updating, stopping, adding folders and exclusions; and the notes map to view and edit")
+    p.add_argument("--map", action="store_true", help="open on the notes map (notes.csv) instead of the folders")
+    p.add_argument("--search", action="store_true", help="open on the search, for a person to search the index")
     p.add_argument("--update", nargs="*", type=Path, metavar="FOLDER",
                    help="first hand these folders (default: every indexed folder) to the background reading, which "
                         "reads what is new or changed; a folder not indexed yet is added. The window shows the progress")
     p.set_defaults(func=cmd_manage)
 
     p = sub.add_parser("manage-window", help=argparse.SUPPRESS)  # the index window process (started by manage)
+    p.add_argument("--tab", choices=("folders", "map", "search"), default="folders")
     p.set_defaults(func=cmd_manage_window)
 
     p = sub.add_parser("clean", help="delete every saved view page, snapshot and Word/PowerPoint PDF export (all are also pruned automatically)")
@@ -558,7 +561,7 @@ def cmd_manage(args) -> int:
     if queued:
         print(f"updating in the background: {', '.join(str(f) for f in queued)}"
               " (searches meanwhile answer from what is read; docwhere status shows how far it got)")
-    if not manage.open_manager(path):
+    if not manage.open_manager(path, "map" if args.map else "search" if args.search else "folders"):
         print("docwhere: the index window cannot open here (pywebview or WebView2 missing, or the index folder"
               " can be written by others); use docwhere status to follow the reading", file=sys.stderr)
         return 0 if queued else 1
@@ -572,7 +575,7 @@ def cmd_manage_window(args) -> int:
     index = Index(args.db)
     path = index.path
     index.close()
-    manage.run(path)
+    manage.run(path, args.tab)
     return 0
 
 

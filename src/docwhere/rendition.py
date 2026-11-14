@@ -34,8 +34,9 @@ def _touch(path: Path) -> Path:
     return path
 
 
-def as_pdf(path: str, cache: Path) -> Path | None:
-    """A PDF of the Word or PowerPoint file at ``path``, exported once and then reused."""
+def as_pdf(path: str, cache: Path, export: bool = True) -> Path | None:
+    """A PDF of the Word or PowerPoint file at ``path``, exported once and then reused.
+    With ``export`` false only an export made before is returned (Office is not started)."""
     src = Path(path)
     ext = src.suffix.lower()
     if ext not in WORD_EXTS | SLIDE_EXTS:
@@ -48,6 +49,8 @@ def as_pdf(path: str, cache: Path) -> Path | None:
     out = cache / f"{key}.pdf"
     if out.exists():
         return _touch(out)
+    if not export:
+        return None
     cache.mkdir(parents=True, exist_ok=True)
     if not _export_apart(src, out, ext) or not out.exists():
         out.unlink(missing_ok=True)

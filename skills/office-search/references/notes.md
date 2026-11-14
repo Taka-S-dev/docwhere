@@ -16,6 +16,10 @@ wrong place. Do not add file rows when drafting; those come from real finds. For
 wiki, `docwhere wiki spaces --json` lists its spaces with their names; draft one
 `wiki:NAME/SPACE` row per space whose name says what it holds.
 
+**Showing it** ("地図見せて", "地図を編集したい"): `docwhere manage --map` opens the index window
+on the map, where rows are edited in place and marked when their folder is missing or not
+indexed. If the window cannot open there, open the file as below.
+
 **Opening it** ("メモ開いて", "地図のファイル開いて"): create it first if missing (the header
 line only, UTF-8 with BOM so Excel shows Japanese correctly), then open it with the default
 app (`start "" "<path>"` / `os.startfile`), usually Excel. Mention that while Excel has it

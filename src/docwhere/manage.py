@@ -1,6 +1,8 @@
 """The index manager: a window that shows every indexed folder, what changed in it since it was
 read and the background reading as it goes, and lets the user read a folder again, stop the
 reading, add a folder, change what is left out, rebuild a folder or take it out of the index.
+A second tab shows the notes map (``notes.csv``) and edits it; a third searches the index the
+way the agent does, and shows a hit in the viewer or opens its file at the spot.
 
 It is a process and a window of its own (``docwhere manage``), so the viewer window stays as
 it is while reading goes on. The safety rules are the viewer's: the page is a static file that
@@ -23,7 +25,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from docwhere import background
+from docwhere import background, notes
 from docwhere.index import Index, path_key, prefix_of
 from docwhere.settings import load_settings, private, save_settings
 from docwhere.window import bridge_method
@@ -35,6 +37,16 @@ DEFAULT_SIZE = (1040, 800)
 START_TIMEOUT = 15.0
 MAX_UNREADABLE = 200  # unreadable files listed per folder; the count is always given
 SLOWEST_SHOWN = 5  # files that took longest, listed per folder
+SEARCH_LIMIT = 30  # hits shown in the search tab
+SEARCH_POOL = 300  # hits counted by kind, format and folder, so a narrowing button tells what it keeps
+SLOW_SHORT = 1.0  # seconds a search with a two-letter term may take before the tab says why
+SYNONYMS_NAME = "synonyms.csv"
+PREVIEW_DPI = 110  # a page drawn in the search tab's pane: about the pane's width, small enough to send at once
+PREVIEW_MODES = ("text", "page")  # the search tab's pane: the section's text, or its page as a picture
+PREVIEW_MAX_SIDE = 2000  # pixels: a drawing sheet (A0) is drawn smaller, not at 3600 x 5100
+# PyMuPDF must not be used from two threads at once, and each bridge call runs on a thread of
+# its own; one page (or one Office export) at a time also keeps the memory and Office use flat
+_PAGES = threading.Lock()  # the user's own wordings searched together (search tab)
 
 
 def page_path(db: Path) -> Path:
@@ -54,18 +66,21 @@ def write_page(db: Path) -> Path:
     return path
 
 
-def open_manager(db: Path) -> bool:
-    """Show the manager window, starting it if none is running. False when the window cannot
-    be used here (no pywebview, or an index folder that others can write to)."""
+TABS = ("folders", "map", "search")
+
+
+def open_manager(db: Path, tab: str = "folders") -> bool:
+    """Show the manager window on ``tab``, starting it if none is running. False when the
+    window cannot be used here (no pywebview, or an index folder that others can write to)."""
     from docwhere import window
 
     if not window.available() or not private(db.parent):
         return False
     write_page(db)
     window.allow_foreground()
-    if window.send(db, {"show": True}, KIND):
+    if window.send(db, {"show": True, "tab": tab}, KIND):
         return True
-    background.spawn_detached(["--db", str(db), "manage-window"])
+    background.spawn_detached(["--db", str(db), "manage-window", "--tab", tab])
     deadline = time.monotonic() + START_TIMEOUT
     while time.monotonic() < deadline:
         time.sleep(0.3)
@@ -85,6 +100,8 @@ class ManageApi:
         self._db = db
         self._window = None
         self._trusted = False  # set while the signed manager page is showing
+        self._results: tuple[list[str], list[dict]] = ([], [])  # the search tab's last hits, to open
+        self._page_asked = 0  # page pictures asked for so far: one that waited behind a newer one is dropped
 
     def _index(self) -> Index:
         return Index(self._db)
@@ -102,17 +119,30 @@ class ManageApi:
     def overview(self) -> dict:
         index = self._index()
         try:
+            background.expire(index)
             roots = index.roots()
             keys = {path_key(Path(r["path"])): r["path"] for r in roots}
+            # what the notes map says of each folder: the row for it, or how many rows lie inside it
+            mapped: dict[str, dict] = {}
+            for item in notes.load(self._db)["items"]:
+                cells = item.get("cells") or {}
+                where = cells.get("path", "").strip()
+                if where and not where.lower().startswith("wiki:") and Path(where).is_absolute():
+                    mapped.setdefault(path_key(Path(where)), {"kind": cells.get("kind", "").strip(), "note": cells.get("note", "").strip()})
             out = []
             for r in roots:
                 key = path_key(Path(r["path"]))
-                parent = next((p for k, p in keys.items() if k != key and key.startswith(prefix_of(k))), None)
+                inside = sum(k.startswith(prefix_of(key)) for k in mapped)
+                # a folder searched on its own inside another indexed folder: its files are the
+                # outer folder's too, so the window shows it under that folder, counted once
+                parent = index.enclosing(path_key(Path(r["path"])))
                 out.append({
                     **r,
                     "name": Path(r["path"]).name or r["path"],
                     "parent": parent,
                     "exists": Path(r["path"]).is_dir(),
+                    "map": mapped.get(key),
+                    "map_inside": inside,
                 })
             queued = [q["path"] for q in index.db.execute("SELECT path FROM queue ORDER BY requested_at")]
             reader = background.state(index)
@@ -120,6 +150,7 @@ class ManageApi:
             if reader is not None:
                 state = {
                     "current": reader.current, "done": reader.done, "total": reader.total, "rate": reader.rate(),
+                    "seconds_left": reader.seconds_left(),
                     "queued": reader.queued, "reading": reader.reading,
                 }
             return {
@@ -135,7 +166,10 @@ class ManageApi:
     def changes(self, path: str) -> dict:
         index = self._index()
         try:
-            return {"path": str(self._root(index, path)), **index.changes(self._root(index, path))}
+            root = self._root(index, path)
+            prefix = prefix_of(path_key(root))
+            inside = [Path(r["path"]) for r in index.roots() if path_key(Path(r["path"])).startswith(prefix)]
+            return {"path": str(root), **index.changes(root, inside)}
         finally:
             index.close()
 
@@ -164,6 +198,7 @@ class ManageApi:
             roots = [self._root(index, p) for p in paths[:100]]
             for root in roots:
                 background.request(index, root)
+                index.keep(root)
             return {"queued": [str(r) for r in roots]}
         finally:
             index.close()
@@ -189,6 +224,7 @@ class ManageApi:
         index = self._index()
         try:
             if index.db.execute("SELECT 1 FROM roots WHERE key = ?", (path_key(folder),)).fetchone():
+                index.keep(folder)  # added by hand: no longer one searched only once
                 return {"added": None, "known": str(folder)}
             background.request(index, folder)
             return {"added": str(folder)}
@@ -215,6 +251,15 @@ class ManageApi:
             index.close()
 
     @bridge_method
+    def keep(self, path: str) -> dict:
+        """Keep a folder searched with --once in the index for good."""
+        index = self._index()
+        try:
+            return {"kept": index.keep(self._root(index, path))}
+        finally:
+            index.close()
+
+    @bridge_method
     def rebuild(self, path: str) -> dict:
         """Read the folder again from nothing, keeping what it leaves out."""
         index = self._index()
@@ -222,6 +267,7 @@ class ManageApi:
             root = self._root(index, path)
             index.forget(root, keep_excludes=True)
             background.request(index, root)
+            index.keep(root)
             return {"queued": str(root)}
         finally:
             index.close()
@@ -231,8 +277,7 @@ class ManageApi:
         index = self._index()
         try:
             root = self._root(index, path)
-            index.forget(root)
-            return {"forgotten": str(root)}
+            return {"forgotten": str(root), **index.forget(root)}
         finally:
             index.close()
 
@@ -261,11 +306,416 @@ class ManageApi:
         finally:
             index.close()
 
+    # ---- the search tab
+
+    def _kind_folders(self) -> list[tuple[Path, str]]:
+        """The folders the notes map gives a kind to (wiki rows and file rows aside)."""
+        out = []
+        for item in notes.load(self._db)["items"]:
+            cells = item.get("cells") or {}
+            where, kind = cells.get("path", "").strip(), cells.get("kind", "").strip()
+            if kind and where and not where.lower().startswith("wiki:") and Path(where).is_absolute():
+                out.append((Path(where), kind))
+        return out
+
+    @bridge_method
+    def search_scopes(self) -> dict:
+        """What the search may be limited to: an indexed folder, or a kind of the notes map."""
+        index = self._index()
+        try:
+            tops = [r["path"] for r in index.roots() if index.enclosing(path_key(Path(r["path"]))) is None]
+        finally:
+            index.close()
+        kinds: dict[str, int] = {}
+        for _, kind in self._kind_folders():
+            kinds[kind] = kinds.get(kind, 0) + 1
+        return {
+            "roots": [{"path": p, "name": Path(p).name or p} for p in tops],
+            "kinds": [{"kind": k, "folders": n} for k, n in kinds.items()],
+        }
+
+    @bridge_method
+    def search(self, query: dict) -> dict:
+        """Search as ``docwhere search`` does, on what is read (no reading is started here).
+        ``query``: text (words, "phrases", -left-out), scope ("" for every folder, a folder of
+        the index, or "kind:仕様書"), the switches all, name, regex and variants, and facet
+        ({kind, ext, folder}: keep only the hits with these values)."""
+        from docwhere.search import (
+            PatternError,
+            expand_variants,
+            load_variant_groups,
+            parse_query,
+            search,
+            search_names,
+        )
+
+        terms, exclude = parse_query(str(query.get("text") or "")[:500])
+        if not terms:
+            self._results = ([], [])
+            return {"hits": [], "terms": [], "exclude": exclude}
+        scope = str(query.get("scope") or "")
+        index = self._index()
+        try:
+            indexed = [Path(r["path"]) for r in index.roots()]
+            missing = 0
+            if scope.startswith("kind:"):
+                keys = [path_key(r) for r in indexed]
+                roots = []
+                for folder, kind in self._kind_folders():
+                    if kind != scope[5:] or not folder.is_dir():
+                        continue
+                    key = path_key(folder)
+                    if any(key == k or key.startswith(prefix_of(k)) for k in keys):
+                        roots.append(folder)
+                    else:
+                        missing += 1  # written in the map, never read: nothing of it to search
+            elif scope:
+                roots = [self._root(index, scope)]
+            else:
+                roots = [r for r in indexed if index.enclosing(path_key(r)) is None]
+            started = time.monotonic()
+            regex, name, every = bool(query.get("regex")), bool(query.get("name")), bool(query.get("all"))
+            # other wordings of the terms (サーバ / サーバー, ログイン / ログオン), searched alongside them;
+            # not with "every term", where a variant would count as one more term to require
+            variants = []
+            if query.get("variants") and not (regex or name or every):
+                variants = expand_variants(terms, load_variant_groups(self._db.with_name(SYNONYMS_NAME)))
+
+            def run(words: list[str], leave_out: list[str], require_all: bool, limit: int) -> list[dict]:
+                if not roots:
+                    return []
+                try:
+                    if name:
+                        found = search_names(index, roots, words, limit=limit, exclude=leave_out, regex=regex)
+                    else:
+                        found = search(index, roots, words, require_all=require_all, limit=limit,
+                                       exclude=leave_out, regex=regex)
+                except PatternError as e:
+                    raise ValueError(f"正規表現として読めません: {e}") from None
+                return [h.to_dict() for h in found]
+
+            pool = run(terms + variants, exclude, every, SEARCH_POOL)
+            facets = self._facets(pool, roots)
+            chosen = query.get("facet") if isinstance(query.get("facet"), dict) else {}
+            kept = [h for h, f in zip(pool, facets["of"]) if all(f.get(k) == v for k, v in chosen.items() if v)]
+            for n, hit in enumerate(kept, 1):
+                hit["n"] = n  # numbered as shown, so the buttons name the hit they show
+            self._results = (terms + variants, kept)
+            hints = []
+            if not pool and exclude and run(terms + variants, [], every, 1):
+                hints.append(f"除外（{'、'.join(exclude)}）を外すと見つかります")
+            if not pool and every and len(terms) > 1 and run(terms, exclude, False, 1):
+                hints.append("「すべての語を含む」を外すと見つかります")
+            # said only when it matters: a one-letter term matches nearly everything, and a term
+            # under three letters is searched without the index, which shows on a large one
+            if not (regex or name):
+                single = [t for t in terms if len(t) == 1]
+                short = [t for t in terms if len(t) < 3]
+                if single:
+                    hints.append(f"{'、'.join(single)} のような 1 文字の語は、ほとんどの節に当たります")
+                elif short and time.monotonic() - started > SLOW_SHORT:
+                    hints.append(f"{'、'.join(short)} のような 2 文字の語は索引を使わずに探すため、時間がかかります。"
+                                 "3 文字以上の語を足すと速くなります")
+            return {
+                "hits": kept[:SEARCH_LIMIT], "total": len(kept), "pooled": len(pool) >= SEARCH_POOL,
+                "terms": terms, "variants": variants, "exclude": exclude, "roots": [str(r) for r in roots],
+                "missing": missing, "ms": round((time.monotonic() - started) * 1000), "limit": SEARCH_LIMIT,
+                "facets": facets["counts"], "facet": chosen, "hints": hints,
+            }
+        finally:
+            index.close()
+
+    def _facets(self, hits: list[dict], roots: list[Path]) -> dict:
+        """For each hit its kind in the notes map, its format and its folder (the first one under
+        the searched folder), and how many hits each value has."""
+        kinds = sorted(((prefix_of(path_key(f)), k) for f, k in self._kind_folders()), key=lambda x: -len(x[0]))
+        tops = sorted(((prefix_of(path_key(r)), r) for r in roots), key=lambda x: -len(x[0]))
+        of, counts = [], {"kind": {}, "ext": {}, "folder": {}}
+        for hit in hits:
+            key = path_key(Path(hit["path"]))
+            f = {
+                "kind": next((k for prefix, k in kinds if key.startswith(prefix)), ""),
+                "ext": Path(hit["path"]).suffix.lower(),
+                "folder": "",
+            }
+            for prefix, root in tops:
+                if key.startswith(prefix):
+                    rest = Path(hit["path"]).relative_to(root).parts
+                    inner = rest[0] if len(rest) > 1 else ""
+                    f["folder"] = "\\".join(x for x in ((root.name if len(roots) > 1 else ""), inner) if x) or root.name
+                    break
+            of.append(f)
+            for k, v in f.items():
+                if v:
+                    counts[k][v] = counts[k].get(v, 0) + 1
+        ordered = {k: sorted(({"value": v, "count": n} for v, n in c.items()), key=lambda x: -x["count"])
+                   for k, c in counts.items()}
+        return {"of": of, "counts": ordered}
+
+    @bridge_method
+    def preview(self, n: int) -> dict:
+        """The hit's section with the two before and after it, for the pane beside the results."""
+        from docwhere.rendition import SLIDE_EXTS, WORD_EXTS
+
+        hit = self._hit(n)
+        ext = Path(hit["path"]).suffix.lower()
+        # whether the pane can show the page as a picture: a PDF's own, or an Office file's export
+        pages = "pdf" if ext == ".pdf" and hit["anchor"].get("page") else "office" if ext in WORD_EXTS | SLIDE_EXTS else None
+        if not hit["chunk_id"]:
+            return {"path": hit["path"], "sections": [], "note": hit["snippet"], "pages": None}
+        index = self._index()
+        try:
+            rows = index.chunk_with_neighbors(hit["chunk_id"], 2)
+        finally:
+            index.close()
+        return {
+            "path": hit["path"],
+            "sections": [{"title": r["title"], "crumb": r["crumb"], "body": r["body"][:20000],
+                          "current": r["id"] == hit["chunk_id"]} for r in rows],
+            "pages": pages,
+        }
+
+    @bridge_method
+    def page_image(self, n: int, convert: bool = False) -> dict:
+        """The hit's page as a picture with the terms marked. A Word or PowerPoint file is drawn
+        from its PDF export: one made before is used at once, a new one only with ``convert``
+        (Office takes seconds), otherwise ``convert`` in the answer asks for it."""
+        hit = self._hit(n)
+        ext = Path(hit["path"]).suffix.lower()
+        if not Path(hit["path"]).is_file():
+            return {"note": "ファイルが見つかりません（読み込んだ後に移動か削除されたようです）。本文は読み込んだときのものが見られます。"}
+        self._page_asked += 1
+        mine = self._page_asked
+        with _PAGES:
+            if mine != self._page_asked and not convert:
+                return {"stale": True}  # the pane has moved on to another hit while this one waited
+            return self._draw(hit, ext, bool(convert))
+
+    def _draw(self, hit: dict, ext: str, convert: bool) -> dict:
+        import pymupdf
+
+        from docwhere.rendition import SLIDE_EXTS
+        from docwhere.viewer import _data_uri, _paged, render_page
+
+        renditions = self._db.with_name("renditions")
+        paged = _paged(hit, renditions, export=convert)  # Office runs in a worker process (see rendition)
+        if not paged.get("pdf"):
+            if ext != ".pdf" and not convert:
+                return {"convert": True, "app": "PowerPoint" if ext in SLIDE_EXTS else "Word"}
+            return {"note": "PDF に書き出せませんでした（Office がないか、ファイルが開けません）。本文に切り替えて見てください。"
+                    if ext != ".pdf" else "この結果にはページの位置がありません。本文に切り替えて見てください。"}
+        page = paged["anchor"]["page"]
+        terms = list(dict.fromkeys([*self._results[0], *hit["terms"]]))
+        try:
+            with pymupdf.open(paged["pdf"]) as doc:
+                pages = doc.page_count
+                rect = doc[page - 1].rect
+            dpi = max(1, int(min(PREVIEW_DPI, PREVIEW_MAX_SIDE * 72 / max(rect.width, rect.height, 1))))
+            image = render_page(paged["pdf"], page, terms, dpi, "jpeg")
+        except (LookupError, RuntimeError, ValueError):  # the file changed since it was read, or will not open
+            return {"note": "このページを描けませんでした（読み込んだ後にファイルが変わったようです）。本文に切り替えて見てください。"}
+        return {"src": _data_uri(image), "page": page, "pages": pages, "exported": ext != ".pdf"}
+
+    @bridge_method
+    def preview_mode(self, mode: str | None = None) -> str:
+        """How the search tab's pane shows a hit, "text" or "page"; with ``mode``, chosen from now on.
+        Kept in the settings file: the window's own storage is wiped at every start."""
+        if mode in PREVIEW_MODES:
+            save_settings(self._db, search_preview=mode)
+            return mode
+        kept = load_settings(self._db).get("search_preview")
+        return kept if kept in PREVIEW_MODES else PREVIEW_MODES[0]
+
+    @bridge_method
+    def copy(self, text: str) -> bool:
+        """Put ``text`` (a citation) on the clipboard."""
+        import win32clipboard
+
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardText(str(text)[:4000], win32clipboard.CF_UNICODETEXT)
+        finally:
+            win32clipboard.CloseClipboard()
+        return True
+
+    @bridge_method
+    def open_synonyms(self) -> str:
+        """Open the user's wordings file (created with an explanation first) in its application."""
+        path = self._db.with_name(SYNONYMS_NAME)
+        if not path.exists():
+            path.write_text(
+                "# 同じものを指す言い方を 1 行に 1 組、カンマで区切って書きます。検索タブの「言い換えも探す」で一緒に探します。\n"
+                "# 例: 帳票,レポート,出力物\n",
+                encoding="utf-8-sig",
+            )
+        os.startfile(str(path))  # the file beside the index, nothing the page names
+        return str(path)
+
+    def _hit(self, n: int) -> dict:
+        hits = self._results[1]
+        if not isinstance(n, int) or not 1 <= n <= len(hits):
+            raise LookupError("もう一度検索してください")
+        return hits[n - 1]
+
+    @bridge_method
+    def open_hits(self, numbers: list, title: str = "") -> str:
+        """Show hits of the last search here in the viewer, with their evidence framed."""
+        from types import SimpleNamespace
+
+        from docwhere.present import show_page
+        from docwhere.viewer import build_html
+
+        hits = [h for h in (self._hit(n) for n in numbers[:SEARCH_LIMIT]) if h["chunk_id"]]
+        if not hits:
+            raise LookupError("ファイル名で見つけたものは、ファイルを開いて見てください")
+        terms = self._results[0]
+        title = str(title)[:200] or " ".join(terms)
+        options = SimpleNamespace(pages=0, quote=[], answer="", title=title, browser=False, steps=None)
+        index = self._index()
+        try:
+            with _PAGES:  # the page draws PDF pages too, and may export Word or PowerPoint files
+                return show_page(
+                index.path,
+                    lambda in_window: build_html(index, terms, hits, 1, 0, [], "", title, cut_excerpts=not in_window),
+                    title, options, True,
+                )
+        finally:
+            index.close()
+
+    @bridge_method
+    def open_file(self, n: int) -> str:
+        """Open a hit's file in its application at the spot (page, sheet and cell, heading)."""
+        import pythoncom
+
+        from docwhere.opener import open_at
+        from docwhere.window import pdf_app
+
+        hit = self._hit(n)
+        pythoncom.CoInitialize()  # each bridge call runs on a thread of its own; Office is reached through COM
+        try:
+            return open_at(hit["path"], hit["anchor"], pdf_app(self._db))
+        finally:
+            pythoncom.CoUninitialize()
+
+    # ---- the notes map
+
+    def _describe(self, index: Index, path: str, wikis: set[str]) -> dict:
+        """What a map row's path points at, for the mark beside it."""
+        text = str(path).strip()
+        if not text:
+            return {"kind": "empty"}
+        if text.lower().startswith("wiki:"):
+            return {"kind": "wiki", "known": text[5:].split("/")[0] in wikis}
+        target = Path(text)
+        if not target.is_absolute():
+            return {"kind": "relative"}
+        try:
+            kind = "folder" if target.is_dir() else "file" if target.is_file() else "missing"
+        except OSError:
+            kind = "missing"
+        if kind == "missing":
+            return {"kind": kind}
+        key = path_key(target)
+        indexed = any(key == k or key.startswith(prefix_of(k)) for k in (path_key(Path(r["path"])) for r in index.roots()))
+        return {"kind": kind, "indexed": indexed}
+
+    def _wikis(self) -> list[dict]:
+        from docwhere.wiki.registry import wikis
+
+        return wikis(self._db)
+
+    def _in_map(self, path: str) -> Path:
+        """``path`` as a path written in the map; anything else is refused."""
+        wanted = path_key(Path(str(path)))
+        for item in notes.load(self._db)["items"]:
+            cell = (item.get("cells") or {}).get("path", "").strip()
+            if cell and not cell.lower().startswith("wiki:") and Path(cell).is_absolute() and path_key(Path(cell)) == wanted:
+                return Path(cell)
+        raise LookupError("地図にない場所です")
+
+    @bridge_method
+    def notes(self) -> dict:
+        data = notes.load(self._db)
+        wikis = self._wikis()
+        names = {w["name"] for w in wikis}
+        index = self._index()
+        try:
+            for item in data["items"]:
+                if "cells" in item:
+                    item["status"] = self._describe(index, item["cells"].get("path", ""), names)
+            data["roots"] = [r["path"] for r in index.roots()]
+        finally:
+            index.close()
+        data["wikis"] = [f"wiki:{w['name']}" for w in wikis] + [f"wiki:{w['name']}/{s}" for w in wikis for s in w.get("spaces") or []]
+        return data
+
+    @bridge_method
+    def describe(self, path: str) -> dict:
+        index = self._index()
+        try:
+            return self._describe(index, str(path)[: notes.MAX_CELL], {w["name"] for w in self._wikis()})
+        finally:
+            index.close()
+
+    @bridge_method
+    def save_notes(self, items: list, version: str | None) -> dict:
+        try:
+            notes.save(self._db, items, version)
+        except notes.Changed:
+            raise RuntimeError("地図のファイルがほかで変更されています。読み込み直してから編集してください") from None
+        except PermissionError:
+            raise RuntimeError("地図のファイルを Excel などで開いているため保存できません。閉じてから保存してください") from None
+        return self.notes()
+
+    @bridge_method
+    def pick(self, kind: str) -> str | None:
+        """A folder (``kind`` "folder") or file chosen in a dialog, for a map row; nothing is read."""
+        import webview
+
+        dialog = webview.FileDialog.FOLDER if kind == "folder" else webview.FileDialog.OPEN
+        chosen = self._window.create_file_dialog(dialog)
+        return str(Path(chosen[0]).resolve()) if chosen else None
+
+    @bridge_method
+    def open_notes(self) -> str:
+        """Open the map in its default application (usually Excel), creating it if missing."""
+        path = notes.notes_path(self._db)
+        if not path.exists():
+            notes.save(self._db, [], None)
+        os.startfile(str(path))  # the map beside the index, nothing the page names
+        return str(path)
+
+    @bridge_method
+    def reveal_note(self, path: str) -> bool:
+        target = self._in_map(path)
+        if target.is_dir():
+            os.startfile(str(target))  # a folder written in the map, checked above
+        elif target.is_file():
+            subprocess.Popen(["explorer", f"/select,{target}"])  # a file written in the map, checked above
+        else:
+            raise FileNotFoundError("見つかりません")
+        return True
+
+    @bridge_method
+    def index_note(self, path: str) -> dict:
+        """Start reading a folder written in the map, so searches find what is in it."""
+        target = self._in_map(path)
+        if not target.is_dir():
+            raise NotADirectoryError("フォルダではありません")
+        index = self._index()
+        try:
+            background.request(index, target.resolve())
+            index.keep(target)
+            return {"queued": str(target)}
+        finally:
+            index.close()
+
 
 # ---- the window process ----------------------------------------------------------------------
 
 
-def run(db: Path) -> None:
+def run(db: Path, tab: str = "folders") -> None:
     """The manager window process: show the page and come to the front when asked again."""
     import pywintypes
     import webview
@@ -288,7 +738,7 @@ def run(db: Path) -> None:
     geometry = viewer_window.usable_geometry(load_settings(db).get("manage_window") or {})
     api = ManageApi(db)
     win = webview.create_window(
-        f"{viewer_window.title(db)} - インデックス", url=page.as_uri(), js_api=api,
+        f"{viewer_window.title(db)} - インデックス", url=page.as_uri() + (f"#{tab}" if tab in TABS[1:] else ""), js_api=api,
         width=geometry.get("width", DEFAULT_SIZE[0]), height=geometry.get("height", DEFAULT_SIZE[1]),
         x=geometry.get("x"), y=geometry.get("y"), maximized=bool(geometry.get("maximized")),
         min_size=(720, 520), text_select=True,
@@ -324,13 +774,16 @@ def run(db: Path) -> None:
                 log.exception("accepting a request for the index window failed")  # e.g. a caller without the key
                 time.sleep(0.2)
                 continue
+            message = {}
             try:
-                conn.recv_bytes(viewer_window.MAX_MESSAGE)
+                message = viewer_window.unpack(conn.recv_bytes(viewer_window.MAX_MESSAGE))
                 conn.send_bytes(b"ok")
-            except (OSError, EOFError):
+            except (OSError, EOFError, ValueError):
                 log.exception("answering a request for the index window failed")
             finally:
                 conn.close()
+            if message.get("tab") in TABS and api._trusted:
+                win.evaluate_js(f"window.__docwhereTab && window.__docwhereTab({message['tab']!r})")
             try:
                 viewer_window.bring_to_front(False)
             except win32_errors:
@@ -353,6 +806,12 @@ def run(db: Path) -> None:
 
 # Without the window (opened in a browser), the page says where it works; the script replaces it.
 BODY = """<div class="wrap" id="app">
+<nav class="tabs" id="tabs" role="tablist" aria-label="表示するもの" hidden>
+  <button type="button" role="tab" id="tab-folders" aria-controls="panel-folders" aria-selected="true" data-tab="folders">フォルダ</button>
+  <button type="button" role="tab" id="tab-map" aria-controls="panel-map" aria-selected="false" data-tab="map" tabindex="-1">地図</button>
+  <button type="button" role="tab" id="tab-search" aria-controls="panel-search" aria-selected="false" data-tab="search" tabindex="-1">検索</button>
+</nav>
+<div id="panel-folders" role="tabpanel" aria-labelledby="tab-folders">
 <header class="head">
   <div class="head-text">
     <h1>インデックス</h1>
@@ -379,6 +838,82 @@ BODY = """<div class="wrap" id="app">
   <button type="button" class="btn primary" data-act="add">フォルダを追加</button>
 </div>
 </div>
+<div id="panel-map" role="tabpanel" aria-labelledby="tab-map" hidden>
+<header class="head">
+  <div class="head-text">
+    <h1>資料の地図</h1>
+    <p class="summary" id="map-summary">読み込んでいます…</p>
+  </div>
+  <div class="head-actions">
+    <button type="button" class="btn" data-act="map-excel">Excel で開く</button>
+    <button type="button" class="btn primary" data-act="map-add">行を追加</button>
+  </div>
+</header>
+<div class="filter" id="map-filter-box" hidden>
+  <input type="search" id="map-filter" placeholder="地図を絞り込む（場所・種類・メモ。/ で移動）" autocomplete="off" spellcheck="false"
+    aria-label="地図を絞り込む" aria-controls="map-rows">
+  <span class="filter-count" id="map-filter-count" aria-live="polite"></span>
+</div>
+<div class="map-wrap" id="map-wrap" hidden>
+<table class="map">
+<colgroup><col class="c-path"><col class="c-section"><col class="c-kind"><col class="c-note"><col class="c-ops"></colgroup>
+<thead><tr><th scope="col">場所</th><th scope="col">見出し・位置</th><th scope="col">種類</th><th scope="col">メモ</th><th scope="col"><span class="sr">操作</span></th></tr></thead>
+<tbody id="map-rows"></tbody>
+</table>
+</div>
+<p class="no-match" id="map-no-match" hidden></p>
+<div class="empty" id="map-empty" hidden>
+  <p class="empty-title">地図はまだありません</p>
+  <p>どの種類の資料がどのフォルダにあるかを書いておくと、検索するフォルダを選ぶのに使われます。AI に「地図作って」と頼むと下書きを作ります。</p>
+  <button type="button" class="btn primary" data-act="map-add">行を追加</button>
+</div>
+<p class="hint map-hint" id="map-hint" hidden>場所はフォルダかファイルの絶対パス、または wiki:名前。ファイルの行には見出しやページ（3.2、p.12、slide 4、Sheet!D5）を書けます。# で始まる行はメモとして残ります。</p>
+<datalist id="map-paths"></datalist><datalist id="map-kinds"></datalist>
+<div class="unsaved" id="map-unsaved" role="status" hidden>
+  <span>保存していない変更があります</span>
+  <button type="button" class="btn" data-act="map-revert">変更を取り消す</button>
+  <button type="button" class="btn primary" data-act="map-save">保存（Ctrl+S）</button>
+</div>
+</div>
+<div id="panel-search" role="tabpanel" aria-labelledby="tab-search" hidden>
+<header class="head">
+  <div class="head-text">
+    <h1>検索</h1>
+    <p class="summary">インデックスにある資料を、AI と同じしくみで探します。</p>
+  </div>
+</header>
+<div class="search-bar" id="search-bar-box">
+  <input type="search" id="q" placeholder="探す語（空白で区切る。-旧版 で除外、&quot;…&quot; でひと続きの語句）" autocomplete="off"
+    spellcheck="false" aria-label="探す語" aria-controls="results">
+  <select id="scope" aria-label="探す範囲"><option value="">すべてのフォルダ</option></select>
+</div>
+<div class="search-opts">
+  <label><input type="checkbox" id="opt-all">すべての語を含む</label>
+  <label><input type="checkbox" id="opt-name">ファイル名で探す</label>
+  <label><input type="checkbox" id="opt-regex">正規表現</label>
+  <label title="サーバ／サーバー、ログイン／ログオンのような言い方の違いも一緒に探します"><input type="checkbox" id="opt-variants" checked>言い換えも探す</label>
+  <button type="button" class="link" data-act="synonyms" title="自分の言い換え（帳票／レポートなど）を書き足します">言い換えを編集</button>
+  <span class="search-meta" id="search-meta" aria-live="polite"></span>
+</div>
+<p class="search-note" id="search-note" hidden></p>
+<div class="facets" id="facets" hidden></div>
+<div class="search-body" id="search-body" hidden>
+  <div class="search-list">
+    <ol class="results" id="results" role="listbox" aria-label="検索結果"></ol>
+    <div class="search-more" id="search-more" hidden>
+      <button type="button" class="btn" data-act="view-all">上位の結果をまとめて読み取り画面で見る</button>
+    </div>
+  </div>
+  <aside class="preview" id="preview" aria-label="選んだ結果の中身"></aside>
+</div>
+<div class="empty search-tips" id="search-tips">
+  <p class="empty-title">インデックスにある資料から探します</p>
+  <p>語を空白で区切ると、どれかを含む節が出ます。多くの語を含む節や、見出しに語がある節ほど上に出ます。</p>
+  <p>-旧版 のように前に - を付けると、その語を含む節やフォルダを外します。&quot;接続 タイムアウト&quot; のように引用符で囲むと、ひと続きの語句として探します。</p>
+  <p>↑↓ で結果を選ぶと、右にその箇所の中身が出ます。Enter（またはダブルクリック）で根拠に枠を付けた読み取り画面が開き、Ctrl+Shift+C で出典をコピーできます。</p>
+</div>
+</div>
+</div>
 <dialog id="confirm"><form method="dialog" class="confirm">
   <h2 id="confirm-title"></h2><p id="confirm-text"></p>
   <div class="buttons"><button value="cancel" class="btn">やめる</button><button value="ok" class="btn" id="confirm-ok"></button></div>
@@ -389,7 +924,7 @@ STYLE = """
 [hidden] { display: none !important; }  /* the flex and grid boxes below would otherwise show */
 body { margin: 0; background: var(--bg); color: var(--ink);
   font: 14px/1.6 "BIZ UDPGothic", "Yu Gothic UI", "Meiryo", sans-serif; }
-.wrap { max-width: 1000px; margin: 0 auto; padding: 24px 24px 80px; }
+.wrap { max-width: 1400px; margin: 0 auto; padding: 24px 24px 80px; }  /* one width for every tab and state: nothing jumps sideways */
 button { font: inherit; }
 .btn { padding: 5px 14px; color: var(--ink); background: var(--surface); border: 1px solid var(--rule);
   border-radius: 6px; cursor: pointer; white-space: nowrap; }
@@ -400,6 +935,129 @@ button { font: inherit; }
 .btn.quiet { border-color: transparent; background: transparent; color: var(--blue); padding: 3px 6px; }
 :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 4px; }
 
+.tabs { display: flex; gap: 4px; margin: -8px 0 20px; border-bottom: 1px solid var(--rule); }
+.tabs button { margin-bottom: -1px; padding: 8px 18px; border: 0; border-bottom: 3px solid transparent; background: none;
+  color: var(--muted); font-weight: 700; cursor: pointer; }
+.tabs button:hover { color: var(--ink); }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--marker); }
+.tabs button { position: relative; }
+.tabs button.unsaved::after { content: ""; position: absolute; top: 9px; right: 6px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--marker); }  /* beside the label, so the tab keeps its size */
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* the map: a sheet whose cells are typed into in place */
+.map-wrap { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; overflow-x: auto; }
+.map { width: 100%; min-width: 760px; border-collapse: collapse; table-layout: fixed; }
+.map .c-path { width: 38%; } .map .c-section { width: 15%; } .map .c-kind { width: 12%; } .map .c-ops { width: 84px; }
+.map th { padding: 8px 12px; text-align: left; font-size: 12px; font-weight: 700; color: var(--muted);
+  border-bottom: 1px solid var(--rule); }
+.map td { padding: 4px 6px; vertical-align: top; }
+.map tr + tr td { border-top: 1px solid var(--rule); }
+.map input { width: 100%; padding: 5px 6px; font: inherit; color: var(--ink); background: transparent;
+  border: 1px solid transparent; border-radius: 4px; }
+.map input:hover { border-color: var(--rule); }
+.map input:focus { outline: none; border-color: var(--blue); background: var(--bg); }
+.map input::placeholder { color: var(--muted); opacity: .7; }
+.map .path-cell { display: flex; gap: 2px; }
+.map .shown { flex: 1; min-width: 0; padding: 4px 6px; text-align: left; color: var(--ink); background: none;
+  border: 1px solid transparent; border-radius: 4px; cursor: text; }
+.map .shown:hover { border-color: var(--rule); }
+.map .shown b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.map .shown small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+.map .shown.blank { color: var(--muted); }
+.map .mark { display: block; padding: 0 7px 4px; font-size: 12px; color: var(--muted); }
+.map .mark.warn { color: var(--warn); }
+.map .mark button { margin-left: 8px; padding: 0; border: 0; background: none; color: var(--blue); cursor: pointer; font-size: 12px; }
+.map tr.edited > td:first-child { box-shadow: inset 4px 0 0 var(--marker); }
+.map tr.comment input { font-style: italic; color: var(--muted); }
+.map .ops { display: flex; justify-content: flex-end; gap: 2px; }
+.icon { flex: none; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 6px; background: transparent;
+  color: var(--muted); cursor: pointer; }
+.icon:hover { background: var(--bg); color: var(--ink); }
+.icon.danger:hover { color: var(--warn); }
+.map-hint { margin: 10px 2px 0; }
+.unsaved { position: sticky; bottom: 16px; z-index: 5; display: flex; align-items: center; gap: 10px; margin-top: 16px;
+  padding: 10px 12px 10px 18px; background: var(--surface); border-left: 6px solid var(--marker);
+  border-radius: 0 8px 8px 0; box-shadow: 0 4px 16px rgba(0, 0, 0, .18); }
+.unsaved span { flex: 1; font-weight: 700; }
+/* search: one field, the scope beside it, the switches under it */
+.search-bar { position: relative; display: flex; gap: 8px; margin: 0 0 10px; }
+/* the scrollbar's room is kept even before the results make the page long, so nothing narrows when it appears */
+html { scrollbar-gutter: stable; }
+/* a search taking a moment: a line runs under the box, and the results it will replace are dimmed in place */
+.search-bar.busy::after { content: ""; position: absolute; left: 0; right: 0; bottom: -5px; height: 2px; border-radius: 1px;
+  background: linear-gradient(90deg, transparent, var(--blue), transparent) no-repeat; background-size: 35% 100%;
+  animation: seeking 1.1s linear infinite; }
+@keyframes seeking { from { background-position: -60% 0; } to { background-position: 160% 0; } }
+@media (prefers-reduced-motion: reduce) { .search-bar.busy::after { animation: none; background: var(--blue); opacity: 0.5; } }
+.stale { opacity: 0.5; transition: opacity 0.15s; }
+.search-bar input { flex: 1; min-width: 0; padding: 10px 14px; font: inherit; font-size: 16px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+.search-bar input:focus-visible { outline: 2px solid var(--blue); outline-offset: 0; border-color: transparent; }
+.search-bar select { max-width: 38%; padding: 0 10px; font: inherit; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--rule); border-radius: 8px; }
+.search-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 20px; margin: 0 0 14px; font-size: 13px;
+  color: var(--muted); }
+.search-opts label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.search-meta { margin-left: auto; font-variant-numeric: tabular-nums; }
+.search-note { margin: 0 0 12px; padding: 8px 14px; font-size: 13px; background: var(--surface);
+  border-left: 4px solid var(--marker); border-radius: 0 6px 6px 0; }
+.search-note.error { border-left-color: var(--warn); color: var(--warn); }
+.results { margin: 0; padding: 0; list-style: none; background: var(--surface); border: 1px solid var(--rule);
+  border-radius: 8px; }
+.results:empty { display: none; }
+.result { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 16px; padding: 12px 16px; cursor: pointer; }
+.result + .result { border-top: 1px solid var(--rule); }
+.result:hover { background: color-mix(in srgb, var(--bg) 55%, transparent); }
+.result.active { background: color-mix(in srgb, var(--blue) 14%, transparent); }
+.r-head { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.r-name { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.r-where { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 13px; }
+.r-snippet { margin: 0; overflow-wrap: anywhere; }
+.r-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+.r-flag { color: var(--warn); font-size: 12px; }
+/* results on the left, the chosen one's text on the right: leafing through needs no window */
+.search-body { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 16px; align-items: start; }
+.result { grid-template-columns: minmax(0, 1fr); }
+.preview { position: sticky; top: 8px; max-height: calc(100vh - 16px); overflow: auto; padding: 0 18px 18px;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+.preview:empty { display: none; }
+.pv-head { position: sticky; top: 0; z-index: 1; margin: 0 -18px; padding: 14px 18px 12px; background: var(--surface);
+  border-bottom: 1px solid var(--rule); }
+.pv-name { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
+.pv-where { margin: 2px 0 0; color: var(--ink); font-size: 13px; }
+.pv-path { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.pv-ops { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.pv-sec { margin: 16px 0 0; color: var(--muted); }
+.pv-sec h3 { margin: 0 0 4px; font-size: 13px; }
+.pv-sec.current { color: var(--ink); padding: 8px 12px; margin-left: -12px; margin-right: -12px;
+  border-left: 4px solid var(--marker); background: color-mix(in srgb, var(--marker-soft) 18%, transparent); border-radius: 0 6px 6px 0; }
+.pv-text p { margin: 0 0 4px; overflow-wrap: anywhere; }
+.pv-loading { color: var(--muted); margin: 16px 0 0; overflow-wrap: anywhere; }
+/* text or page: a two-way switch at the end of the actions */
+.pv-mode { display: inline-flex; margin-left: auto; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+.pv-mode .seg { padding: 4px 12px; font: inherit; font-size: 13px; color: var(--ink); background: var(--surface); border: 0; cursor: pointer; }
+.pv-mode .seg + .seg { border-left: 1px solid var(--rule); }
+.pv-mode .seg[aria-pressed="true"] { color: var(--surface); background: var(--blue); }
+.pv-mode .seg:disabled { color: var(--muted); cursor: not-allowed; }
+.pv-page .btn { margin-top: 10px; }
+.pv-img { display: block; width: 100%; height: auto; margin: 16px 0 0; background: #fff; border: 1px solid var(--rule);
+  border-radius: 4px; cursor: zoom-in; }
+.pv-cap { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.facets { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; margin: 0 0 12px; }
+.facet { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.facet-label { color: var(--muted); font-size: 12px; font-weight: 700; }
+.chip-btn { padding: 2px 10px; font-size: 13px; color: var(--ink); background: var(--surface); border: 1px solid var(--rule);
+  border-radius: 999px; cursor: pointer; }
+.chip-btn small { color: var(--muted); }
+.chip-btn:hover { border-color: var(--muted); }
+.chip-btn[aria-pressed="true"] { color: var(--surface); background: var(--blue); border-color: var(--blue); }
+.chip-btn[aria-pressed="true"] small { color: inherit; }
+.search-note span { display: block; }
+/* too narrow for two columns: a pane below thirty results is never seen, so Enter's reading page stands in */
+@media (max-width: 900px) { .search-body { grid-template-columns: minmax(0, 1fr); } .preview { display: none; } }
+.search-more { margin: 12px 0 0; }
+.search-tips p { max-width: 640px; margin: 0 auto 8px; color: var(--muted); }
+.search-tips p.empty-title { color: var(--ink); }
 .head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap;
   margin-bottom: 18px; }
 .head-text { flex: 1 1 360px; min-width: 0; }
@@ -473,7 +1131,7 @@ mark { color: inherit; background: var(--marker-soft); border-radius: 2px; }
 .folder + .folder { border-top: 1px solid var(--rule); }
 .row { display: grid; grid-template-columns: 32px minmax(0, 1fr) 132px 96px; align-items: center; gap: 2px 12px;
   padding: 10px 16px 10px 6px; cursor: pointer; }
-.folder.child .row { padding-left: 32px; }
+.folder.child .row { padding-left: calc(var(--depth, 1) * 28px + 4px); }
 .row:hover { background: color-mix(in srgb, var(--bg) 55%, transparent); }
 .disclose { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0;
   background: transparent; cursor: pointer; border-radius: 6px; }
@@ -499,7 +1157,14 @@ mark { color: inherit; background: var(--marker-soft); border-radius: 2px; }
 .pill.fresh::before { content: "✓ "; }
 
 .details { padding: 4px 16px 18px 44px; display: grid; gap: 16px; }
-.folder.child .details { padding-left: 68px; }
+.folder.child .details { padding-left: calc(var(--depth, 1) * 28px + 40px); }
+.facts .on-map { color: var(--ink); }
+/* a folder searched once leaves the index on its own: said in the warning colour, with the way to keep it */
+.facts .once { display: inline-flex; gap: 8px; color: var(--warn); }
+.facts .map-link { padding: 0; border: 0; background: none; color: var(--blue); cursor: pointer; font: inherit; }
+.facts .kids { padding: 0; border: 0; background: none; color: var(--blue); cursor: pointer; font: inherit; }
+.facts .kids::after { content: " ▸"; }
+.facts .kids[aria-expanded="true"]::after { content: " ▾"; }
 .details h3 { margin: 0 0 6px; font-size: 13px; color: var(--muted); font-weight: 700; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; padding: 0; list-style: none; }
 .chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 10px; background: var(--bg);
@@ -681,6 +1346,9 @@ MANAGE_JS = r"""(() => {
   // ---- toast, with an optional action (undo)
   const toastBox = $("#toast");
   let toastTimer = 0;
+  // a time as month/day hour:minute, for when a folder searched once leaves the index
+  const clock = (t) => { const d = new Date(t * 1000), two = (n) => String(n).padStart(2, "0");
+    return `${d.getMonth() + 1}/${d.getDate()} ${two(d.getHours())}:${two(d.getMinutes())}`; };
   const toast = (message, action) => {
     toastBox.replaceChildren(h("span", { text: message }));
     if (action) {
@@ -721,6 +1389,23 @@ MANAGE_JS = r"""(() => {
   let lastCurrent = null;
 
   const readerOf = () => (data && data.reader) || null;
+  // folders inside another indexed folder: their files are the outer folder's too, so they are
+  // shown under it (folded until opened), checked with it and counted once
+  const within = (key, outer) => key.startsWith(`${outer}\\`);
+  const topOf = (root) => {
+    let r = root;
+    while (r && r.parent) r = data.roots.find((x) => keyOf(x.path) === keyOf(r.parent)) || null;
+    return r || root;
+  };
+  const kidsOf = (root) => data.roots.filter((r) => r.parent && keyOf(r.parent) === keyOf(root.path));
+  const inner = (root) => data.roots.filter((r) => within(keyOf(r.path), keyOf(root.path)));
+  const openKids = new Set();  // folders whose inner folders are shown
+  const depthOf = (root) => { let n = 0; for (let r = root; r && r.parent; n++) r = data.roots.find((x) => keyOf(x.path) === keyOf(r.parent)); return n; };
+  const label = (root) => {
+    if (!root.parent) return root.name;
+    const outer = String(root.parent).replace(/[\\/]+$/, "");
+    return String(root.path).slice(outer.length).replace(/^[\\/]+/, "") || root.name;
+  };
   // folders handed to the reader from this window, until it is seen to have finished them:
   // a folder with nothing to read is done within the polling gap, so without this the button
   // would seem to do nothing
@@ -734,9 +1419,12 @@ MANAGE_JS = r"""(() => {
     const key = keyOf(root.path);
     const reader = readerOf();
     if (!root.exists) return { cls: "missing", text: "フォルダが見つかりません" };
-    if (reader && reader.current && keyOf(reader.current) === key) {
+    if (reader && reader.current && (keyOf(reader.current) === key || within(key, keyOf(reader.current)))) {
       const pct = reader.total ? Math.floor((reader.done / reader.total) * 100) : 0;
       return { cls: "reading", text: reader.total ? `更新中 ${pct}%` : "変更を確認中", busy: true };
+    }
+    if (reader && reader.current && within(keyOf(reader.current), key)) {
+      return { cls: "reading", text: "中のフォルダを更新中", busy: true };
     }
     if (reader && reader.queued.some((q) => keyOf(q) === key)) return { cls: "queued", text: "順番待ち", busy: true };
     if (requested.has(key)) return { cls: "queued", text: "更新を準備中", busy: true };
@@ -756,24 +1444,38 @@ MANAGE_JS = r"""(() => {
   const waiting = [];
   let checking = 0;
   const queueCheck = (path) => {
+    const root = data && data.roots.find((r) => keyOf(r.path) === keyOf(path));
+    const top = root ? topOf(root) : null;
+    if (top) path = top.path;
     const key = keyOf(path);
     if (waiting.some((p) => keyOf(p) === key)) return;
     checks.set(key, { state: "checking", at: Date.now() });
+    if (top) for (const r of inner(top)) checks.set(keyOf(r.path), { state: "checking", at: Date.now() });
     waiting.push(path);
     pump();
+  };
+  const checked = (path, result) => {
+    const at = Date.now();
+    checks.set(keyOf(path), { state: "done", result, at });
+    const found = new Map(Object.entries(result.inside || {}).map(([p, r]) => [keyOf(p), r]));
+    const root = data && data.roots.find((r) => keyOf(r.path) === keyOf(path));
+    for (const r of root ? inner(root) : []) {
+      const k = keyOf(r.path);
+      checks.set(k, found.has(k) ? { state: "done", result: found.get(k), at } : { state: "error", result: "もう一度確認してください", at });
+    }
   };
   const pump = () => {
     while (checking < 2 && waiting.length) {
       const path = waiting.shift();
       checking++;
       api.changes(path)
-        .then((result) => checks.set(keyOf(path), { state: "done", result, at: Date.now() }))
+        .then((result) => checked(path, result))
         .catch((e) => checks.set(keyOf(path), { state: "error", result: reason(e), at: Date.now() }))
         .finally(() => { checking--; render(); pump(); });
     }
     render();
   };
-  const recheckAll = () => { if (data) data.roots.filter((r) => r.exists).forEach((r) => queueCheck(r.path)); };
+  const recheckAll = () => { if (data) data.roots.filter((r) => r.exists && !r.parent).forEach((r) => queueCheck(r.path)); };
 
   // ---- actions
   const update = (paths) => api.update(paths).then(() => {
@@ -819,12 +1521,17 @@ MANAGE_JS = r"""(() => {
     api.rebuild(root.path).then(() => { toast(`「${root.name}」を作り直しています`); refresh(); }).catch(failed("作り直せませんでした"));
   };
   const forget = async (root) => {
-    const ok = await confirmAction(`「${root.name}」をインデックスから外しますか？`,
-      "このフォルダは検索の対象から外れます。ファイル自体は削除されません。\nこのフォルダに設定した除外も消えます。", "外す", true);
+    const outer = root.parent ? base(root.parent) : null;
+    const kids = inner(root).length;
+    const text = outer
+      ? `「${outer}」の中にあるので、ファイルは「${outer}」の一部として検索に残ります。一覧から外れ、このフォルダに設定した除外は消えます。`
+      : "このフォルダは検索の対象から外れます。ファイル自体は削除されません。\nこのフォルダに設定した除外も消えます。"
+        + (kids ? `\n中のフォルダ ${kids} か所も一緒に外れます。` : "");
+    const ok = await confirmAction(`「${label(root)}」をインデックスから外しますか？`, text, "外す", true);
     if (!ok) return;
     api.forget(root.path).then(() => {
       expanded.delete(keyOf(root.path));
-      toast(`「${root.name}」をインデックスから外しました`);
+      toast(outer ? `「${label(root)}」を一覧から外しました（「${outer}」の一部として検索できます）` : `「${root.name}」をインデックスから外しました`);
       refresh();
     }).catch(failed("インデックスから外せませんでした"));
   };
@@ -866,7 +1573,13 @@ MANAGE_JS = r"""(() => {
     const scanning = !reader.total;
     const pct = scanning ? 0 : Math.min(100, (reader.done / reader.total) * 100);
     const left = reader.total - reader.done;
-    const pace = reader.rate ? `残り約 ${duration(left / reader.rate)}（毎秒 ${reader.rate >= 10 ? fmt(Math.round(reader.rate)) : reader.rate.toFixed(1)} 件）` : (scanning ? "対象のファイルを数えています" : "残り時間を計算しています");
+    // the reader estimates again as files finish, weighing each file left by its kind
+    const secondsLeft = reader.seconds_left;
+    const perSecond = reader.rate ? `毎秒 ${reader.rate >= 10 ? fmt(Math.round(reader.rate)) : reader.rate.toFixed(1)} 件` : "";
+    const pace = scanning ? "対象のファイルを数えています"
+      : secondsLeft == null || !reader.done ? "残り時間を見積もっています"
+      : left <= 0 ? "仕上げています"
+      : `残り約 ${secondsLeft < 1 ? "1 秒" : duration(secondsLeft)}` + (perSecond ? `（${perSecond}）` : "");
     const next = reader.queued.length ? `次は ${reader.queued.map((q) => `「${base(q)}」`).join("、")}` : "";
     const slow = reader.reading.filter(([, s]) => s >= 5);
     band.hidden = false;
@@ -970,6 +1683,13 @@ MANAGE_JS = r"""(() => {
       parts = {};
       parts.disclose = h("button", { type: "button", class: "disclose", "aria-expanded": "false", "aria-controls": id });
       parts.name = h("span", { class: "name" });
+      parts.kids = h("button", { type: "button", class: "kids", "aria-expanded": "false" });
+      parts.kids.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const k = keyOf(parts.root.path);
+        if (openKids.has(k)) openKids.delete(k); else openKids.add(k);
+        render();
+      });
       parts.facts = h("div", { class: "facts" });
       parts.pill = h("span", { class: "pill" });
       parts.pillCell = h("div", { class: "pill-cell" }, parts.pill);
@@ -990,17 +1710,36 @@ MANAGE_JS = r"""(() => {
 
   const fillRow = (root, parts) => {
     const status = statusOf(root);
-    parts.el.classList.toggle("child", Boolean(root.parent));
+    const depth = parts.match ? 0 : depthOf(root);  // a filtered list is flat
+    parts.el.classList.toggle("child", depth > 0);
+    parts.el.style.setProperty("--depth", String(depth));
     const match = parts.match;
-    const nameAt = root.path.replace(/[\\/]+$/, "").length - root.name.length;
-    if (match && match.at.length) put(parts.name, marked(root.name, match.at, nameAt));
-    else parts.name.textContent = root.name;
+    const name = label(root);
+    const nameAt = root.path.replace(/[\\/]+$/, "").length - name.length;
+    if (match && match.at.length) put(parts.name, marked(name, match.at, nameAt));
+    else parts.name.textContent = name;
+    const kids = kidsOf(root);
+    const open = openKids.has(keyOf(root.path));
+    parts.kids.textContent = `中のフォルダ ${kids.length}`;
+    parts.kids.setAttribute("aria-expanded", String(open));
+    parts.kids.title = open ? "中のフォルダをたたむ" : `${kids.map(label).join("、")}（このフォルダの一部として、別に検索したフォルダ）`;
     parts.row.title = root.path;
     put(parts.facts,
       h("span", { text: `${fmt(root.files)} ファイル` }),
       root.errors ? h("span", { class: "bad", text: `読めない ${fmt(root.errors)} 件` }) : null,
       h("span", { text: `最終更新 ${ago(root.synced_at, data.now)}` }),
       root.excludes.length ? h("span", { text: `除外 ${root.excludes.length} 件` }) : null,
+      root.once_until ? h("span", { class: "once" }, h("span", { text: `一時: ${clock(root.once_until)} にインデックスから外れます`,
+          title: "一度だけ探すつもりで読んだフォルダです（search --once）。この時刻を過ぎると外れます。元のファイルはそのままです" }),
+        h("button", { type: "button", class: "map-link", text: "残す", title: "インデックスに残し、外れないようにします",
+          onclick: (e) => { e.stopPropagation(); api.keep(root.path).then(() => { toast("インデックスに残します"); refresh(); }).catch(failed("残せませんでした")); } })) : null,
+      kids.length && !match ? parts.kids : null,
+      root.map ? h("span", { class: "on-map", title: root.map.note ? `地図のメモ: ${root.map.note}` : "地図にある種類" },
+          `地図: ${root.map.kind || "種類なし"}`)
+        : root.map_inside ? h("span", { text: `地図: 中に ${root.map_inside} 行` })
+        : !root.parent && !root.once_until ? h("button", { type: "button", class: "map-link", text: "地図に追加",
+            title: "資料の地図にこのフォルダの行を足します。AI はこの地図を見て検索するフォルダを選びます",
+            onclick: (e) => { e.stopPropagation(); addToMap(root); } }) : null,
       match && match.at.length ? h("span", { class: "where" }, marked(root.path, match.at)) : h("span", { class: "where", text: shortPath(root.path) }),
     );
     parts.pill.className = `pill ${status.cls}`;
@@ -1051,6 +1790,17 @@ MANAGE_JS = r"""(() => {
       if (!query || parts.match) matched.push(parts);
     }
     if (query) matched.sort((a, b) => b.match.score - a.match.score);
+    else {
+      // outer folders in order, each followed by its inner folders when opened
+      const byKey = new Map(matched.map((p) => [keyOf(p.root.path), p]));
+      const tree = [];
+      const visit = (p) => {
+        tree.push(p);
+        if (openKids.has(keyOf(p.root.path))) kidsOf(p.root).forEach((r) => byKey.has(keyOf(r.path)) && visit(byKey.get(keyOf(r.path))));
+      };
+      matched.filter((p) => !p.root.parent).forEach(visit);
+      matched.splice(0, matched.length, ...tree);
+    }
     for (const parts of matched) fillRow(parts.root, parts);
     shown = matched;
     if (query && !shown.some((p) => keyOf(p.root.path) === active)) active = shown.length ? keyOf(shown[0].root.path) : null;
@@ -1072,10 +1822,11 @@ MANAGE_JS = r"""(() => {
     for (const key of rows.keys()) if (!keep.has(key)) rows.delete(key);
     list.replaceChildren(...order);
 
-    const files = data.roots.reduce((n, r) => n + r.files, 0);
-    const errors = data.roots.reduce((n, r) => n + r.errors, 0);
+    const tops = data.roots.filter((r) => !r.parent);  // inner folders' files are counted in their outer folder
+    const files = tops.reduce((n, r) => n + r.files, 0);
+    const errors = tops.reduce((n, r) => n + r.errors, 0);
     $("#summary").textContent = data.roots.length
-      ? `${fmt(files)} ファイルを検索できます（${data.roots.length} フォルダ）。` + (errors ? `読めないファイルが ${fmt(errors)} 件あります。` : "")
+      ? `${fmt(files)} ファイルを検索できます（${tops.length} フォルダ）。` + (errors ? `読めないファイルが ${fmt(errors)} 件あります。` : "")
       : "検索できるフォルダはまだありません。";
     const done = [...checks.values()].filter((c) => c.state !== "checking");
     const busy = [...checks.values()].some((c) => c.state === "checking");
@@ -1084,13 +1835,510 @@ MANAGE_JS = r"""(() => {
       : done.length ? checkedWhen(Math.min(...done.map((c) => c.at)) / 1000) : "";
     $("#empty").hidden = data.roots.length > 0 || data.pending.length > 0;
     $("#head-actions").hidden = false;
-    const changed = data.roots.filter((r) => statusOf(r).changes);
+    const changed = data.roots.filter((r) => !r.parent && statusOf(r).changes);
     const all = $("[data-act=update-all]");
     all.hidden = changed.length === 0;
     all.textContent = changed.length > 1 ? `変更のあるフォルダを更新（${changed.length}）` : "変更のあるフォルダを更新";
     renderBand();
     renderCosts();
   };
+
+  // ---- the notes map: the user's file, edited in place and written only when saved
+  const map = { loaded: false, version: null, items: [], saved: "", path: "" };
+  const savedById = new Map();  // row id -> its content as last loaded or saved
+  let nextId = 1;
+  const contentOf = (it) => JSON.stringify(it.cells ? it.cells : it.comment);
+  const payload = () => map.items
+    .filter((it) => !it.cells || Object.values(it.cells).some((v) => String(v).trim()))  // a blank row is dropped
+    .map((it) => (it.cells ? { cells: it.cells } : { comment: it.comment }));
+  const mapDirty = () => map.loaded && JSON.stringify(payload()) !== map.saved;
+  const mapFilter = $("#map-filter");
+
+  const markOf = (st) => {
+    if (!st) return null;
+    // only what needs a look is marked; a row in order says nothing
+    if (st.kind === "folder") return st.indexed ? null : { text: "インデックスにないフォルダです", warn: true, add: true };
+    if (st.kind === "file") return st.indexed ? null : { text: "入っているフォルダがインデックスにありません", warn: true };
+    if (st.kind === "wiki") return st.known ? null : { text: "この PC に追加されていない wiki です", warn: true };
+    if (st.kind === "missing") return { text: "見つかりません", warn: true };
+    if (st.kind === "relative") return { text: "C:\\ や \\\\ から始まる絶対パスで書いてください", warn: true };
+    return null;
+  };
+
+  const updateDirty = () => {
+    const dirty = mapDirty();
+    $("#map-unsaved").hidden = !dirty;
+    $("#tab-map").classList.toggle("unsaved", dirty);
+  };
+  const touched = (it, tr) => {
+    tr.classList.toggle("edited", contentOf(it) !== savedById.get(it.id));
+    updateDirty();
+  };
+
+  const removeRow = (it) => {
+    const at = map.items.indexOf(it);
+    if (at === -1) return;
+    map.items.splice(at, 1);
+    renderMap();
+    updateDirty();
+    toast("行を削除しました（保存するまでファイルは変わりません）", { label: "元に戻す", run: () => {
+      map.items.splice(Math.min(at, map.items.length), 0, it);
+      renderMap();
+      updateDirty();
+    } });
+  };
+
+  const mapRow = (it) => {
+    const tr = h("tr", { class: contentOf(it) !== savedById.get(it.id) ? "edited" : null });
+    const del = h("button", { type: "button", class: "icon danger", text: "×", title: "行を削除", "aria-label": "行を削除",
+      onclick: () => removeRow(it) });
+    if (!it.cells) {
+      tr.classList.add("comment");
+      const input = h("input", { type: "text", "aria-label": "メモの行（# で始まる行）" });
+      input.value = it.comment;
+      input.addEventListener("input", () => { it.comment = input.value; touched(it, tr); });
+      tr.append(h("td", { colspan: "4" }, input), h("td", {}, h("div", { class: "ops" }, del)));
+      return tr;
+    }
+    const cell = (name, label, extra) => {
+      const input = h("input", { type: "text", "aria-label": label, ...extra });
+      input.value = it.cells[name] || "";
+      input.addEventListener("input", () => { it.cells[name] = input.value; touched(it, tr); });
+      return input;
+    };
+    const fresh = !savedById.has(it.id);
+    const path = cell("path", "場所", { list: "map-paths", spellcheck: "false", placeholder: fresh ? "D:\\資料\\仕様書 や wiki:名前" : null });
+    // shown as the folder's name over a short path (full paths all start alike); typed into once clicked
+    const shown = h("button", { type: "button", class: "shown" });
+    const showPath = () => {
+      const v = path.value.trim();
+      shown.classList.toggle("blank", !v);
+      shown.title = v ? `${v}\nクリックで編集` : "";
+      put(shown, v ? [h("b", { text: v.toLowerCase().startsWith("wiki:") ? v : base(v) }),
+        v.toLowerCase().startsWith("wiki:") ? null : h("small", { text: shortPath(v) })] : ["場所を入力"]);
+    };
+    const editing = (on) => { path.hidden = !on; shown.hidden = on; if (on) { path.focus(); path.select(); } else showPath(); };
+    shown.addEventListener("click", () => editing(true));
+    path.addEventListener("blur", () => { if (path.value.trim()) editing(false); });
+    path.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); path.blur(); } });
+    const mark = h("span", { class: "mark" });
+    const saved = () => contentOf(it) === savedById.get(it.id);
+    const showMark = () => {
+      const m = markOf(it.status);
+      mark.hidden = !m;
+      if (!m) return;
+      mark.className = `mark${m.warn ? " warn" : ""}`;
+      put(mark, m.text, m.add && saved() ? h("button", { type: "button", text: "インデックスに追加",
+        onclick: () => api.index_note(it.cells.path).then(() => {
+          toast("インデックスに追加しました。読み込みが終わる前でも、読めた分から検索できます");
+          refresh();
+          loadMap(true);
+        }).catch(failed("インデックスに追加できませんでした")) }) : null);
+    };
+    path.addEventListener("change", () => api.describe(path.value).then((st) => { it.status = st; showMark(); }).catch(() => {}));
+    const pick = h("button", { type: "button", class: "icon", text: "…", title: "フォルダを選ぶ", "aria-label": "フォルダを選ぶ",
+      onclick: () => api.pick("folder").then((chosen) => {
+        if (!chosen) return;
+        path.value = chosen;
+        it.cells.path = chosen;
+        touched(it, tr);
+        editing(false);
+        path.dispatchEvent(new Event("change"));
+      }).catch(failed("フォルダを選べませんでした")) });
+    const open = h("button", { type: "button", class: "icon", text: "↗", title: "エクスプローラーで開く", "aria-label": "エクスプローラーで開く",
+      onclick: () => {
+        if (!saved()) { toast("保存してから開いてください"); return; }
+        api.reveal_note(it.cells.path).catch(failed("開けませんでした"));
+      } });
+    showMark();
+    const typing = fresh && !it.cells.path;
+    path.hidden = !typing;
+    shown.hidden = typing;
+    showPath();
+    const isFile = it.status && it.status.kind === "file";
+    tr.append(
+      h("td", {}, h("div", { class: "path-cell" }, shown, path, pick), mark),
+      h("td", {}, cell("section", "見出し・位置", { placeholder: isFile || fresh ? "例: 3.2、p.12" : null })),
+      h("td", {}, cell("kind", "種類", { list: "map-kinds", placeholder: fresh ? "仕様書 など" : null })),
+      h("td", {}, cell("note", "メモ", { placeholder: fresh ? "検索の手がかりになる言葉" : null })),
+      h("td", {}, h("div", { class: "ops" }, it.status && ["folder", "file"].includes(it.status.kind) ? open : null, del)));
+    return tr;
+  };
+
+  const renderMap = () => {
+    const query = mapFilter.value.trim();
+    const rowsShown = map.items.filter((it) => !query || fuzzy(query, it.cells ? Object.values(it.cells).join(" ") : it.comment));
+    put($("#map-rows"), rowsShown.map(mapRow));
+    const rows = map.items.filter((it) => it.cells);
+    const count = (kind) => rows.filter((it) => it.status && it.status.kind === kind).length;
+    const warns = rows.filter((it) => (markOf(it.status) || {}).warn).length;
+    $("#map-empty").hidden = map.items.length > 0;
+    $("#map-wrap").hidden = !rowsShown.length;
+    $("#map-hint").hidden = !map.items.length;
+    $("#map-filter-box").hidden = map.items.length < 6;
+    $("#map-filter-count").textContent = query ? `${rowsShown.length} / ${map.items.length} 行` : "";
+    $("#map-no-match").hidden = !(query && !rowsShown.length);
+    $("#map-no-match").textContent = `「${query}」に合う行はありません。Esc で絞り込みを消せます`;
+    $("#map-summary").textContent = rows.length
+      ? `${fmt(rows.length)} 行（フォルダ ${count("folder")}、ファイル ${count("file")}、wiki ${count("wiki")}）。`
+        + (warns ? `確かめたほうがよい行が ${warns} 行あります。` : "AI はこの地図を見て、検索するフォルダを選びます。")
+      : "まだ行がありません。";
+    $("#map-summary").title = map.path;
+  };
+
+  const applyMap = (data) => {
+    map.loaded = true;
+    map.version = data.version;
+    map.path = data.path;
+    savedById.clear();
+    map.items = data.items.map((raw) => {
+      const it = { id: nextId++, cells: raw.cells ? { ...raw.cells } : null, comment: raw.comment, status: raw.status || null };
+      savedById.set(it.id, contentOf(it));
+      return it;
+    });
+    map.saved = JSON.stringify(payload());
+    const kinds = new Set(["仕様書", "設計書", "マニュアル"]);
+    map.items.forEach((it) => it.cells && it.cells.kind && kinds.add(it.cells.kind.trim()));
+    put($("#map-kinds"), [...kinds].filter(Boolean).map((k) => h("option", { value: k })));
+    put($("#map-paths"), [...data.roots, ...data.wikis].map((p) => h("option", { value: p })));
+    renderMap();
+    updateDirty();
+  };
+  const loadMap = (force) => {
+    if (!force && mapDirty()) return Promise.resolve();
+    return api.notes().then(applyMap).catch(failed("地図を読み込めませんでした"));
+  };
+  const saveMap = () => {
+    if (!mapDirty()) return;
+    api.save_notes(payload(), map.version).then((data) => {
+      applyMap(data);
+      toast("地図を保存しました");
+    }).catch((e) => {
+      const message = reason(e);
+      if (/ほかで変更/.test(message)) toast(message, { label: "読み込み直す", run: () => loadMap(true) });
+      else toast(`保存できませんでした: ${message}`);
+    });
+  };
+  const addMapRow = () => {
+    if (mapFilter.value) mapFilter.value = "";
+    const it = { id: nextId++, cells: { path: "", section: "", kind: "", note: "" }, status: null };
+    map.items.push(it);
+    renderMap();
+    updateDirty();
+    const inputs = $("#map-rows").querySelectorAll("tr:last-child input");
+    if (inputs.length) { inputs[0].focus(); inputs[0].scrollIntoView({ block: "nearest" }); }
+  };
+  // from a folder's row: a map row for it, its kind to be typed
+  const addToMap = (root) => {
+    showTab("map");
+    loadMap(false).then(() => {
+      if (mapFilter.value) mapFilter.value = "";
+      const it = { id: nextId++, cells: { path: root.path, section: "", kind: "", note: "" }, status: { kind: "folder", indexed: true } };
+      map.items.push(it);
+      renderMap();
+      updateDirty();
+      const kind = $("#map-rows").querySelector("tr:last-child input[list=map-kinds]");
+      if (kind) { kind.focus(); kind.scrollIntoView({ block: "nearest" }); }
+      toast(`「${label(root)}」の行を足しました。種類を書いて保存してください`);
+    });
+  };
+  mapFilter.addEventListener("input", renderMap);
+  mapFilter.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { if (mapFilter.value) { mapFilter.value = ""; renderMap(); } else mapFilter.blur(); e.preventDefault(); }
+  });
+
+  // ---- search: the index the agent searches, for a person
+  const q = $("#q");
+  const scopeSel = $("#scope");
+  const switches = { all: $("#opt-all"), name: $("#opt-name"), regex: $("#opt-regex"), variants: $("#opt-variants") };
+  let searchSeq = 0;
+  let results = null;  // the last answer: {hits, terms, facets, ...} or {error}
+  let activeHit = 0;
+  let searchTimer = 0;
+  let facet = { kind: "", ext: "", folder: "" };  // narrowing chosen among the hits
+  let previewSeq = 0;
+  let previewTimer = 0;
+  const fillScopes = () => api.search_scopes().then((s) => {
+    const keep = scopeSel.value;
+    put(scopeSel, h("option", { value: "", text: "すべてのフォルダ" }),
+      s.kinds.length ? h("optgroup", { label: "地図の種類" },
+        s.kinds.map((k) => h("option", { value: `kind:${k.kind}`, text: `${k.kind}（地図の ${k.folders} フォルダ）` }))) : null,
+      h("optgroup", { label: "フォルダ" }, s.roots.map((r) => h("option", { value: r.path, text: r.name, title: r.path }))));
+    if ([...scopeSel.options].some((o) => o.value === keep)) scopeSel.value = keep;
+  }).catch(() => {});
+  // text with every term marked, case ignored
+  const markTerms = (text, terms) => {
+    const low = String(text).toLowerCase();
+    const on = new Array(low.length).fill(false);
+    for (const t of terms) {
+      const f = String(t).toLowerCase();
+      for (let i = f ? low.indexOf(f) : -1; i !== -1; i = low.indexOf(f, i + 1)) on.fill(true, i, i + f.length);
+    }
+    return marked(String(text), on.flatMap((x, i) => (x ? [i] : [])));
+  };
+  // shown only past a moment, so a quick search does not flash it
+  let busyTimer = 0;
+  const busy = (on) => {
+    clearTimeout(busyTimer);
+    const mark = (x) => {
+      $("#search-bar-box").classList.toggle("busy", x);
+      for (const id of ["#search-body", "#facets", "#search-note"]) $(id).classList.toggle("stale", x);
+      $("#results").setAttribute("aria-busy", String(x));
+    };
+    if (on) busyTimer = setTimeout(() => mark(true), 300);
+    else mark(false);
+  };
+  const allTerms = () => (results ? [...(results.terms || []), ...(results.variants || [])] : []);
+  const runSearch = (keepFacet) => {
+    clearTimeout(searchTimer);
+    if (!keepFacet) facet = { kind: "", ext: "", folder: "" };
+    const text = q.value.trim();
+    const mine = ++searchSeq;  // an answer to an older query is dropped
+    if (!text) { busy(false); results = null; renderResults(); return; }
+    $("#search-meta").textContent = "探しています…";
+    busy(true);
+    api.search({ text, scope: scopeSel.value, all: switches.all.checked, name: switches.name.checked,
+      regex: switches.regex.checked, variants: switches.variants.checked, facet })
+      .then((r) => { if (mine === searchSeq) { busy(false); results = r; activeHit = 0; renderResults(); } })
+      .catch((e) => { if (mine === searchSeq) { busy(false); results = { error: reason(e), hits: [] }; renderResults(); } });
+  };
+  const viewHits = (numbers) => api.open_hits(numbers, q.value.trim())
+    .then(() => toast("読み取り画面で開きました"))
+    .catch(failed("読み取り画面で開けませんでした"));
+  const openFile = (n) => api.open_file(n)
+    .then(() => toast("ファイルを開きました"))
+    .catch(failed("ファイルを開けませんでした"));
+  const citation = (hit) => {
+    const name = base(hit.path);
+    const section = hit.crumb || (hit.title !== name ? hit.title : "");
+    return `${name}${section ? `「${section}」` : ""}${hit.location ? ` ${hit.location}` : ""}`;
+  };
+  const copyCitation = (hit) => api.copy(citation(hit))
+    .then(() => toast(`出典をコピーしました: ${citation(hit)}`))
+    .catch(failed("コピーできませんでした"));
+  const pendingIn = (roots) => {
+    // changes the folder tab found in the searched folders, not read yet: the answer may lie there
+    let n = 0;
+    for (const root of data ? data.roots.filter((r) => !r.parent) : []) {
+      const inScope = roots.some((p) => { const k = keyOf(p), r = keyOf(root.path); return k === r || within(k, r) || within(r, k); });
+      const c = checks.get(keyOf(root.path));
+      if (inScope && c && c.state === "done" && c.result.exists) n += c.result.new + c.result.changed;
+    }
+    return n;
+  };
+
+  // narrowing buttons: the hits by kind in the map, by format and by folder, with their counts
+  const FACETS = [["kind", "種類"], ["ext", "形式"], ["folder", "フォルダ"]];
+  const renderFacets = () => {
+    const box = $("#facets");
+    const counts = (results && results.facets) || {};
+    // a group is shown when it can narrow: two values or more, or one value that some hits lack
+    const narrows = (k) => (counts[k] || []).length > 1 || ((counts[k] || []).length === 1 && counts[k][0].count < results.total);
+    const groups = FACETS.filter(([k]) => narrows(k) || facet[k]).map(([k, label]) =>
+      h("div", { class: "facet", role: "group", "aria-label": label }, h("span", { class: "facet-label", text: label }),
+        (counts[k] || []).slice(0, 8).map((x) => h("button", { type: "button", class: "chip-btn", "aria-pressed": String(facet[k] === x.value),
+          onclick: () => { facet = { ...facet, [k]: facet[k] === x.value ? "" : x.value }; runSearch(true); } },
+          x.value, h("small", { text: ` ${fmt(x.count)}` })))));
+    if (Object.values(facet).some(Boolean)) {
+      groups.push(h("button", { type: "button", class: "link", text: "絞り込みをやめる",
+        onclick: () => { facet = { kind: "", ext: "", folder: "" }; runSearch(true); } }));
+    }
+    put(box, groups);
+    box.hidden = !groups.length;
+  };
+
+  // the pane shows the hit's text, or its page as a picture; the choice is kept for next time
+  let pvMode = "text";
+  ready.then(() => api.preview_mode()).then((m) => { pvMode = m; }).catch(() => {});
+  const setMode = (m) => {
+    pvMode = m;
+    api.preview_mode(m).catch(() => {});  // kept in the settings file for the next window
+    renderPreview();
+  };
+
+  // the page as a picture: a PDF's own page, or a Word or PowerPoint file's once exported to
+  // PDF. Exporting starts Office and takes seconds, so it waits for a click; an export made
+  // before is shown at once
+  const pageView = (hit, mine, pane, head) => {
+    const box = h("div", { class: "pv-page" }, h("p", { class: "pv-loading", text: "ページを描いています…" }));
+    put(pane, head, box);
+    const draw = (convert) => api.page_image(hit.n, convert).then((r) => {
+      if (mine !== previewSeq || r.stale) return;
+      if (r.src) {
+        put(box, h("img", { class: "pv-img", src: r.src, alt: `${base(hit.path)} の ${r.page} ページ目`,
+          title: "クリックで根拠を見る", onclick: () => viewHits([hit.n]) }),
+          h("p", { class: "pv-cap", text: `${r.page} / ${r.pages} ページ${r.exported ? "（PDF に書き出したもの）" : ""}` }));
+      } else if (r.convert) {
+        const go = h("button", { type: "button", class: "btn", text: "ページの画像を作る" });
+        go.addEventListener("click", () => {
+          go.disabled = true;
+          go.textContent = "Office で PDF にしています…";
+          draw(true);
+        });
+        put(box, h("p", { class: "pv-loading", text: `${r.app} で PDF に書き出して描きます。初めてのファイルは数秒かかります。` }), go);
+      } else {
+        put(box, h("p", { class: "pv-loading", text: r.note || "このファイルのページは描けませんでした。本文に切り替えて見てください。" }));
+      }
+    }).catch((e) => { if (mine === previewSeq) put(box, h("p", { class: "pv-loading", text: `描けませんでした: ${reason(e)}` })); });
+    draw(false);
+  };
+
+  // the pane beside the results: the chosen hit's section with those around it, or its page
+  const renderPreview = () => {
+    const pane = $("#preview");
+    const hit = results && results.hits ? results.hits[activeHit] : null;
+    if (!hit) { pane.replaceChildren(); return; }
+    clearTimeout(previewTimer);
+    const mine = ++previewSeq;
+    const modes = h("div", { class: "pv-mode", role: "group", "aria-label": "右の表示" });
+    const head = h("header", { class: "pv-head" },
+      h("h2", { class: "pv-name", text: base(hit.path), title: hit.path }),
+      h("p", { class: "pv-where", text: [hit.crumb || "", hit.location].filter(Boolean).join("　") }),
+      h("p", { class: "pv-path", text: `${shortPath(hit.path)}　${hit.modified}`, title: hit.path }),
+      hit.newer_version ? h("p", { class: "r-flag", text: `新しい版があります: ${base(hit.newer_version)}` }) : null,
+      h("div", { class: "pv-ops" },
+        hit.chunk_id ? h("button", { type: "button", class: "btn primary", text: "根拠を見る", title: "Enter",
+          onclick: () => viewHits([hit.n]) }) : null,
+        h("button", { type: "button", class: "btn", text: "ファイルを開く", onclick: () => openFile(hit.n) }),
+        h("button", { type: "button", class: "btn", text: "出典をコピー", title: citation(hit), onclick: () => copyCitation(hit) }),
+        modes));
+    put(pane, head, h("p", { class: "pv-loading", text: "読み込んでいます…" }));
+    // moving through the list quickly asks only for the hit it stops on
+    previewTimer = setTimeout(() => api.preview(hit.n).then((p) => {
+      if (mine !== previewSeq) return;
+      const mode = p.pages ? pvMode : "text";
+      put(modes, [["text", "本文"], ["page", "ページ"]].map(([m, label]) => h("button", {
+        type: "button", class: "seg", text: label, "aria-pressed": String(mode === m),
+        disabled: m === "page" && !p.pages ? "" : null,
+        title: m === "page" ? (p.pages ? "ページを画像で見ます。検索語に印が付きます" : "この形式にはページがありません") : "節の文字を見ます",
+        onclick: () => { if (m !== mode) setMode(m); } })));
+      if (mode === "page") { pageView(hit, mine, pane, head); return; }
+      const terms = allTerms().concat(hit.terms);
+      // a heading only where the file has one: a file's name as its only "title" says nothing new
+      const heading = (sec) => sec.crumb || (sec.title !== base(hit.path) ? sec.title : "");
+      // a section's text starts with its own heading: shown once, above it
+      const lines = (sec) => {
+        const all = sec.body.split("\n");
+        const own = heading(sec).split(" > ").pop().trim();
+        return own && all[0].trim() === own ? all.slice(1) : all;
+      };
+      const body = p.sections.length ? p.sections.map((sec) => h("section", { class: `pv-sec${sec.current ? " current" : ""}` },
+        heading(sec) ? h("h3", { text: heading(sec) }) : null,
+        h("div", { class: "pv-text" }, lines(sec).map((line) => h("p", {}, markTerms(line.split("\t").join("　｜　"), terms))))))
+        : [h("p", { class: "pv-loading", text: p.note || "この結果には本文がありません（ファイル名で見つけたもの）。ファイルを開いて見てください。" })];
+      put(pane, head, body);
+      const current = pane.querySelector(".pv-sec.current");
+      if (current) pane.scrollTop = current.offsetTop - head.offsetHeight - 12;
+    }).catch((e) => { if (mine === previewSeq) put(pane, head, h("p", { class: "pv-loading", text: `表示できませんでした: ${reason(e)}` })); }), 120);
+  };
+
+  const selectHit = (i, scroll) => {
+    activeHit = i;
+    [...$("#results").children].forEach((el, j) => { el.classList.toggle("active", j === i); el.setAttribute("aria-selected", String(j === i)); });
+    const el = $("#results").children[i];
+    if (el && scroll) el.scrollIntoView({ block: "nearest" });
+    renderPreview();
+  };
+
+  const renderResults = () => {
+    const list = $("#results");
+    const note = $("#search-note");
+    $("#search-tips").hidden = Boolean(results);
+    $("#search-body").hidden = !results || Boolean(results.error) || !results.hits.length;
+    $("#search-more").hidden = true;
+    note.hidden = true;
+    note.className = "search-note";
+    if (!results) { list.replaceChildren(); $("#search-meta").textContent = ""; renderFacets(); return; }
+    if (results.error) {
+      list.replaceChildren();
+      $("#search-meta").textContent = "";
+      note.hidden = false;
+      note.classList.add("error");
+      note.textContent = results.error;
+      renderFacets();
+      return;
+    }
+    const hits = results.hits;
+    const shown = hits.length < results.total ? `（上位 ${fmt(hits.length)} 件を表示）` : "";
+    $("#search-meta").textContent = results.total
+      ? `${fmt(results.total)}${results.pooled ? " 件以上" : " 件"}${shown}　${fmt(results.ms)} ミリ秒` : "見つかりません";
+    const notes = [];
+    if (results.variants && results.variants.length) notes.push(`言い換えも探しました: ${results.variants.join("、")}`);
+    const pending = pendingIn(results.roots || []);
+    if (pending) notes.push(`探した範囲に、まだ読み込んでいない変更が ${fmt(pending)} 件あります。フォルダのタブで更新すると、それも探せます。`);
+    if (readerOf()) notes.push("裏で読み込み中です。読み込めた分から探しています。");
+    if (results.missing) notes.push(`地図のこの種類のうち ${results.missing} フォルダはインデックスにないため、探していません。`);
+    if (results.exclude && results.exclude.length) notes.push(`除外: ${results.exclude.join("、")}`);
+    notes.push(...(results.hints || []));
+    if (!hits.length && !results.roots.length) notes.push("探すフォルダがありません。フォルダのタブで追加してください。");
+    if (notes.length) { note.hidden = false; note.replaceChildren(...notes.map((t) => h("span", { text: t }))); }
+    renderFacets();
+    const terms = allTerms();
+    put(list, hits.map((hit, i) => {
+      const name = base(hit.path);
+      const heading = hit.crumb || (hit.title !== name ? hit.title : "");
+      const item = h("li", { class: `result${i === activeHit ? " active" : ""}`, role: "option", "aria-selected": String(i === activeHit) },
+        h("div", { class: "r-head" }, h("span", { class: "r-name", text: name, title: hit.path }),
+          h("span", { class: "r-where", text: [heading, hit.location].filter(Boolean).join("　") })),
+        h("p", { class: "r-snippet" }, markTerms(hit.snippet, terms.concat(hit.terms))),
+        h("span", { class: "r-path", text: `${shortPath(hit.path)}　${hit.modified}` }),
+        hit.newer_version ? h("span", { class: "r-flag", text: `新しい版があります: ${base(hit.newer_version)}` }) : null);
+      item.addEventListener("click", () => selectHit(i, false));
+      item.addEventListener("dblclick", () => (hit.chunk_id ? viewHits([hit.n]) : openFile(hit.n)));
+      return item;
+    }));
+    $("#search-more").hidden = hits.filter((x) => x.chunk_id).length < 2;
+    renderPreview();
+  };
+  q.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => runSearch(false), 250); });
+  scopeSel.addEventListener("change", () => runSearch(false));
+  Object.values(switches).forEach((box) => box.addEventListener("change", () => runSearch(false)));
+  q.addEventListener("keydown", (e) => {
+    const hits = results && results.hits ? results.hits : [];
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (!results || results.error || !hits.length) { runSearch(false); return; }
+      const hit = hits[activeHit];
+      if (hit) (hit.chunk_id ? viewHits([hit.n]) : openFile(hit.n));
+    } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && hits.length) {
+      e.preventDefault();
+      selectHit(Math.max(0, Math.min(hits.length - 1, activeHit + (e.key === "ArrowDown" ? 1 : -1))), true);
+    } else if (e.key === "c" && e.ctrlKey && e.shiftKey && hits[activeHit]) {
+      e.preventDefault();
+      copyCitation(hits[activeHit]);
+    } else if (e.key === "Escape" && q.value) {
+      e.preventDefault();
+      q.value = "";
+      runSearch(false);
+    }
+  });
+
+  // ---- tabs
+  const tabButtons = { folders: $("#tab-folders"), map: $("#tab-map"), search: $("#tab-search") };
+  let tab = "folders";
+  const showTab = (name) => {
+    if (!tabButtons[name]) return;
+    tab = name;
+    for (const [k, b] of Object.entries(tabButtons)) {
+      const on = k === name;
+      b.setAttribute("aria-selected", String(on));
+      b.tabIndex = on ? 0 : -1;
+      $(`#panel-${k}`).hidden = !on;
+    }
+    if (name === "map") loadMap(false);
+    if (name === "search") { fillScopes(); q.focus(); }
+    try { history.replaceState(null, "", `#${name}`); } catch (e) { /* the hash only remembers the tab */ }
+  };
+  window.__docwhereTab = showTab;
+  $("#tabs").addEventListener("click", (e) => { const b = e.target.closest("[data-tab]"); if (b) showTab(b.dataset.tab); });
+  $("#tabs").addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    const order = Object.keys(tabButtons);
+    const next = order[(order.indexOf(tab) + (e.key === "ArrowRight" ? 1 : order.length - 1)) % order.length];
+    showTab(next);
+    tabButtons[next].focus();
+    e.preventDefault();
+  });
 
   // ---- polling: every second while reading, every few seconds otherwise
   let timer = 0;
@@ -1142,7 +2390,18 @@ MANAGE_JS = r"""(() => {
     const what = act.dataset.act;
     if (what === "add") addFolder();
     else if (what === "recheck") { recheckAll(); loadTotals(); toast("変更を確認しています"); }
-    else if (what === "update-all") update(data.roots.filter((r) => statusOf(r).changes).map((r) => r.path));
+    else if (what === "synonyms") {
+      api.open_synonyms().then(() => toast("言い換えのファイルを開きました。保存すると、次の検索から使います")).catch(failed("開けませんでした"));
+    }
+    else if (what === "view-all") viewHits(results.hits.filter((x) => x.chunk_id).slice(0, 10).map((x) => x.n));
+    else if (what === "map-add") addMapRow();
+    else if (what === "map-save") saveMap();
+    else if (what === "map-revert") loadMap(true).then(() => toast("変更を取り消しました"));
+    else if (what === "map-excel") {
+      api.open_notes().then(() => toast("Excel で開きました。Excel で開いている間は、ここから保存できません。Excel で保存したら、この窓に戻ると読み込み直します"))
+        .catch(failed("開けませんでした"));
+    }
+    else if (what === "update-all") update(data.roots.filter((r) => !r.parent && statusOf(r).changes).map((r) => r.path));
   });
   filterInput.addEventListener("input", () => render());
   filterInput.addEventListener("keydown", (e) => {
@@ -1164,16 +2423,20 @@ MANAGE_JS = r"""(() => {
   });
   document.addEventListener("keydown", (e) => {
     const typing = e.target.closest("input, textarea, [contenteditable]") || $("#confirm").open;
+    if (e.key === "s" && e.ctrlKey && tab === "map") { e.preventDefault(); saveMap(); return; }
     if ((e.key === "/" && !typing) || (e.key === "f" && e.ctrlKey)) {
-      if ($("#filter-box").hidden) return;
+      const box = tab === "map" ? $("#map-filter-box") : tab === "search" ? $("#search-bar-box") : $("#filter-box");
+      const input = tab === "map" ? mapFilter : tab === "search" ? q : filterInput;
+      if (box.hidden) return;
       e.preventDefault();
-      filterInput.focus();
-      filterInput.select();
+      input.focus();
+      input.select();
     }
   });
 
   // coming back to the window: look again at folders checked over a minute ago
   window.addEventListener("focus", () => {
+    if (tab === "map") loadMap(false);  // edited in Excel meanwhile: shown unless edits here are unsaved
     if (!data) return;
     const stale = Date.now() - 60000;
     data.roots.forEach((r) => { const c = checks.get(keyOf(r.path)); if (c && c.state !== "checking" && c.at < stale) queueCheck(r.path); });
@@ -1181,6 +2444,7 @@ MANAGE_JS = r"""(() => {
   // the page may only show itself: no link leads anywhere
   document.addEventListener("click", (e) => { if (e.target.closest("a[href]")) e.preventDefault(); }, true);
 
-  ready.then(refresh).catch((e) => { $("#summary").textContent = `この窓を開き直してください（${reason(e)}）`; });
+  $("#tabs").hidden = false;
+  ready.then(() => { showTab(["#map", "#search"].includes(location.hash) ? location.hash.slice(1) : "folders"); return refresh(); }).catch((e) => { $("#summary").textContent = `この窓を開き直してください（${reason(e)}）`; });
 })();
 """
