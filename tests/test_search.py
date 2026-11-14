@@ -95,3 +95,72 @@ def test_cli_search_json_then_show(docs, tmp_path, capsys, monkeypatch):
 
     assert main(["show", "--id", str(out["hits"][0]["id"])]) == 0
     assert "config は設定ファイルを読み込み" in capsys.readouterr().out
+
+
+def test_search_names_the_wikis_added_on_this_pc(docs, tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "cli" / "index.db"))
+    assert main(["search", "config", "--in", str(docs), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["wikis"] == []
+    assert main(["wiki", "add", "社内", "http://wiki.example.invalid/"]) == 0
+    assert "saved in" in capsys.readouterr().out
+    assert main(["search", "config", "--in", str(docs), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["wikis"] == ["社内"]  # a new session learns of it here
+
+
+def test_a_word_after_not_leaves_out_sections_and_folders_containing_it(docs, index):
+    index.sync(docs)
+    every = {Path(h.path).name for h in search(index, [docs], ["コマンド"], limit=20)}
+    assert {"運用マニュアル.docx", "notes.md"} <= every
+    kept = {Path(h.path).name for h in search(index, [docs], ["コマンド"], limit=20, exclude=["deploy"])}
+    assert "notes.md" not in kept and "運用マニュアル.docx" in kept  # the section naming deploy is gone
+    in_sub = {Path(h.path).name for h in search(index, [docs], ["設計"], limit=20, exclude=["sub"])}
+    assert "設計書.pdf" not in in_sub  # a folder name in the path leaves its files out
+
+
+def test_a_regular_expression_finds_codes_and_reports_what_it_matched(docs, index):
+    (docs / "errors.md").write_text("# エラー\nE1001 は接続失敗。E2041 は時間切れ。e9 は対象外。\n", encoding="utf-8")
+    index.sync(docs)
+    [hit] = search(index, [docs], [r"E\d{4}"], regex=True)
+    assert Path(hit.path).name == "errors.md" and hit.terms == ["E1001", "E2041"]
+    assert search(index, [docs], ["E1001 は接続"], regex=True)[0].terms == ["E1001 は接続"]  # a literal: the index narrows
+
+
+def test_a_bad_regular_expression_is_refused_before_anything_is_read(docs, tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "cli" / "index.db"))
+    assert main(["search", "E(", "--regex", "--in", str(docs)]) == 2
+    assert "not a valid regular expression" in capsys.readouterr().err
+
+
+def test_file_names_are_searched_including_files_not_read_yet(docs, tmp_path, capsys, monkeypatch):
+    from docwhere import background
+
+    monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "cli" / "index.db"))
+    monkeypatch.setattr(background, "request", lambda index, root: True)
+    main(["index", str(docs)])
+    (docs / "sub" / "運用マニュアル_旧版.docx").write_bytes(b"not read yet")
+    capsys.readouterr()
+    assert main(["search", "運用", "マニュアル", "--name", "--in", str(docs), "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["mode"] == "name"
+    assert [Path(h["path"]).name for h in out["hits"]] == ["運用マニュアル.docx", "運用マニュアル_旧版.docx"]
+    assert out["hits"][0]["id"] and "not read yet" in out["hits"][1]["snippet"]
+    assert main(["search", "マニュアル", "--name", "--not", "旧版", "--in", str(docs), "--json"]) == 0
+    assert [Path(h["path"]).name for h in json.loads(capsys.readouterr().out)["hits"]] == ["運用マニュアル.docx"]
+    assert main(["search", r"^説明.*\.pptx$", "--name", "--regex", "--in", str(docs)]) == 0
+    assert "説明会.pptx" in capsys.readouterr().out
+
+
+def test_other_wordings_are_found_for_the_same_thing(tmp_path):
+    from docwhere.search import expand_variants, load_variant_groups
+
+    assert expand_variants(["サーバ", "ログイン"]) == ["サーバー", "ログオン", "サインイン"]
+    assert expand_variants(["サーバー"]) == ["サーバ"] and expand_variants(["マニュアル"]) == []
+    own = tmp_path / "synonyms.csv"
+    own.write_text("# 自分の言い換え\n帳票,レポート\n", encoding="utf-8-sig")
+    assert expand_variants(["帳票"], load_variant_groups(own)) == ["レポート"]
+
+
+def test_a_query_typed_in_a_box_keeps_phrases_and_leaves_out_minus_words():
+    from docwhere.search import parse_query
+
+    assert parse_query('接続 "応答 タイムアウト" -旧版 -"検討 資料" -') == (["接続", "応答 タイムアウト", "-"], ["旧版", "検討 資料"])

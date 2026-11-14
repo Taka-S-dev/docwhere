@@ -58,13 +58,25 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("search", help="search (updates the index for the folders first)")
-    p.add_argument("terms", nargs="+", help="search terms; a section matching any of them is a hit (see --all)")
+    p.add_argument("terms", nargs="+", help="search terms; a section matching any of them is a hit (see --all). "
+                   "A term is matched as written: quote words with spaces to keep them one phrase")
+    p.add_argument("--not", dest="exclude", action="append", default=[], metavar="WORD",
+                   help="leave out sections containing WORD, or whose file path does (a folder name like 旧版); repeatable")
+    p.add_argument("--name", action="store_true",
+                   help="match file names (and the folders above them) instead of the text; lists files, "
+                        "unreadable and not yet read ones too")
+    p.add_argument("--regex", action="store_true",
+                   help="the terms are regular expressions, case ignored (E\\d{4}, TIMEOUT_[A-Z]+); "
+                        "a hit's terms are the strings matched")
     p.add_argument("--in", dest="roots", type=Path, action="append", help="folder to search, repeatable (default: .)")
     p.add_argument("--all", action="store_true", help="only sections containing every term")
     p.add_argument("--ext", help="restrict to extensions, e.g. pdf,docx")
     p.add_argument("-n", "--limit", type=int, default=10)
     p.add_argument("--per-file", type=int, default=3, help="max hits per file (default 3)")
     p.add_argument("--no-update", action="store_true", help="search the index as is, skip the change scan")
+    p.add_argument("--once", action="store_true",
+                   help="do not keep the searched folders: one not indexed before is dropped from the index a day "
+                        "later (show, view and open work until then); one already indexed is kept")
     p.add_argument("--keep-changed", action="store_true",
                    help="search files modified since they were read as last read (new files are still read); "
                         "the JSON's changed says how many")
@@ -178,20 +190,47 @@ def _view_options(p: argparse.ArgumentParser, prefix: str = "") -> None:
 
 
 def cmd_search(args) -> int:
-    from docwhere.search import search
+    from docwhere.search import PatternError, compile_patterns, search, search_names
 
     roots = args.roots or [Path(".")]
+    if args.regex:
+        try:
+            compile_patterns(args.terms)  # a mistyped pattern fails before any reading
+        except PatternError as e:
+            print(f"docwhere: {e}", file=sys.stderr)
+            return 2
     index = Index(args.db)
+    expired = background.expire(index)
+    if expired:
+        print(f"dropped from the index (searched with --once a day ago): {', '.join(expired)}", file=sys.stderr)
+    once = None
+    if args.once and not args.no_update:
+        # only what this index did not keep already: a folder indexed for good stays so
+        once = {"until": time.time() + background.ONCE_KEEP, "folders": [], "kept": []}
+        for root in roots:
+            (once["kept"] if index.lifetime(root) == "kept" else once["folders"]).append(str(Path(root).resolve()))
     updates: list[SyncStats] = []
     reading = {"complete": None}  # not checked with --no-update
     changed: list[tuple] = []  # files modified since they were read: read again, or kept as read
+    unread: list[tuple[str, int]] = []  # with --name: new files, listed by name before they are read
     if not args.no_update:
         waiting = []
         for root in roots:
             scan = index.scan(root)
+            if once is None:
+                index.keep(root)  # searched without --once: kept for good, even if searched once before
+            elif str(scan.root) in once["folders"]:
+                index.mark_once(scan.root, once["until"])
             _note_excluded(root, scan.stats)
             updates.append(scan.stats)
             changed += scan.changed
+            if args.name:
+                # names need no reading: list the new files now and leave reading them to the background
+                known = {t[0] for t in scan.changed}
+                unread += [(str(t[1]), t[2]) for t in scan.todo if t[0] not in known]
+                if scan.todo:
+                    background.request(index, scan.root)
+                continue
             if args.keep_changed and scan.changed:
                 skip = {t[0] for t in scan.changed}
                 scan = dataclasses.replace(scan, todo=[t for t in scan.todo if t[0] not in skip])
@@ -205,7 +244,12 @@ def cmd_search(args) -> int:
                 waiting.append(scan)
         reading = _reading(index, updates, _wait_for_reader(index, waiting, None if args.wait_all else args.wait))
     exts = [e.strip() for e in args.ext.split(",")] if args.ext else None
-    hits = search(index, roots, args.terms, require_all=args.all, exts=exts, limit=args.limit, per_file=args.per_file)
+    if args.name:
+        hits = search_names(index, roots, args.terms, exts=exts, limit=args.limit, exclude=args.exclude,
+                            regex=args.regex, unread=unread)
+    else:
+        hits = search(index, roots, args.terms, require_all=args.all, exts=exts, limit=args.limit,
+                      per_file=args.per_file, exclude=args.exclude, regex=args.regex)
     _last_path(index).write_text(
         json.dumps({"terms": args.terms, "hits": [h.to_dict() for h in hits], "reading": reading}, ensure_ascii=False),
         encoding="utf-8",
@@ -223,6 +267,9 @@ def cmd_search(args) -> int:
     if args.json:
         out = {
             "terms": args.terms,
+            # what the terms were matched against and how, and the words that left sections out
+            "mode": ("name" if args.name else "text") + (" regex" if args.regex else ""),
+            "not": args.exclude,
             "roots": [str(Path(r).resolve()) for r in roots],
             "reading": reading,
             # None: not checked (--no-update). kept: searched as last read (--keep-changed)
@@ -249,14 +296,18 @@ def cmd_search(args) -> int:
             "wikis": _wiki_names(index.path),
             "next": HINT,
         }
+        if once is not None:
+            # dropped_after: when the folders leave the index; kept: folders indexed before, not dropped
+            out["once"] = {"dropped_after": _when(once["until"]), "folders": once["folders"], "kept": once["kept"]}
         print(json.dumps(out, ensure_ascii=False, indent=1))
         return 0
 
     if not hits:
         print("no hits")
     for h in hits:
-        where = "  ".join(x for x in (h.crumb or h.title, h.location) if x)
-        print(f"{h.n:>2}. {Path(h.path).name}  {where}  ({h.modified})")
+        heading = h.crumb or (h.title if h.title != Path(h.path).name else "")  # a --name hit is the file itself
+        line = "  ".join(x for x in (Path(h.path).name, heading, h.location, f"({h.modified})") if x)
+        print(f"{h.n:>2}. {line}")
         print(f"    {highlight(h.snippet, h.terms)}")
         print(f"    {h.path}")
         if h.newer_version:
@@ -273,9 +324,19 @@ def cmd_search(args) -> int:
               " search without --keep-changed to read them again", file=sys.stderr)
     if reading["complete"] is False:
         print("\n" + _not_finished(reading), file=sys.stderr)
+    if once is not None:
+        if once["folders"]:
+            print(f"not kept: dropped from the index after {_when(once['until'])}: {', '.join(once['folders'])}",
+                  file=sys.stderr)
+        if once["kept"]:
+            print(f"already indexed, so kept: {', '.join(once['kept'])}", file=sys.stderr)
     if names := _wiki_names(index.path):
         print(f"also added: wiki {', '.join(names)}; search it with: docwhere wiki search", file=sys.stderr)
     return 0
+
+
+def _when(seconds: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(seconds))
 
 
 def _wiki_names(db: Path) -> list[str]:
@@ -491,6 +552,7 @@ def cmd_manage(args) -> int:
                 raise NotADirectoryError(f"not a folder: {folder}")
         for folder in folders:
             background.request(index, folder)
+            index.keep(folder)
         queued = folders
     index.close()
     if queued:
@@ -542,6 +604,7 @@ def cmd_index(args) -> int:
             index.forget(root, keep_excludes=True)
         started = time.perf_counter()
         s = _sync(index, root, workers=args.workers, timeout=args.timeout)
+        index.keep(root)
         print(
             f"{Path(root).resolve()}: {s.files} files, {s.updated - s.unchanged} extracted,"
             + (f" {s.unchanged} only re-dated (content unchanged, not read again)," if s.unchanged else "")
@@ -553,6 +616,7 @@ def cmd_index(args) -> int:
 
 def cmd_status(args) -> int:
     index = Index(args.db)
+    background.expire(index)
     roots = index.roots()
     errors = index.errors() if args.errors else []
     reader = background.state(index)
@@ -582,6 +646,8 @@ def cmd_status(args) -> int:
             note = f"  ! not searched for over {STALE_DAYS} days"
         if note:
             stale.append(r["path"])
+        elif r["once_until"]:
+            note = f"  (searched with --once: dropped after {_when(r['once_until'])})"
         print(f"  {r['path']}  {r['files']} files / {r['chunks']} sections / {r['errors']} unreadable  (synced {when}){note}")
         if r["excludes"]:
             print("    excluding: " + ", ".join(_described(e) for e in r["excludes"]))

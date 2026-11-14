@@ -23,11 +23,19 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from docwhere.index import FILE_TIMEOUT, Index, Stopped, SyncProgress, path_key
+from docwhere.index import (
+    FILE_TIMEOUT,
+    Index,
+    Stopped,
+    SyncProgress,
+    path_key,
+    prefix_of,
+)
 
 HEARTBEAT = 5  # seconds between heartbeats
 STALE = 60  # a reader silent for this long is taken for dead
 LOG_NAME = "reader.log"
+ONCE_KEEP = 24 * 3600  # a folder searched with --once stays this long, so show, view and open still work
 
 
 @dataclass
@@ -98,6 +106,26 @@ def request(index: Index, root: Path) -> bool:
         raise
     _spawn(index.path)
     return True
+
+
+def expire(index: Index, now: float | None = None) -> list[str]:
+    """Forget the folders searched once whose time is up (``Index.mark_once``). One still queued
+    or being read is left for a later call: the reader would put its files back."""
+    now = time.time() if now is None else now
+    due = [(key, path) for key, path, until in index.once_roots() if until <= now]
+    if not due:
+        return []
+    busy = {r["key"] for r in index.db.execute("SELECT key FROM queue")}
+    row = index.db.execute("SELECT heartbeat, current FROM reader WHERE id = 1").fetchone()
+    if _alive(row) and row["current"]:
+        busy.add(path_key(row["current"]))
+    gone = []
+    for key, path in due:
+        if any(b == key or b.startswith(prefix_of(key)) for b in busy):
+            continue
+        index.drop_once(Path(path))
+        gone.append(path)
+    return gone
 
 
 def stop(index: Index) -> bool:

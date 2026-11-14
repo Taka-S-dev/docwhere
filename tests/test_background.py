@@ -105,3 +105,53 @@ def test_index_stop_and_status_report_the_reader(tmp_path, index, spawned, monke
     main(["index", "--stop"])
     assert "background reading stopped" in capsys.readouterr().out
     assert main(["index"]) == 2
+
+
+def test_a_folder_searched_once_leaves_the_index_a_day_later(tmp_path, spawned, monkeypatch, capsys):
+    root = _folder(tmp_path, 2)
+    db = tmp_path / "db" / "index.db"
+    monkeypatch.setenv("DOCWHERE_DB", str(db))
+    main(["search", "タイムアウト", "--in", str(root), "--once", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert len(out["hits"]) == 2
+    assert out["once"]["folders"] == [str(root.resolve())] and out["once"]["kept"] == []
+    index = Index(db)
+    assert index.lifetime(root) == "once"
+    assert main(["show", "1"]) == 0  # the hits can still be shown
+    assert background.expire(index) == []  # not yet
+
+    later = time.time() + background.ONCE_KEEP + 1
+    background.request(index, root)  # still queued for reading: left for a later call
+    assert background.expire(index, now=later) == []
+    index.db.execute("DELETE FROM queue")
+    index.db.commit()
+    assert background.expire(index, now=later) == [str(root.resolve())]
+    assert index.roots() == [] and index.files_in([root]) == []
+
+
+def test_once_keeps_a_folder_indexed_before_and_a_normal_search_keeps_a_once_folder(tmp_path, spawned, monkeypatch, capsys):
+    root = _folder(tmp_path, 2)
+    db = tmp_path / "db" / "index.db"
+    monkeypatch.setenv("DOCWHERE_DB", str(db))
+    main(["search", "タイムアウト", "--in", str(root), "--json"])
+    capsys.readouterr()
+    main(["search", "タイムアウト", "--in", str(root / ".."), "--once", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["once"]["folders"] == [str(tmp_path.resolve())]
+    main(["search", "タイムアウト", "--in", str(root), "--once"])
+    assert f"already indexed, so kept: {root.resolve()}" in capsys.readouterr().err
+
+    index = Index(db)
+    assert index.lifetime(root) == "kept"
+    (tmp_path / "other.md").write_text("タイムアウト", encoding="utf-8")
+    main(["search", "タイムアウト", "--in", str(tmp_path), "--once"])  # reads other.md, outside the kept folder
+    capsys.readouterr()
+    assert background.expire(index, now=time.time() + background.ONCE_KEEP + 1) == [str(tmp_path.resolve())]
+    assert [r["path"] for r in index.roots()] == [str(root.resolve())]  # the folder inside it stays
+    assert len(index.files_in([root])) == 2 and index.files_in([tmp_path]) == index.files_in([root])
+    main(["search", "タイムアウト", "--in", str(tmp_path), "--once"])
+    capsys.readouterr()
+    main(["search", "タイムアウト", "--in", str(root)])  # searched for good inside the once folder
+    capsys.readouterr()
+    assert index.once_roots() == []  # the outer folder is kept too, or dropping it would drop this one
+    assert background.expire(index, now=time.time() + background.ONCE_KEEP + 1) == []

@@ -89,6 +89,19 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    Add `--all` when every term must appear (narrowing), `--ext pdf,docx` to limit formats,
    `-n 20` for more results. Later searches take well under a second.
 
+   - A term is matched as written: quote words that must stay together (`"接続 タイムアウト"`).
+   - `--not WORD` (repeatable) leaves out sections containing it, or files whose path does:
+     `--not 旧版 --not 検討資料` when old or draft material crowds the hits ("旧版は除いて").
+   - `--name` matches file names (and their folders) instead of the text, for "〜という名前の
+     資料どこ？"; it also lists files not read yet or unreadable. Hits are files, not sections.
+   - `--regex` takes regular expressions for things of a fixed shape, case ignored: error codes
+     (`E\d{4}`), part numbers, setting keys (`TIMEOUT_[A-Z]+`). Each hit's `terms` are the strings
+     matched, so "どんなエラーコードがある？" is answered by listing them. Quote the pattern.
+   - `--once` when the user does not want the folder kept ("一度見るだけ", "残さないで", a USB
+     drive or someone else's share): a folder not indexed before leaves the index a day later,
+     so show, view and open still work in this conversation. The JSON's `once` says when, and
+     which folders were already indexed and so are kept; say so in one line.
+
    **A folder not read yet.** The first search on a new folder (or after many files changed)
    waits at most 20 seconds, then answers from the files read so far and leaves the rest to a
    background reader, which keeps going after the command returns (legacy .doc/.ppt are

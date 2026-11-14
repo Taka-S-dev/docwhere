@@ -45,7 +45,7 @@ SAVE_EVERY_SECONDS = 5
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS roots(
     key TEXT PRIMARY KEY, path TEXT NOT NULL, synced_at REAL,
-    excludes TEXT NOT NULL DEFAULT '[]', exclude_hits TEXT);
+    excludes TEXT NOT NULL DEFAULT '[]', exclude_hits TEXT, once_until REAL);
 CREATE TABLE IF NOT EXISTS files(
     id INTEGER PRIMARY KEY, key TEXT UNIQUE NOT NULL, path TEXT NOT NULL,
     mtime_ns INTEGER NOT NULL, size INTEGER NOT NULL, version INTEGER NOT NULL, error TEXT);
@@ -153,6 +153,8 @@ class Index:
             db.execute("ALTER TABLE roots ADD COLUMN excludes TEXT NOT NULL DEFAULT '[]'")
         if "exclude_hits" not in columns:
             db.execute("ALTER TABLE roots ADD COLUMN exclude_hits TEXT")
+        if "once_until" not in columns:  # a folder searched with --once: dropped after this time
+            db.execute("ALTER TABLE roots ADD COLUMN once_until REAL")
         if "read_ms" not in {r["name"] for r in db.execute("PRAGMA table_info(files)")}:
             db.execute("ALTER TABLE files ADD COLUMN read_ms INTEGER")  # how long reading the file took
         if "sha256" not in {r["name"] for r in db.execute("PRAGMA table_info(files)")}:
@@ -305,6 +307,56 @@ class Index:
                 self.db.execute("DELETE FROM roots WHERE key = ? OR substr(key, 1, ?) = ?", (root_key, len(prefix), prefix))
         return {"inside": inside, "kept_by": outer}
 
+    def lifetime(self, root: Path) -> str | None:
+        """How long ``root`` stays indexed: "kept" for good (itself, or as part of an outer folder
+        kept for good), "once" only until its time is up (see ``mark_once``), None when not indexed."""
+        key = path_key(Path(root).resolve())
+        covering = [
+            r["once_until"] for r in self.db.execute("SELECT key, once_until FROM roots")
+            if r["key"] == key or key.startswith(prefix_of(r["key"]))
+        ]
+        if not covering:
+            return None
+        return "kept" if any(u is None for u in covering) else "once"
+
+    def mark_once(self, root: Path, until: float) -> None:
+        """Drop ``root`` from the index once ``until`` has passed (``docwhere.background.expire``):
+        a folder searched once, not to be kept."""
+        with self.db:
+            self.db.execute("UPDATE roots SET once_until = ? WHERE key = ?", (until, path_key(Path(root).resolve())))
+
+    def keep(self, root: Path) -> list[str]:
+        """Keep ``root`` for good, and every folder around it that was to be dropped (dropping an
+        outer folder would drop this one with it). Returns the folders that were to be dropped."""
+        key = path_key(Path(root).resolve())
+        rows = [
+            r for r in self.db.execute("SELECT key, path FROM roots WHERE once_until IS NOT NULL")
+            if r["key"] == key or key.startswith(prefix_of(r["key"]))
+        ]
+        if rows:
+            with self.db:
+                self.db.executemany("UPDATE roots SET once_until = NULL WHERE key = ?", [(r["key"],) for r in rows])
+        return [r["path"] for r in rows]
+
+    def drop_once(self, root: Path) -> None:
+        """Forget a folder searched once, but not the folders inside it that are kept for good:
+        their files stay, as if the outer folder had never been searched."""
+        root_key = path_key(Path(root).resolve())
+        prefix = prefix_of(root_key)
+        inside = [r for r in self.db.execute("SELECT key, once_until FROM roots") if r["key"].startswith(prefix)]
+        kept = [prefix_of(r["key"]) for r in inside if r["once_until"] is None]
+        with self.db:
+            if self.enclosing(root_key) is None:  # inside a folder kept for good, its files are that folder's
+                self._delete_files([r["id"] for r in self._files_under(root_key, "id, key")
+                                    if not any(r["key"].startswith(k) for k in kept)])
+            self.db.executemany("DELETE FROM roots WHERE key = ?",
+                                [(root_key,)] + [(r["key"],) for r in inside if r["once_until"] is not None])
+
+    def once_roots(self) -> list[tuple[str, str, float]]:
+        """(key, path, drop after) of every folder searched once."""
+        return [(r["key"], r["path"], r["once_until"])
+                for r in self.db.execute("SELECT key, path, once_until FROM roots WHERE once_until IS NOT NULL")]
+
     def enclosing(self, root_key: str) -> str | None:
         """The nearest indexed folder that ``root_key`` lies inside, or None."""
         best = None
@@ -438,7 +490,7 @@ class Index:
 
     def roots(self) -> list[dict]:
         out = []
-        for r in self.db.execute("SELECT key, path, synced_at, excludes, exclude_hits FROM roots ORDER BY path"):
+        for r in self.db.execute("SELECT key, path, synced_at, excludes, exclude_hits, once_until FROM roots ORDER BY path"):
             prefix = prefix_of(r["key"])
             files, errors, chunks = self.db.execute(
                 "SELECT count(*), count(f.error),"
@@ -450,7 +502,7 @@ class Index:
             excludes = [{"pattern": p, "matched": hits.get(p)} for p in json.loads(r["excludes"])]
             out.append({
                 "path": r["path"], "synced_at": r["synced_at"], "files": files, "chunks": chunks, "errors": errors,
-                "excludes": excludes,
+                "excludes": excludes, "once_until": r["once_until"],
             })
         return out
 
