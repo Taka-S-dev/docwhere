@@ -133,3 +133,23 @@ def test_a_password_protected_xls_is_given_up_at_once(legacy, tmp_path):
     assert stats.failed == 1 and not stats.timed_out
     [(_, error)] = index.errors()
     assert "password-protected" in error
+
+
+def test_a_copy_is_saved_without_the_personal_information_warning():
+    import pywintypes
+
+    from docwhere.extractors.legacy import keep_personal_information
+
+    class Doc:
+        RemovePersonalInformation = True
+
+    doc = Doc()
+    keep_personal_information(doc)
+    assert doc.RemovePersonalInformation is False
+
+    class Refuses:
+        @property
+        def RemovePersonalInformation(self):
+            raise pywintypes.com_error(-2147352567, "no such property", None, None)
+
+    keep_personal_information(Refuses())  # an Office without the setting: nothing to turn off

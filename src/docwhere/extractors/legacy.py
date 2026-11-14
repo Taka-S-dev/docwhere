@@ -119,6 +119,23 @@ def _quit_all() -> None:
     _apps.clear()
 
 
+def keep_personal_information(document) -> None:
+    """Let a copy of ``document`` be saved without a question.
+
+    A document set to remove personal information when saved makes Word (Excel, PowerPoint)
+    warn, on every save, that the document inspector cannot remove all of it; the warning waits
+    for an answer despite DisplayAlerts. Only the converted copy in a temporary folder is saved,
+    never the user's file, so the setting is turned off on the opened document alone.
+    """
+    import pywintypes
+
+    try:
+        if document.RemovePersonalInformation:
+            document.RemovePersonalInformation = False
+    except (pywintypes.com_error, AttributeError):
+        pass  # an older Office without the setting, or a document that refuses it: no warning either
+
+
 def open_word_document(path: Path):
     """Open a document read-only in the private Word instance, without any prompt Word can skip."""
     app = _app("Word.Application")
@@ -127,12 +144,14 @@ def open_word_document(path: Path):
     links = app.Options.UpdateLinksAtOpen
     app.Options.UpdateLinksAtOpen = False
     try:
-        return app.Documents.Open(
+        doc = app.Documents.Open(
             str(path.resolve()), ConfirmConversions=False, ReadOnly=True, AddToRecentFiles=False,
             PasswordDocument=_DUMMY_PASSWORD, Visible=False,
         )
     finally:
         app.Options.UpdateLinksAtOpen = links
+    keep_personal_information(doc)
+    return doc
 
 
 @register(".doc", serial=True)
@@ -229,6 +248,7 @@ def _xls_through_excel(path: Path) -> list[Chunk]:
         wb = app.Workbooks.Open(
             str(path.resolve()), UpdateLinks=0, ReadOnly=True, Password=_DUMMY_PASSWORD, AddToMru=False
         )
+        keep_personal_information(wb)
         try:
             wb.SaveAs(str(out), FileFormat=51)  # xlOpenXMLWorkbook
         finally:
@@ -244,6 +264,7 @@ def extract_ppt(path: Path) -> list[Chunk]:
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp, "converted.pptx")
         pres = app.Presentations.Open(str(path.resolve()), ReadOnly=True, Untitled=False, WithWindow=False)
+        keep_personal_information(pres)
         try:
             pres.SaveAs(str(out), 24)  # ppSaveAsOpenXMLPresentation
         finally:

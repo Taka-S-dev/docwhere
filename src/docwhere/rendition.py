@@ -60,7 +60,11 @@ def as_pdf(path: str, cache: Path) -> Path | None:
 
 
 def _export(src: Path, out: Path, ext: str) -> None:
-    from docwhere.extractors.legacy import _app, open_word_document
+    from docwhere.extractors.legacy import (
+        _app,
+        keep_personal_information,
+        open_word_document,
+    )
 
     if ext in WORD_EXTS:
         doc = open_word_document(src)
@@ -71,6 +75,7 @@ def _export(src: Path, out: Path, ext: str) -> None:
     else:
         app = _app("PowerPoint.Application")
         pres = app.Presentations.Open(str(src.resolve()), ReadOnly=True, Untitled=False, WithWindow=False)
+        keep_personal_information(pres)
         try:
             pres.SaveAs(str(out), 32)  # ppSaveAsPDF
         finally:
