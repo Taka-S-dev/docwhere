@@ -58,8 +58,10 @@ class Reporter:
             return text + f" in {duration(elapsed)}"
         if p.done and elapsed >= 1:
             rate = p.done / elapsed
-            # Slow files tend to be left for last, so this is a lower bound more than a forecast.
-            text += f", {rate:.1f} files/s, about {duration((p.total - p.done) / rate)} left"
+            # the estimate weighs each file left by its kind (see docwhere.eta); the rate alone
+            # falls short, as the slow Office conversions are left for last
+            left = p.seconds_left if p.seconds_left is not None else (p.total - p.done) / rate
+            text += f", {rate:.1f} files/s, about {duration(left)} left"
         slow = max(p.reading, key=lambda r: r[1], default=None)
         if slow and (self.live or slow[1] >= SLOW):
             text += f"; reading {slow[0].name}" + (f" for {duration(slow[1])}" if slow[1] >= SLOW else "")

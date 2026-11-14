@@ -321,9 +321,10 @@ def _reading(index: Index, updates: list[SyncStats], left: list[tuple]) -> dict:
     out = {"complete": not left, "files": files, "read": files - len(left), "remaining": len(left)}
     if left:
         state = background.state(index)
-        rate = state.rate() if state else None
+        estimate = state.seconds_left() if state else None
         out["remaining_types"] = dict(Counter(Path(t[1]).suffix.lower() for t in left).most_common())
-        out["about_seconds_left"] = round(len(left) / rate if rate else _estimate(left))
+        # the reader's own estimate once it has one (see docwhere.eta); until then a guess by file kind
+        out["about_seconds_left"] = round(estimate if estimate is not None else _estimate(left))
         out["background"] = state is not None
     return out
 
@@ -557,6 +558,7 @@ def cmd_status(args) -> int:
     reader = background.state(index)
     reading = None if reader is None else {
         "folder": reader.current, "read": reader.done, "files": reader.total, "queued": reader.queued,
+        "about_seconds_left": None if reader.seconds_left() is None else round(reader.seconds_left()),
     }
     times = index.read_times()
     if args.json:
@@ -566,6 +568,8 @@ def cmd_status(args) -> int:
     print(f"index: {index.path}")
     if reader is not None:
         where = f"{reader.current}: {reader.done}/{reader.total} files" if reader.current else "starting"
+        if reader.current and reader.seconds_left() is not None and reader.done < reader.total:
+            where += f", about {duration(reader.seconds_left())} left"
         print(f"reading in the background: {where}" + (f", then {len(reader.queued)} more folder(s)" if reader.queued else "")
               + " (docwhere index --stop to stop it)")
     stale = []

@@ -39,17 +39,26 @@ class ReaderState:
     started: float
     queued: list[str]  # folders waiting, the current one excluded
     reading: list[tuple[str, float]] = field(default_factory=list)  # files being read and for how long
+    estimate: float | None = None  # seconds left in the current folder, as the reader last estimated
+    estimated_at: float | None = None
 
     def rate(self) -> float | None:
         """Files per second over this reader's current folder, once it has read a few."""
         elapsed = time.time() - self.started
         return self.done / elapsed if self.done >= 5 and elapsed > 0 else None
 
+    def seconds_left(self) -> float | None:
+        """Seconds until the current folder is read: the reader's estimate (see docwhere.eta),
+        counted down since it was made. None until it has one."""
+        if self.estimate is None or self.estimated_at is None:
+            return None
+        return max(0.0, self.estimate - (time.time() - self.estimated_at))
+
 
 def state(index: Index) -> ReaderState | None:
     """The running reader, or None."""
     row = index.db.execute(
-        "SELECT pid, heartbeat, started, current, done, total, reading FROM reader WHERE id = 1"
+        "SELECT pid, heartbeat, started, current, done, total, reading, seconds_left, estimated_at FROM reader WHERE id = 1"
     ).fetchone()
     if not _alive(row):
         return None
@@ -59,7 +68,7 @@ def state(index: Index) -> ReaderState | None:
     except (ValueError, TypeError):
         reading = []
     return ReaderState(row["pid"], row["current"], row["done"], row["total"], row["started"] or time.time(),
-                       [q for q in queued if q != row["current"]], reading)
+                       [q for q in queued if q != row["current"]], reading, row["seconds_left"], row["estimated_at"])
 
 
 def request(index: Index, root: Path) -> bool:
@@ -117,7 +126,8 @@ def serve(index: Index, timeout: float = FILE_TIMEOUT) -> int:
                 break
             with index.db:
                 index.db.execute(
-                "UPDATE reader SET current = ?, done = 0, total = 0, started = ?, reading = NULL WHERE id = 1",
+                "UPDATE reader SET current = ?, done = 0, total = 0, started = ?, reading = NULL, seconds_left = NULL"
+                " WHERE id = 1",
                 (job["path"], time.time()),
             )
             report = Reporter(f"reading {job['path']}", stream=log, live=False)
@@ -153,7 +163,8 @@ class _Progress:
             with self.index.db:
                 reading = json.dumps([[str(path), round(seconds, 1)] for path, seconds in p.reading], ensure_ascii=False)
                 self.index.db.execute(
-                    "UPDATE reader SET done = ?, total = ?, reading = ? WHERE id = 1", (p.done, p.total, reading)
+                    "UPDATE reader SET done = ?, total = ?, reading = ?, seconds_left = ?, estimated_at = ? WHERE id = 1",
+                    (p.done, p.total, reading, p.seconds_left, time.time()),
                 )
 
 

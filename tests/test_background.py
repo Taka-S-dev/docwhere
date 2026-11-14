@@ -101,7 +101,7 @@ def test_index_stop_and_status_report_the_reader(tmp_path, index, spawned, monke
     background.request(index, root)
     monkeypatch.setenv("DOCWHERE_DB", str(index.path))
     main(["status", "--json"])
-    assert json.loads(capsys.readouterr().out)["background"] == {"folder": None, "read": 0, "files": 0, "queued": [str(root)]}
+    assert json.loads(capsys.readouterr().out)["background"] == {"folder": None, "read": 0, "files": 0, "queued": [str(root)], "about_seconds_left": None}
     main(["index", "--stop"])
     assert "background reading stopped" in capsys.readouterr().out
     assert main(["index"]) == 2

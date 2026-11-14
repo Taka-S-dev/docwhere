@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from docwhere import workers as worker_pool
+from docwhere.eta import Estimate
 from docwhere.excludes import Matcher, normalize
 from docwhere.extractors import (
     EXTRACTOR_VERSION,
@@ -76,6 +77,7 @@ class SyncProgress:
     done: int
     total: int
     reading: list[tuple[Path, float]]  # files being read now, with the seconds spent so far
+    seconds_left: float | None = None  # estimated again at every step (see docwhere.eta)
 
 
 Progress = Callable[[SyncProgress], None]
@@ -157,6 +159,9 @@ class Index:
             db.execute("ALTER TABLE files ADD COLUMN sha256 TEXT")  # of the content that was read
         if "reading" not in {r["name"] for r in db.execute("PRAGMA table_info(reader)")}:
             db.execute("ALTER TABLE reader ADD COLUMN reading TEXT")  # files being read now, as JSON
+        if "seconds_left" not in {r["name"] for r in db.execute("PRAGMA table_info(reader)")}:
+            db.execute("ALTER TABLE reader ADD COLUMN seconds_left REAL")  # the reader's own estimate
+            db.execute("ALTER TABLE reader ADD COLUMN estimated_at REAL")  # and when it was made
         db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         return db
 
@@ -227,6 +232,9 @@ class Index:
         true (asked about every second) the reading stops with ``Stopped``; what was read is kept."""
         stats, todo = scan.stats, scan.todo
         done, reading, saved = 0, [], time.monotonic()
+        workers = _pool_size(todo, workers)
+        history = {ext: k["seconds"] / k["files"] for ext, k in self.read_times().items() if k["files"]} if todo else {}
+        estimate = Estimate([t[1] for t in todo], is_serial, workers, history)
 
         def tick(now_reading: list[tuple[str, float]] | None = None) -> None:
             nonlocal reading
@@ -235,11 +243,12 @@ class Index:
             if now_reading is not None:
                 reading = [(Path(p), s) for p, s in now_reading]
             if progress:
-                progress(SyncProgress(done, len(todo), reading))
+                progress(SyncProgress(done, len(todo), reading, estimate.seconds_left(reading)))
 
         outcomes = _extract_all(todo, workers, timeout, tick)
         try:
             for key, path, mtime, size, chunks, error, timed_out, seconds, digest in outcomes:
+                estimate.done(path, seconds)
                 if chunks is None:  # the same content as before: keep what was read
                     self._touch(key, path, mtime, seconds)
                     stats.unchanged += 1
@@ -588,6 +597,12 @@ def _comparable_hash(row: sqlite3.Row | None, size: int) -> str | None:
     return row["sha256"]
 
 
+def _pool_size(todo: list[tuple], workers: int | None) -> int:
+    """Readers working in parallel on the files that need no Office application."""
+    pooled = sum(not is_serial(t[1]) for t in todo)
+    return max(1, workers or min(MAX_WORKERS, os.cpu_count() or 1, -(-pooled // FILES_PER_WORKER)))
+
+
 def _extract_all(todo: list[tuple], workers: int | None, timeout: float, tick) -> Iterator[tuple]:
     """(key, path, mtime, size, chunks, error, timed_out, seconds, sha256) for every file in
     ``todo``; chunks is None when the content is what was read before."""
@@ -595,9 +610,7 @@ def _extract_all(todo: list[tuple], workers: int | None, timeout: float, tick) -
     tasks = [
         worker_pool.Task(str(item[1]), is_serial(item[1]), item, () if item[4] is None else (item[4],)) for item in todo
     ]
-    pooled = sum(not t.serial for t in tasks)
-    workers = workers or min(MAX_WORKERS, os.cpu_count() or 1, -(-pooled // FILES_PER_WORKER))
-    for out in worker_pool.run(tasks, job, max(1, workers), timeout, tick):
+    for out in worker_pool.run(tasks, job, _pool_size(todo, workers), timeout, tick):
         key, path, mtime, size, _ = out.task.data
         if out.failure:
             yield key, path, mtime, size, [], out.failure, out.timed_out, out.seconds, None
