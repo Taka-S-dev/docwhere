@@ -153,3 +153,19 @@ def test_a_copy_is_saved_without_the_personal_information_warning():
             raise pywintypes.com_error(-2147352567, "no such property", None, None)
 
     keep_personal_information(Refuses())  # an Office without the setting: nothing to turn off
+
+
+def test_the_users_own_powerpoint_is_never_quit(monkeypatch):
+    quit_called = []
+
+    class App:
+        def __init__(self, name):
+            self.name = name
+
+        def Quit(self):
+            quit_called.append(self.name)
+
+    monkeypatch.setattr(legacy_module, "_apps", {"PowerPoint.Application": App("ppt"), "Word.Application": App("word")})
+    monkeypatch.setattr(legacy_module, "_shared", {"PowerPoint.Application"})  # it was running before docwhere asked
+    legacy_module._quit_all()
+    assert quit_called == ["word"] and legacy_module._apps == {}

@@ -23,6 +23,7 @@ SLIDE_EXTS = {".pptx", ".pptm", ".ppt"}
 RENDITION_RETENTION = {"min_keep": 5, "max_keep": 100, "max_age": 30 * 24 * 3600, "max_bytes": 500 * 1024 * 1024}
 EXCERPT_RETENTION = {"min_keep": 10, "max_keep": 200, "max_age": 7 * 24 * 3600, "max_bytes": 300 * 1024 * 1024}
 EXPORT_PATTERN = "[0-9a-f]*.pdf"  # exports are named by a hex digest; excerpts live in excerpts/
+EXPORT_TIMEOUT = 120  # seconds Office may take over one export before it is stopped with its process
 
 
 def _touch(path: Path) -> Path:
@@ -48,15 +49,34 @@ def as_pdf(path: str, cache: Path) -> Path | None:
     if out.exists():
         return _touch(out)
     cache.mkdir(parents=True, exist_ok=True)
-    try:
-        _export(src, out, ext)
-    except Exception:
+    if not _export_apart(src, out, ext) or not out.exists():
         out.unlink(missing_ok=True)
-        return None  # no Office, or the file would not open
+        return None  # no Office, the file would not open, or Office stopped answering
     from docwhere.viewer import prune
 
     prune(cache, EXPORT_PATTERN, **RENDITION_RETENTION)
     return out if out.exists() else None
+
+
+def _export_apart(src: Path, out: Path, ext: str) -> bool:
+    """Export in a worker process of its own, as files are read (see docwhere.workers): Office
+    is stopped with the worker at the timeout or when this process ends, and a process that
+    lives on, such as the index window, never keeps an Office instance between calls."""
+    from docwhere import workers
+
+    for outcome in workers.run([workers.Task(str(src), True, None, (str(out), ext))], _export_job, 1, EXPORT_TIMEOUT):
+        return outcome.failure is None and bool(outcome.result)
+    return False
+
+
+def _export_job(path: str, out: str, ext: str) -> bool:
+    """The worker's half of ``_export_apart``. False when Office could not export the file."""
+    try:
+        _export(Path(path), Path(out), ext)
+    except Exception:
+        Path(out).unlink(missing_ok=True)
+        return False
+    return True
 
 
 def _export(src: Path, out: Path, ext: str) -> None:

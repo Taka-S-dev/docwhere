@@ -34,6 +34,7 @@ _FORCE_DISABLE_MACROS = 3  # msoAutomationSecurityForceDisable
 # for, though an application that still asks is stopped at the timeout.
 _DUMMY_PASSWORD = "docwhere"
 _apps: dict[str, object] = {}
+_shared: set[str] = set()  # applications that were running before: never quit, they may hold the user's files
 
 
 def _app(progid: str):
@@ -46,6 +47,8 @@ def _app(progid: str):
         pythoncom.CoInitialize()
         before = _running(_IMAGES[progid])
         app = win32com.client.DispatchEx(progid)  # a private instance, never the user's open one
+        if progid == "PowerPoint.Application" and before:
+            _shared.add(progid)  # PowerPoint has one instance per user: this is the user's own
         if pid := _pid(app, progid, before):
             process_started(pid)
         app.AutomationSecurity = _FORCE_DISABLE_MACROS
@@ -111,12 +114,15 @@ def _running(image: str) -> set[int]:
 @on_release
 @atexit.register
 def _quit_all() -> None:
-    for app in _apps.values():
+    for progid, app in _apps.items():
+        if progid in _shared:
+            continue  # the user's PowerPoint: our presentations are closed already, theirs stay open
         try:
             app.Quit()
         except Exception:
             pass  # already gone
     _apps.clear()
+    _shared.clear()
 
 
 def keep_personal_information(document) -> None:

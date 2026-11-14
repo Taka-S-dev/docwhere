@@ -110,3 +110,32 @@ def test_a_file_that_needs_the_application_is_handed_to_its_worker():
     assert outcomes["app.xls"].task.serial and outcomes["app2.xls"].task.serial
     assert pids["app.xls"] == pids["app2.xls"]  # one application worker, kept for both
     assert pids["app.xls"] not in (pids["a.xls"], pids["b.xls"])
+
+
+
+def test_what_a_reader_started_ends_with_it_even_when_it_is_killed():
+    if sys.platform != "win32":
+        return  # Windows jobs
+    import win32api
+    import win32con
+    import win32event
+
+    parent = subprocess.Popen(
+        [sys.executable, "-c", (
+            "import subprocess, sys, time\n"
+            "from docwhere.workers import adopt\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            "print(child.pid, adopt(child.pid), flush=True)\n"
+            "time.sleep(120)\n")],
+        stdout=subprocess.PIPE, text=True)
+    pid, adopted = parent.stdout.readline().split()
+    child = win32api.OpenProcess(win32con.SYNCHRONIZE | win32con.PROCESS_TERMINATE, False, int(pid))
+    try:
+        assert adopted == "True"
+        parent.kill()  # as Task Manager would: no clean-up runs in it
+        parent.wait(10)
+        assert win32event.WaitForSingleObject(child, 10_000) == win32event.WAIT_OBJECT_0  # gone with it
+    finally:
+        if win32event.WaitForSingleObject(child, 0) == win32event.WAIT_TIMEOUT:
+            win32api.TerminateProcess(child, 1)
+        win32api.CloseHandle(child)

@@ -7,6 +7,10 @@ reported as timed out; a new worker takes the next file. Files whose reader driv
 application go to one worker of their own, which keeps the application open between files.
 A pooled worker whose reader finds that a file needs the application hands the file on to
 that worker.
+
+The workers and the Word and Excel instances they start are put in a Windows job that ends
+them when this process ends, however it ends: a reader killed from Task Manager would otherwise
+leave hidden Office instances running, which Office brings back on screen at its next update.
 """
 
 from __future__ import annotations
@@ -23,6 +27,55 @@ from typing import Any
 
 TICK = 1.0  # seconds between reports while files are being read
 STOP_GRACE = 30  # seconds a worker gets to close its application after the last file
+# PowerPoint runs one instance per user, which may hold the user's own presentations: never tied
+# to this process's life
+NOT_ADOPTED = ("powerpnt.exe",)
+_job = None
+
+
+def _the_job():
+    """This process's job (created once): everything put in it ends when the process does."""
+    global _job
+    if _job is None:
+        try:
+            import win32job
+        except ImportError:
+            _job = False  # not on Windows
+            return _job
+        job = win32job.CreateJobObject(None, "")
+        info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
+        info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, info)
+        _job = job  # kept open for the process's life: Windows closes it, ending the members, at exit
+    return _job
+
+
+def adopt(pid: int) -> bool:
+    """End process ``pid`` together with this one. False when it could not be (not Windows,
+    PowerPoint, or a process that refused)."""
+    job = _the_job()
+    if not job:
+        return False
+    import pywintypes
+    import win32api
+    import win32con
+    import win32job
+    import win32process
+
+    try:
+        handle = win32api.OpenProcess(
+            win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE | win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    except pywintypes.error:
+        return False  # gone, or not ours
+    try:
+        if win32process.GetModuleFileNameEx(handle, None).lower().endswith(NOT_ADOPTED):
+            return False
+        win32job.AssignProcessToJobObject(job, handle)
+        return True
+    except pywintypes.error:
+        return False
+    finally:
+        win32api.CloseHandle(handle)
 
 Job = Callable[[str], Any]
 
@@ -80,6 +133,7 @@ class _Worker:
         self.conn, child = ctx.Pipe()
         self.proc = ctx.Process(target=_serve, args=(child, self.job, self.serial), daemon=True)
         self.proc.start()
+        adopt(self.proc.pid)
         child.close()
 
     def give(self, task: Task) -> None:
@@ -157,6 +211,7 @@ def run(
                     continue
                 if kind == "pid":
                     w.apps.add(value)
+                    adopt(value)
                 elif kind == "serial":
                     task, w.task = w.task, None
                     queues[True].append(Task(task.path, True, task.data, task.args))

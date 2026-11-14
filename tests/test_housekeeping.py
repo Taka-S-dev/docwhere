@@ -9,7 +9,7 @@ def test_reused_export_counts_as_recently_used(tmp_path, monkeypatch):
     doc = tmp_path / "spec.docx"
     doc.write_bytes(b"x")
     made = []
-    monkeypatch.setattr(rendition, "_export", lambda src, out, ext: made.append(out) or out.write_bytes(b"%PDF"))
+    monkeypatch.setattr(rendition, "_export_apart", lambda src, out, ext: made.append(out) or bool(out.write_bytes(b"%PDF")))
     cache = tmp_path / "renditions"
     first = rendition.as_pdf(str(doc), cache)
     old = time.time() - 20 * 86400
