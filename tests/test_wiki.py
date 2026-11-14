@@ -382,3 +382,11 @@ def test_space_list_requests_are_bounded(monkeypatch):
     monkeypatch.setattr(module, "get", get)
     assert Confluence("http://wiki.example", []).space_list() == [("A", "A")]
     assert calls.count("/rest/api/space") == module.MAX_SPACES // module.SPACE_PAGE
+
+
+def test_a_wiki_is_not_added_where_it_would_be_ignored(tmp_path, monkeypatch):
+    from docwhere.wiki import registry
+
+    monkeypatch.setattr(registry, "private", lambda folder: False)
+    with pytest.raises(WikiError, match="no one else can write"):
+        registry.add_wiki(tmp_path / "index.db", "社内", "confluence", "http://wiki.example.invalid/", [])

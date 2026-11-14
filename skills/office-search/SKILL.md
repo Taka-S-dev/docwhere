@@ -252,8 +252,11 @@ Before running any `docwhere wiki` command, read `references/wiki.md` (adding a 
 searching, showing a page, errors).
 
 - When to search it: the notes map has a `wiki:` row whose kind or note fits the question, the
-  user mentions the wiki, or the local search comes up short and a wiki is added. In thorough
-  mode search both and merge.
+  user mentions the wiki, or the local search comes up short and a wiki is added (the search
+  JSON's `wikis` names those added on this PC). In thorough mode search both and merge.
+- When the user gives a wiki's address, add it in the same turn (`references/wiki.md`) and tell
+  them it is saved on this PC, so later sessions here search it too; another PC needs it added
+  there. An address only kept in the conversation is gone in the next session.
 
 ## Limits
 

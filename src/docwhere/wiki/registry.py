@@ -5,7 +5,7 @@ from __future__ import annotations
 import urllib.parse
 from pathlib import Path
 
-from docwhere.settings import load_settings, save_settings
+from docwhere.settings import load_settings, private, save_settings
 from docwhere.wiki.core import WikiError
 
 KINDS = ("confluence",)
@@ -33,6 +33,9 @@ def add_wiki(db: Path, name: str, kind: str, url: str, spaces: list[str]) -> dic
     name = name.strip()
     if not name:
         raise WikiError("a wiki needs a name")
+    if not private(db.parent):
+        # load_settings ignores settings others could have planted, so the wiki would be lost
+        raise WikiError(f"wikis are kept only in an index folder no one else can write to; {db.parent} is not one")
     entry = {"name": name, "kind": kind, "url": checked_url(url), "spaces": [s.strip() for s in spaces if s.strip()]}
     save_settings(db, wikis=[w for w in wikis(db) if w["name"] != name] + [entry])
     return entry

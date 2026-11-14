@@ -245,6 +245,8 @@ def cmd_search(args) -> int:
             ],
             "unreadable": [{"path": p, "error": e} for p, e in unreadable[:MAX_UNREADABLE_LISTED]],
             "unreadable_count": len(unreadable),
+            # wikis added on this PC: a session that did not add them learns here that they exist
+            "wikis": _wiki_names(index.path),
             "next": HINT,
         }
         print(json.dumps(out, ensure_ascii=False, indent=1))
@@ -271,7 +273,15 @@ def cmd_search(args) -> int:
               " search without --keep-changed to read them again", file=sys.stderr)
     if reading["complete"] is False:
         print("\n" + _not_finished(reading), file=sys.stderr)
+    if names := _wiki_names(index.path):
+        print(f"also added: wiki {', '.join(names)}; search it with: docwhere wiki search", file=sys.stderr)
     return 0
+
+
+def _wiki_names(db: Path) -> list[str]:
+    from docwhere.wiki.registry import wikis
+
+    return [w["name"] for w in wikis(db)]
 
 
 def _estimate(todo: list[tuple]) -> float:

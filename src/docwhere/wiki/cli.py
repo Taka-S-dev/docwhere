@@ -123,10 +123,13 @@ def _wiki_command(fn):
 
 @_wiki_command
 def cmd_wiki_add(args) -> int:
+    from docwhere.settings import settings_path
     from docwhere.wiki.registry import add_wiki
 
     entry = add_wiki(_wiki_db(args), args.name, args.kind, args.url, args.space)
     print(f"added {entry['name']}: {entry['url']}" + (f" (spaces: {', '.join(entry['spaces'])})" if entry["spaces"] else ""))
+    print(f"saved in {settings_path(_wiki_db(args))}: every later session on this PC can search it;"
+          " another PC needs its own docwhere wiki add")
     print(f"next: docwhere wiki check {entry['name']} --term WORD")
     return 0
 

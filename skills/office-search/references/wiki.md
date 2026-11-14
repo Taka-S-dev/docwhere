@@ -12,6 +12,7 @@ name the user gave it) in answers, not the product name.
   `docwhere wiki add NAME URL [--space KEY]` yourself, followed by
   `docwhere wiki check NAME --term <a Japanese word their pages surely contain>` and
   `docwhere wiki spaces NAME`. Never guess or reuse an address the user did not give.
+  Tell the user it is saved on this PC (the `saved in` line), not only in this conversation.
   Report each check line in plain words; on a FAIL, say what it means and what to try
   (wrong address, the network, a login the wiki asks for). Then offer `wiki:` rows for the
   notes map from the space list (see Drafting the map in `references/notes.md`).
