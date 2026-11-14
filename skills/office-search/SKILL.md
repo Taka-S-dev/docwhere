@@ -158,6 +158,9 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    - A "where" question: file name, section heading (and page / slide / cell when present),
      a short quote supporting it, then the answer. Mention the runner-up document when two
      documents both cover it, and say which one is current when they disagree.
+   - Every answer names its source in the chat text itself: the file name and section (page,
+     slide or cell when present), even when the viewer shows them, and even in quick mode. The
+     viewer is closed later; the chat is what the user scrolls back to.
    - In quick mode keep it to a few lines.
 
 5. **Report what could not be searched.** The JSON's `unreadable` lists every file in the
