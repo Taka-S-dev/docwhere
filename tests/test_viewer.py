@@ -55,6 +55,25 @@ def test_answer_quote_is_marked_above_the_terms(docs, tmp_path, capsys, monkeypa
     assert "設定を検証するコマンド &lt;b&gt;" in page  # the answer is escaped like document text
 
 
+def test_view_by_section_id_does_not_follow_a_later_search(docs, tmp_path, capsys, monkeypatch):
+    hit = next(h for h in _search(docs, tmp_path, capsys, monkeypatch, "config") if h["path"].endswith(".pdf"))
+    _search(docs, tmp_path, capsys, monkeypatch, "deploy")  # another search runs meanwhile
+    page = _view(capsys, "--id", str(hit["id"]), "--term", "config")
+    assert page.count('<article class="hit"') == 1
+    assert "<mark>config</mark>" in page and Path(hit["path"]).name in page
+    assert main(["view", "--no-open", "--id", "999999"]) != 0
+    assert "no section with id 999999" in capsys.readouterr().err
+
+
+def test_view_says_which_quotes_were_found(docs, tmp_path, capsys, monkeypatch):
+    _search(docs, tmp_path, capsys, monkeypatch, "config")
+    assert main(["view", "--no-open", "--quote", "config は設定ファイルを読み込み、値を検証する。",
+                 "--quote", "どこにも書いていない文"]) == 0
+    out = capsys.readouterr()
+    assert Path(out.out.strip()).exists()  # stdout is still the path alone
+    assert "quotes found: 1/2" in out.err and "not found: どこにも書いていない文" in out.err
+
+
 def test_pdf_quote_is_found_across_width_and_line_differences(tmp_path):
     import pymupdf
 

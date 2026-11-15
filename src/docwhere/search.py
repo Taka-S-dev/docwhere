@@ -191,6 +191,20 @@ def _hits(scored: list[tuple], newer: dict, limit: int, per_file: int, found: di
     return hits
 
 
+def section_hit(row, terms: list[str], n: int) -> Hit:
+    """A hit for the section ``row`` (from ``Index.chunk_with_neighbors``) with ``terms`` marked,
+    for a section named by its id rather than found by the last search."""
+    terms = terms or [row["title"] or Path(row["path"]).stem]
+    snippet, anchor = locate_snippet(row, terms)
+    try:
+        modified = time.strftime("%Y-%m-%d", time.localtime(os.stat(row["path"]).st_mtime))
+    except OSError:
+        modified = ""
+    return Hit(n=n, path=row["path"], title=row["title"], crumb=row["crumb"], location=location_label(anchor),
+               snippet=snippet, score=0.0, terms=terms, modified=modified, newer_version=None, anchor=anchor,
+               chunk_id=row["id"])
+
+
 def _folded(words) -> list[str]:
     return [w.lower() for w in (norm(x) for x in words) if w]
 

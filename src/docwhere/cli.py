@@ -101,6 +101,9 @@ def _parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("view", help="open the last search's hits as one HTML page: excerpts, and PDF pages as images")
     p.add_argument("n", type=int, nargs="*", help="only these hit numbers (default: all)")
+    p.add_argument("--id", type=int, action="append", default=[], help="section id from search --json instead of hit "
+                   "numbers, repeatable; safe when several searches run at once (with --term to highlight)")
+    p.add_argument("--term", action="append", default=[], help="term to highlight, repeatable (with --id)")
     p.add_argument("-C", "--context", type=int, default=1, help="neighbouring sections to include, collapsed (default 1)")
     _view_options(p)
     p.add_argument("--no-open", action="store_true", help="write the page and print its path only")
@@ -492,10 +495,24 @@ def cmd_open(args) -> int:
 
 
 def cmd_view(args) -> int:
+    from docwhere.search import section_hit
+
     index = Index(args.db)
-    last = _last_search(index)
-    hits = [_last_hit(index, n) for n in args.n] if args.n else last["hits"]
-    print(_write_view(index, last["terms"], hits, args.context, args, open_it=not args.no_open, reading=last.get("reading")))
+    if args.id:
+        if args.n:
+            raise LookupError("give hit numbers or --id, not both")
+        hits = []
+        for chunk_id in args.id:
+            rows = index.chunk_with_neighbors(chunk_id)
+            if not rows:
+                raise LookupError(f"no section with id {chunk_id}; search again")
+            hits.append(section_hit(rows[0], args.term, len(hits) + 1).to_dict())
+        terms, reading = args.term or sorted({t for h in hits for t in h["terms"]}), None
+    else:
+        last = _last_search(index)
+        hits = [_last_hit(index, n) for n in args.n] if args.n else last["hits"]
+        terms, reading = last["terms"], last.get("reading")
+    print(_write_view(index, terms, hits, args.context, args, open_it=not args.no_open, reading=reading))
     return 0
 
 
@@ -779,13 +796,21 @@ def _write_view(
     much of the folders the search saw, so the page says when it was not everything."""
     from docwhere.viewer import build_html
 
-    return show_page(
+    found: list = []
+    out = show_page(
         index.path,
         lambda in_window: build_html(index, terms, hits, context, options.pages, options.quote, options.answer,
                                      options.title, cut_excerpts=not in_window, reading=reading,
-                                     steps=getattr(options, "steps", None)),
+                                     steps=getattr(options, "steps", None), found=found),
         options.title or " ".join(terms), options, open_it,
     )
+    # on stderr, so stdout stays the page's path alone
+    for kind in ("quote", "figure"):
+        given = [(text, ok) for k, text, ok in found if k == kind]
+        if given:
+            missing = "".join(f"\n  not found: {text}" for text, ok in given if not ok)
+            print(f"{kind}s found: {sum(ok for _, ok in given)}/{len(given)}{missing}", file=sys.stderr)
+    return out
 
 
 def _sync(index: Index, root: Path, **options) -> SyncStats:

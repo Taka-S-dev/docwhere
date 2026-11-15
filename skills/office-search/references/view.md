@@ -7,7 +7,8 @@ Read this before running `docwhere view` or `search --view`, or `wiki view`.
   hit's section (terms marked, the hit line flagged, neighbouring sections collapsed), PDF
   pages as images, and a link to the original. The page stays on this machine; it has no
   scripts and loads nothing from the network. `docwhere view 1 3` shows only some hits of
-  the last search.
+  the last search; `docwhere view --id 412 --id 415 --term タイムアウト` shows sections by
+  the hits' "id" from the JSON, which stays right when another search ran in between.
 - Once you know the answer, mark it: pass the sentence that states it, copied from the
   snippet or section, as `--quote "..."` (repeatable), and your one-line answer as
   `--answer "..."`. The quote gets an orange frame on the PDF page and bold marking in the
@@ -17,7 +18,9 @@ Read this before running `docwhere view` or `search --view`, or `wiki view`.
   When the answer rests on several places (two pages, two documents), pass one `--quote`
   per place: each becomes its own piece of evidence with its source, page and close-up,
   found anywhere in the shown files, and its page is added to that file's pages. A quote
-  that cannot be found is shown as such — fix its wording rather than leave it.
+  that cannot be found is shown as such — fix its wording rather than leave it. The command
+  says so too: stdout is the page's path, and stderr reads "quotes found: 2/2", or lists each
+  quote it could not find under "not found:"; there is no need to search the HTML.
 - When the answer takes more than one place to reach — a value on one page and its
   condition on another, a table that refers to a figure, two documents read together —
   show how they connect: follow each `--quote` (or `--figure`) with `--note "<what this

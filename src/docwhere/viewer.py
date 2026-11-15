@@ -256,8 +256,12 @@ def build_html(
     cut_excerpts: bool = True,
     reading: dict | None = None,
     steps: list[tuple[str, str, str]] | None = None,
+    found: list | None = None,
 ) -> str:
-    """With ``cut_excerpts`` off (the page will be read in the docwhere window, which turns pages
+    """``found``, when given, is filled with (kind, text, whether it was found) for each piece of
+    evidence, so the caller can say which quotes or figures are not on the page.
+
+    With ``cut_excerpts`` off (the page will be read in the docwhere window, which turns pages
     itself) PDF links point at the whole file and no excerpt is cut.
 
     ``quotes`` are the sentences that answer the question and ``answer`` a one-line summary,
@@ -301,6 +305,8 @@ def build_html(
         ev = _locate(index, text, hits, cards_by_path) if kind == "quote" else _locate_figure(text, hits, cards_by_path)
         ev["note"] = note
         evidence.append(ev)
+        if found is not None:
+            found.append((kind, text, ev["hit"] is not None))
         if ev.get("rect") and ev["hit"] is not None:
             circles.setdefault((ev["hit"]["pdf"], ev["page"]), []).append(ev["rect"])
     evidence_pages: dict[int, set[int]] = {}
