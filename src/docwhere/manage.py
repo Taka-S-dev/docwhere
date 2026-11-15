@@ -1055,6 +1055,14 @@ html { scrollbar-gutter: stable; }
 .search-note span { display: block; }
 /* too narrow for two columns: a pane below thirty results is never seen, so Enter's reading page stands in */
 @media (max-width: 900px) { .search-body { grid-template-columns: minmax(0, 1fr); } .preview { display: none; } }
+/* fitted to the window: the list and the pane scroll on their own, so the box above stays in view
+   and the chosen section can be brought to the top of the pane (fitPanes sets the height) */
+.search-fit .wrap { padding-bottom: 16px; }
+.search-body.fit { height: var(--pane-h); align-items: stretch; }
+.search-body.fit > * { min-height: 0; }
+.search-body.fit .search-list { display: flex; flex-direction: column; }
+.search-body.fit .results { flex: 0 1 auto; min-height: 0; overflow: auto; }
+.search-body.fit .preview { position: relative; top: auto; max-height: none; }
 .search-more { margin: 12px 0 0; }
 .search-tips p { max-width: 640px; margin: 0 auto 8px; color: var(--muted); }
 .search-tips p.empty-title { color: var(--ink); }
@@ -1306,6 +1314,11 @@ MANAGE_JS = r"""(() => {
   };
 
   const base = (p) => String(p).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || String(p);
+  // the two folders a file lies in: what tells hits apart in a list (the full path is the title)
+  const nearDir = (p) => {
+    const parts = String(p).split(/[\\/]/).filter(Boolean).slice(0, -1);
+    return parts.length > 2 ? `…\\${parts.slice(-2).join("\\")}` : parts.join("\\");
+  };
   const keyOf = (p) => String(p).replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
   const ago = (t, now) => {
     if (!t) return "未更新";
@@ -2228,7 +2241,7 @@ MANAGE_JS = r"""(() => {
         : [h("p", { class: "pv-loading", text: p.note || "この結果には本文がありません（ファイル名で見つけたもの）。ファイルを開いて見てください。" })];
       put(pane, head, body);
       const current = pane.querySelector(".pv-sec.current");
-      if (current) pane.scrollTop = current.offsetTop - head.offsetHeight - 12;
+      if (current) pane.scrollTop += current.getBoundingClientRect().top - pane.getBoundingClientRect().top - head.offsetHeight - 12;
     }).catch((e) => { if (mine === previewSeq) put(pane, head, h("p", { class: "pv-loading", text: `表示できませんでした: ${reason(e)}` })); }), 120);
   };
 
@@ -2281,15 +2294,37 @@ MANAGE_JS = r"""(() => {
         h("div", { class: "r-head" }, h("span", { class: "r-name", text: name, title: hit.path }),
           h("span", { class: "r-where", text: [heading, hit.location].filter(Boolean).join("　") })),
         h("p", { class: "r-snippet" }, markTerms(hit.snippet, terms.concat(hit.terms))),
-        h("span", { class: "r-path", text: `${shortPath(hit.path)}　${hit.modified}` }),
+        // the name is in bold above: the date first, so it is never the part cut off, then the folder
+        h("span", { class: "r-path", text: `${hit.modified}　${nearDir(hit.path)}`, title: hit.path }),
         hit.newer_version ? h("span", { class: "r-flag", text: `新しい版があります: ${base(hit.newer_version)}` }) : null);
       item.addEventListener("click", () => selectHit(i, false));
       item.addEventListener("dblclick", () => (hit.chunk_id ? viewHits([hit.n]) : openFile(hit.n)));
       return item;
     }));
     $("#search-more").hidden = hits.filter((x) => x.chunk_id).length < 2;
+    fitPanes();
     renderPreview();
   };
+
+  // the list and the pane take the rest of the window's height; a window too short or too narrow
+  // for that scrolls as a whole page instead
+  const fitPanes = () => {
+    const body = $("#search-body");
+    const fit = tab === "search" && !body.hidden && innerWidth > 900;
+    document.body.classList.toggle("search-fit", fit);
+    body.classList.remove("fit");
+    if (!fit) return;
+    const height = innerHeight - (body.getBoundingClientRect().top + scrollY) - 16;
+    if (height < 320) { document.body.classList.remove("search-fit"); return; }
+    body.style.setProperty("--pane-h", `${height}px`);
+    body.classList.add("fit");
+    const over = document.documentElement.scrollHeight - innerHeight;  // whatever lies below still showing
+    if (over > 0) body.style.setProperty("--pane-h", `${Math.max(320, height - over)}px`);
+  };
+  addEventListener("resize", fitPanes);
+  // the note and the narrowing buttons above change height as results come and go
+  const aboveObserver = new ResizeObserver(() => fitPanes());
+  for (const id of ["#search-bar-box", "#search-note", "#facets"]) aboveObserver.observe($(id));
   q.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => runSearch(false), 250); });
   scopeSel.addEventListener("change", () => runSearch(false));
   Object.values(switches).forEach((box) => box.addEventListener("change", () => runSearch(false)));
@@ -2327,6 +2362,7 @@ MANAGE_JS = r"""(() => {
     }
     if (name === "map") loadMap(false);
     if (name === "search") { fillScopes(); q.focus(); }
+    fitPanes();
     try { history.replaceState(null, "", `#${name}`); } catch (e) { /* the hash only remembers the tab */ }
   };
   window.__docwhereTab = showTab;
