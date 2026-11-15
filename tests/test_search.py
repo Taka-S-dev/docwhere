@@ -210,3 +210,14 @@ def test_a_later_page_of_a_section_does_not_take_its_heading_again():
     later = {**first, "continued": 1}  # the next page, under the same bookmark
     assert score_row(first, ["操作ログ"])[0] - score_row(later, ["操作ログ"])[0] == W_TITLE
     assert score_row({k: v for k, v in first.items() if k != "continued"}, ["操作ログ"]) == score_row(first, ["操作ログ"])  # a wiki row
+
+
+def test_a_file_over_the_size_limit_is_listed_as_unreadable_not_skipped_unseen(docs, index, monkeypatch):
+    import docwhere.index as index_module
+
+    monkeypatch.setattr(index_module, "MAX_FILE_BYTES", 1024)
+    (docs / "huge.txt").write_text("config " * 400, encoding="utf-8")  # 2.8 KB, over the limit set here
+    index.sync(docs)
+    errors = dict(index.errors([docs]))
+    assert "too large to read" in errors[str(docs / "huge.txt")]
+    assert all(not h.path.endswith("huge.txt") for h in search(index, [docs], ["config"], limit=50))

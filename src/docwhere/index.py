@@ -237,6 +237,14 @@ class Index:
         """The slow half of a sync: read the files ``scan`` found. When ``should_stop`` returns
         true (asked about every second) the reading stops with ``Stopped``; what was read is kept."""
         stats, todo = scan.stats, scan.todo
+        # too large to read: not read at all, but listed with the unreadable files, so a search
+        # that misses what is in one says so instead of passing over it unseen
+        for key, path, mtime, size, _ in (t for t in todo if t[3] > MAX_FILE_BYTES):
+            self._store(key, path, mtime, size, [], f"too large to read: {size >> 20} MB"
+                        f" (files over {MAX_FILE_BYTES >> 20} MB are not read)")
+            stats.updated += 1
+            stats.failed += 1
+        todo = [t for t in todo if t[3] <= MAX_FILE_BYTES]
         done, reading, saved = 0, [], time.monotonic()
         workers = _pool_size(todo, workers)
         history = {ext: k["seconds"] / k["files"] for ext, k in self.read_times().items() if k["files"]} if todo else {}
@@ -639,7 +647,8 @@ def _current(row: sqlite3.Row | None, mtime: int, size: int) -> bool:
 
 
 def _walk(root: Path, matcher: Matcher, hits: dict) -> Iterator[tuple[Path, os.stat_result]]:
-    """Readable files under ``root``. ``hits`` counts, per (folder, pattern) rule, the folders
+    """Files of a readable kind under ``root``, too large ones included: they are recorded as
+    unreadable, not passed over unseen. ``hits`` counts, per (folder, pattern) rule, the folders
     and files it left out; a left-out folder is not entered, so its contents are not counted."""
     exts = supported_extensions()
 
@@ -663,8 +672,7 @@ def _walk(root: Path, matcher: Matcher, hits: dict) -> Iterator[tuple[Path, os.s
                 st = path.stat()
             except OSError:
                 continue
-            if st.st_size <= MAX_FILE_BYTES:
-                yield path, st
+            yield path, st
 
 
 def _extract_job(path: str, previous: str | None = None) -> tuple[list[Chunk] | None, str | None, str | None, str | None]:
