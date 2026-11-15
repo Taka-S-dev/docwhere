@@ -146,6 +146,42 @@ def indexed_roots(db: Path) -> list[str]:
         index.close()
 
 
+HEADING_MODES = ("all", "last", "none")  # the headings above a copied page: every level, the nearest, none
+PAGE_MODES = ("pdf", "print", "both")  # its number as counted in the PDF, as printed on it, or both
+
+
+def copy_options(db: Path) -> dict:
+    """What is written under a copied picture, as last chosen."""
+    saved = load_settings(db)
+    return {
+        "copy_caption": copy_caption(db),
+        "cite_path": cite_mode(db),
+        "cite_heading": saved.get("cite_heading") if saved.get("cite_heading") in HEADING_MODES else "all",
+        "cite_page": saved.get("cite_page") if saved.get("cite_page") in PAGE_MODES else "both",
+    }
+
+
+def save_copy_options(db: Path, values: dict) -> None:
+    """Save the copy options given, each only when it is one of its choices."""
+    changes = {}
+    if "copy_caption" in values:
+        changes["copy_caption"] = bool(values["copy_caption"])
+    for key, choices in (("cite_path", CITE_MODES), ("cite_heading", HEADING_MODES), ("cite_page", PAGE_MODES)):
+        if values.get(key) in choices:
+            changes[key] = values[key]
+    if changes:
+        save_settings(db, **changes)
+
+
+def picture_caption(name: str, trail: list[str], page: int, printed: int | None, options: dict) -> str:
+    """The source under a copied picture: the file, the headings in 「」, then the page."""
+    headings = {"all": " > ".join(trail), "last": trail[-1] if trail else "", "none": ""}[options["cite_heading"]]
+    printed = int(printed) if printed else None
+    number = {"pdf": f"p.{page}", "print": f"p.{printed or page}",
+              "both": f"p.{page}（印刷 {printed}）" if printed and printed != page else f"p.{page}"}[options["cite_page"]]
+    return f"{name}{f'「{headings}」' if headings else ''} {number}"[:400]
+
+
 def copy_caption(db: Path) -> bool:
     """Whether a copied page carries its source under it (on unless turned off in the settings)."""
     return load_settings(db).get("copy_caption") is not False
@@ -227,10 +263,7 @@ def save_settings_values(db: Path, values: dict) -> None:
     set_pdf_app(db, command)
     set_title(db, str(values.get("title") or "")[:80])
     set_mode(db, viewer)
-    if "copy_caption" in values:  # a dialog of an older page does not have the switch
-        save_settings(db, copy_caption=bool(values["copy_caption"]))
-    if values.get("cite_path") in CITE_MODES:
-        save_settings(db, cite_path=values["cite_path"])
+    save_copy_options(db, values)  # a dialog of an older page has none of them: none is changed
 
 
 def try_pdf_app(pdf: str, page: int, program: str, args: str) -> str:
@@ -495,20 +528,34 @@ class Api:
         return _data_uri(data)
 
     @bridge_method
-    def copy_page(self, pdf: str, page: int, terms: list, quotes: list, region: list | None, source: str, where: str) -> str:
+    def copy_page(self, pdf: str, page: int, terms: list, quotes: list, region: list | None, source: str,
+                  trail: list, printed: int | None) -> str:
         """Put the page (or ``region`` of it: [x0, y0, x1, y1] as fractions of its width and
         height) on the clipboard as a picture, with the terms marked as shown, and its source
-        written under it unless the settings say not to: ``source`` (the file the page is from,
-        a Word file for its PDF export) named as the settings say, then ``where`` (heading, page)."""
+        written under it as the copy options say (``copy_options``): ``source`` (the file the page
+        is from, a Word file for its PDF export), the headings above the page (``trail``, outer
+        first) and its number, as counted in the PDF and as ``printed`` on it."""
         from docwhere.viewer import render_page
 
         allowed(self._db, pdf, renditions=True, pdf_only=True)
         with self._pdf_lock:
             data = render_page(pdf, int(page), _texts(terms), COPY_DPI, "png", _texts(quotes), source=self._open_pdf(pdf))
-        caption = f"{cite_name(str(source or pdf), cite_mode(self._db), indexed_roots(self._db))}{where or ''!s}"[:400]
-        png, dib, size = page_picture(data, region, caption if copy_caption(self._db) else "")
+        options = copy_options(self._db)
+        name = cite_name(str(source or pdf), options["cite_path"], indexed_roots(self._db))
+        caption = picture_caption(name, _texts(trail), int(page), printed, options)
+        png, dib, size = page_picture(data, region, caption if options["copy_caption"] else "")
         _put_picture(png, dib)
         return f"{size[0]} x {size[1]}"
+
+    @bridge_method
+    def copy_options(self) -> dict:
+        return copy_options(self._db)
+
+    @bridge_method
+    def save_copy_options(self, values: dict) -> dict:
+        """Only what is written under a copied picture: the rest of the settings stay as they are."""
+        save_copy_options(self._db, values)
+        return copy_options(self._db)
 
     @bridge_method
     def zoom(self) -> dict:

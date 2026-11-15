@@ -988,8 +988,7 @@ def _pager(hit: dict, page: int) -> str:
         '<button type="button" data-zoom="1" aria-label="拡大">＋</button></span>'
         '<form class="jump" data-jump><input type="text" inputmode="numeric" placeholder="印刷ページ" aria-label="印刷されたページ番号で移動" size="6">'
         '<button type="submit">移動</button></form>'
-        '<button type="button" data-copy-page title="このページを画像でコピーします（検索語の印つき）。Excel などに貼れます">画像をコピー</button>'
-        '<button type="button" data-copy-region title="ページの一部をドラッグで囲んで、画像でコピーします（Esc でやめる）">囲んでコピー</button>'
+        '<button type="button" data-copy aria-haspopup="menu" aria-expanded="false" title="このページを画像でコピーします（検索語の印つき）。Excel などに貼れます">コピー ▾</button>'
         f'<span class="spacer"></span>{opener}</div>'
         '<nav class="trail" data-live hidden aria-label="この位置の見出し"></nav>'
     )
@@ -1185,6 +1184,19 @@ blockquote { margin: 14px 0 0; padding: 2px 0 2px 14px; border-left: 3px solid v
 /* a region of the page being chosen to copy: drawn over the page, links included */
 .select-layer { position: absolute; inset: 0; z-index: 5; cursor: crosshair; background: rgba(0, 0, 0, .06); touch-action: none; }
 .select-box { position: absolute; border: 2px dashed #2563eb; background: rgba(37, 99, 235, .12); pointer-events: none; }
+/* what a copied picture carries under it, chosen beside the copy buttons */
+.copy-menu { position: fixed; z-index: 20; width: min(360px, 92vw); padding: 12px 14px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 8px 28px rgba(0, 0, 0, .3); font-size: 13px; }
+.copy-menu fieldset { margin: 8px 0 0; padding: 4px 10px 6px; border: 1px solid var(--rule); border-radius: 6px; }
+.copy-menu legend { padding: 0 4px; font-weight: 700; }
+.copy-menu label { display: block; margin: 3px 0; }
+.copy-menu fieldset:disabled { opacity: .5; }
+.copy-actions { position: fixed; z-index: 20; display: flex; flex-direction: column; min-width: 200px; padding: 4px;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 8px 28px rgba(0, 0, 0, .3); }
+.copy-actions[hidden] { display: none; }
+.copy-actions button { border: 0; border-radius: 4px; padding: 7px 12px; text-align: left; background: none; }
+.copy-actions button:hover, .copy-actions button:focus-visible { background: color-mix(in srgb, var(--blue) 18%, transparent); outline: none; }
+.copy-actions small { display: block; color: var(--muted); font-size: 12px; }
 .page.is-hit figcaption, .page.has-evidence figcaption { color: var(--ink); font-weight: 700; }
 .tag { margin-left: 8px; padding: 0 8px; border-radius: 3px; font-weight: 400; font-size: 12px; }
 .hit-tag { background: var(--term); }
@@ -1251,9 +1263,12 @@ button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .actions { margin: 8px 0 0; }
 .cite { margin-top: 6px; }
 /* one row that stays at the top of the window while its page is being read */
-.pager { position: sticky; top: 0; z-index: 4; display: flex; flex-wrap: nowrap; align-items: center; gap: 6px;
-  margin: 0 0 8px; padding: 6px 0; overflow-x: auto; background: var(--bg); scrollbar-width: thin; }
+/* wrapped onto a second line when the page is narrower than its buttons, never scrolled sideways:
+   a button out of sight is one no one finds (its height is measured again, see measureBars) */
+.pager { position: sticky; top: 0; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin: 0 0 8px; padding: 6px 0; background: var(--bg); }
 .pager > * { flex: none; }
+
 .page-scroll { scroll-margin-top: var(--pager-h, 52px); }
 .pager .pg-now { min-width: 7em; text-align: center; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .pager .spacer { flex: 1; }
@@ -1447,6 +1462,7 @@ APP_JS = r"""(() => {
     let page = home;
     let total = 0;
     let offset = 0;  // PDF index minus printed page number, when the pages carry one
+    let crumbs = [];  // the headings above the page shown, outer first: for a copied picture's source
     const pageText = (p) => `p.${p}${offset && p - offset >= 1 ? `（印刷 ${p - offset}）` : ""}`;
 
     async function loadLinks() {
@@ -1458,6 +1474,7 @@ APP_JS = r"""(() => {
         total = data.pages;
         offset = data.offset || 0;
         label.textContent = `${pageText(page)} / ${total}`;
+        crumbs = data.trail.map(([title]) => title);
         outline.replaceChildren();
         data.trail.forEach(([title, start], i) => {
           if (i) outline.append(" › ");
@@ -1551,21 +1568,17 @@ APP_JS = r"""(() => {
     back.addEventListener("click", reader.back);
     homeButton.addEventListener("click", reader.home);
     figure.querySelector("[data-toc]").addEventListener("click", () => openToc(reader));
-    // copy the page, or a region of it, as a picture with its source under it
-    // the heading and page; the file is named in the window, as the settings say
-    const where = () => {
-      const section = outline.textContent.trim();
-      return `${section ? `「${section}」` : ""} ${pageText(page)}`;
-    };
+    // copy the page, or a region of it, as a picture with its source under it, which the
+    // window writes from the file, the headings and the page as the copy options say
     const copyPicture = async (region) => {
       toast("画像を作っています…");
       try {
-        await (await bridge()).copy_page(pdf, page, terms, quotes, region, figure.dataset.source || pdf, where());
+        const printed = offset && page - offset >= 1 ? page - offset : null;
+        await (await bridge()).copy_page(pdf, page, terms, quotes, region, figure.dataset.source || pdf, crumbs, printed);
         toast("画像をコピーしました。Excel などに貼り付けられます");
       } catch (e) { failed("コピーでき")(e); }
     };
-    figure.querySelector("[data-copy-page]").addEventListener("click", () => copyPicture(null));
-    figure.querySelector("[data-copy-region]").addEventListener("click", () => {
+    const copyRegion = () => {
       if (frame.querySelector(".select-layer")) return;
       const layer = document.createElement("div");
       layer.className = "select-layer";
@@ -1604,7 +1617,9 @@ APP_JS = r"""(() => {
         end();
         copyPicture([start.x, start.y, now.x, now.y]);
       });
-    });
+    };
+    figure.querySelector("[data-copy]").addEventListener("click", (event) =>
+      openCopyActions(event.currentTarget, { page: () => copyPicture(null), region: copyRegion }));
     figure.querySelector("[data-jump]").addEventListener("submit", (event) => {
       event.preventDefault();
       const input = event.target.querySelector("input");
@@ -1728,6 +1743,141 @@ APP_JS = r"""(() => {
     dialog.showModal();
     if (here) here.scrollIntoView({ block: "center" });
     filter.focus();
+  }
+
+  // the copy button's menu: the whole page, a region dragged out, or what goes under the picture.
+  // One menu for every page; the page whose button opened it is the one acted on
+  let copyActions = null;
+  let copyFor = null;  // {button, page, region} of the page whose button opened the menu
+  const closeCopyActions = (refocus) => {
+    if (!copyActions || copyActions.hidden) return;
+    copyActions.hidden = true;
+    copyFor.button.setAttribute("aria-expanded", "false");
+    if (refocus) copyFor.button.focus();
+  };
+  const openCopyActions = (button, actions) => {
+    if (copyActions && !copyActions.hidden && copyFor && copyFor.button === button) { closeCopyActions(true); return; }
+    if (!copyActions) {
+      copyActions = document.createElement("div");
+      copyActions.className = "copy-actions";
+      copyActions.setAttribute("role", "menu");
+      copyActions.hidden = true;
+      const item = (label, hint, run) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.setAttribute("role", "menuitem");
+        b.textContent = label;
+        const small = document.createElement("small");
+        small.textContent = hint;
+        b.appendChild(small);
+        b.addEventListener("click", () => { const target = copyFor; closeCopyActions(false); run(target); });
+        return b;
+      };
+      copyActions.append(
+        item("ページ全体をコピー", "検索語の印つき。Excel などに貼れます", (t) => t.page()),
+        item("囲んでコピー", "ページの一部をドラッグで囲みます", (t) => t.region()),
+        item("出典の入れ方…", "画像の下に入れるファイル名・見出し・ページ", (t) => openCopyMenu(t.button)),
+      );
+      document.body.appendChild(copyActions);
+      copyActions.addEventListener("keydown", (event) => {
+        event.stopPropagation();  // the arrows, Home and Backspace turn pages outside the menu
+        const items = all("button", copyActions);
+        const at = items.indexOf(document.activeElement);
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          items[(at + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+        } else if (event.key === "Escape" || event.key === "Tab") {
+          event.preventDefault();
+          closeCopyActions(true);
+        }
+      });
+      document.addEventListener("pointerdown", (event) => {
+        if (!copyActions.hidden && !copyActions.contains(event.target) && !event.target.closest("[data-copy]")) closeCopyActions(false);
+      });
+    }
+    if (copyFor) copyFor.button.setAttribute("aria-expanded", "false");
+    copyFor = { button, ...actions };
+    button.setAttribute("aria-expanded", "true");
+    const box = button.getBoundingClientRect();
+    copyActions.hidden = false;
+    copyActions.style.top = `${Math.min(box.bottom + 4, innerHeight - copyActions.offsetHeight - 8)}px`;
+    copyActions.style.left = `${Math.max(8, Math.min(box.left, innerWidth - copyActions.offsetWidth - 8))}px`;
+    copyActions.querySelector("button").focus();
+  };
+
+  // what a copied picture carries under it: one menu, opened under the button pressed; each
+  // choice is saved at once (the window's copy options, not the rest of the settings)
+  const COPY_MENU = `
+    <form class="copy-menu" role="dialog" aria-label="コピーした画像の下に入れる出典">
+      <label><input type="checkbox" name="caption"> 下に出典を入れる</label>
+      <fieldset data-parts><legend>ファイル</legend>
+        <label><input type="radio" name="cite_path" value="name"> ファイル名だけ</label>
+        <label><input type="radio" name="cite_path" value="root"> インデックスのフォルダから</label>
+        <label><input type="radio" name="cite_path" value="full"> フルパス</label>
+      </fieldset>
+      <fieldset data-parts><legend>見出し</legend>
+        <label><input type="radio" name="cite_heading" value="all"> すべての段</label>
+        <label><input type="radio" name="cite_heading" value="last"> いちばん下の段だけ</label>
+        <label><input type="radio" name="cite_heading" value="none"> 入れない</label>
+      </fieldset>
+      <fieldset data-parts><legend>ページ</legend>
+        <label><input type="radio" name="cite_page" value="pdf"> PDF のページ</label>
+        <label><input type="radio" name="cite_page" value="print"> 印刷されたページ</label>
+        <label><input type="radio" name="cite_page" value="both"> 両方</label>
+      </fieldset>
+    </form>`;
+  let copyMenu = null;
+  let copyMenuButton = null;
+  const closeCopyMenu = () => {
+    if (!copyMenu || copyMenu.hidden) return;
+    copyMenu.hidden = true;
+    if (copyMenuButton) { copyMenuButton.setAttribute("aria-expanded", "false"); copyMenuButton.focus(); }
+  };
+  async function openCopyMenu(button) {
+    if (copyMenu && !copyMenu.hidden && copyMenuButton === button) { closeCopyMenu(); return; }
+    let api;
+    try { api = await bridge(); } catch (e) { failed("出典の設定を開け")(e); return; }
+    if (!copyMenu) {
+      const holder = document.createElement("div");
+      holder.innerHTML = COPY_MENU;
+      copyMenu = holder.firstElementChild;
+      copyMenu.hidden = true;
+      document.body.appendChild(copyMenu);
+      const caption = () => copyMenu.elements.namedItem("caption");
+      const parts = () => all("[data-parts]", copyMenu).forEach((f) => { f.disabled = !caption().checked; });
+      const value = (name) => { const on = copyMenu.querySelector(`input[name=${name}]:checked`); return on ? on.value : null; };
+      copyMenu.addEventListener("change", async () => {
+        parts();
+        try {
+          await (await bridge()).save_copy_options({ copy_caption: caption().checked, cite_path: value("cite_path"),
+            cite_heading: value("cite_heading"), cite_page: value("cite_page") });
+        } catch (e) { failed("出典の設定を保存でき")(e); }
+      });
+      copyMenu.addEventListener("submit", (event) => event.preventDefault());
+      document.addEventListener("pointerdown", (event) => {
+        if (!copyMenu.hidden && !copyMenu.contains(event.target) && !event.target.closest("[data-copy]") && !(copyActions && copyActions.contains(event.target))) closeCopyMenu();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && !copyMenu.hidden) { event.preventDefault(); closeCopyMenu(); }
+      });
+      copyMenu.fill = (options) => {
+        caption().checked = options.copy_caption !== false;
+        for (const name of ["cite_path", "cite_heading", "cite_page"]) {
+          const radio = copyMenu.querySelector(`input[name=${name}][value=${options[name]}]`);
+          if (radio) radio.checked = true;
+        }
+        parts();
+      };
+    }
+    try { copyMenu.fill(await api.copy_options()); } catch (e) { failed("出典の設定を読め")(e); return; }
+    if (copyMenuButton) copyMenuButton.setAttribute("aria-expanded", "false");
+    copyMenuButton = button;
+    button.setAttribute("aria-expanded", "true");
+    const box = button.getBoundingClientRect();
+    copyMenu.hidden = false;
+    copyMenu.style.top = `${Math.min(box.bottom + 6, innerHeight - copyMenu.offsetHeight - 8)}px`;
+    copyMenu.style.left = `${Math.max(8, Math.min(box.right - copyMenu.offsetWidth, innerWidth - copyMenu.offsetWidth - 8))}px`;
+    copyMenu.querySelector("input").focus();
   }
 
   // settings: built here, filled through .value / .checked only, never from markup

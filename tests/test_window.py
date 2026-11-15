@@ -302,8 +302,8 @@ def test_a_page_or_a_region_of_it_is_copied_as_a_picture_with_its_source(api, tm
     pdf = str(docs / "sub" / "設計書.pdf")
     put = []
     monkeypatch.setattr(window, "_put_picture", lambda png, dib: put.append((png, dib)))  # not the user's clipboard
-    whole = api.copy_page(pdf, 2, ["config"], [], None, pdf, "「CLI」 p.2")
-    part = api.copy_page(pdf, 2, ["config"], [], [0.5, 0.5, 0.0, 0.0], pdf, "「CLI」 p.2")  # dragged up and left
+    whole = api.copy_page(pdf, 2, ["config"], [], None, pdf, ["CLI"], None)
+    part = api.copy_page(pdf, 2, ["config"], [], [0.5, 0.5, 0.0, 0.0], pdf, ["CLI"], None)  # dragged up and left
     w, h = (int(x) for x in whole.split(" x "))
     pw, ph = (int(x) for x in part.split(" x "))
     assert abs(pw - w / 2) <= 1 and h > ph > (h - 40) / 2  # half the page, and the source under each
@@ -313,13 +313,13 @@ def test_a_page_or_a_region_of_it_is_copied_as_a_picture_with_its_source(api, tm
     # without the source when the settings say so
     window.save_settings_values(db, {"title": "", "viewer": "window", "copy_caption": False})
     assert window.settings_values(db)["copy_caption"] is False
-    api.copy_page(pdf, 2, [], [], [0.0, 0.0, 0.5, 0.5], pdf, "x")
+    api.copy_page(pdf, 2, [], [], [0.0, 0.0, 0.5, 0.5], pdf, ["x"], None)
     plain = Image.open(io.BytesIO(put[2][0])).size
     assert plain[0] == pw and plain[1] < ph  # the same region, with no band under it
     with pytest.raises(ValueError, match="小さすぎ"):
-        api.copy_page(pdf, 2, [], [], [0.2, 0.2, 0.2005, 0.5], pdf, "")
+        api.copy_page(pdf, 2, [], [], [0.2, 0.2, 0.2005, 0.5], pdf, [], None)
     with pytest.raises(PermissionError):
-        api.copy_page(str(tmp_path / "elsewhere.pdf"), 1, [], [], None, "", "")
+        api.copy_page(str(tmp_path / "elsewhere.pdf"), 1, [], [], None, "", [], None)
 
 
 def test_a_source_names_its_file_as_the_settings_say(api, monkeypatch):
@@ -338,7 +338,22 @@ def test_a_source_names_its_file_as_the_settings_say(api, monkeypatch):
     captions = []
     monkeypatch.setattr(window, "page_picture", lambda png, region, caption: captions.append(caption) or (b"", b"", (1, 1)))
     monkeypatch.setattr(window, "_put_picture", lambda png, dib: None)
-    api.copy_page(pdf, 1, [], [], None, pdf, "「CLI」 p.1")
+    api.copy_page(pdf, 1, [], [], None, pdf, ["CLI"], None)
     window.save_settings_values(db, {"title": "", "viewer": "window", "cite_path": "name"})
-    api.copy_page(pdf, 1, [], [], None, pdf, "「CLI」 p.1")
+    api.copy_page(pdf, 1, [], [], None, pdf, ["CLI"], None)
     assert captions == [rf"{docs.name}\sub\設計書.pdf「CLI」 p.1", "設計書.pdf「CLI」 p.1"]
+
+
+def test_the_source_under_a_picture_takes_the_headings_and_page_as_chosen(api):
+    trail = ["第1部 準備", "3 保存", "3.2 名前を付けて保存"]
+    pick = lambda heading, page: window.picture_caption("a.pdf", trail, 104, 102, {"cite_heading": heading, "cite_page": page})
+    assert pick("all", "both") == "a.pdf「第1部 準備 > 3 保存 > 3.2 名前を付けて保存」 p.104（印刷 102）"
+    assert pick("last", "print") == "a.pdf「3.2 名前を付けて保存」 p.102"
+    assert pick("none", "pdf") == "a.pdf p.104"
+    assert window.picture_caption("a.pdf", [], 3, None, {"cite_heading": "last", "cite_page": "print"}) == "a.pdf p.3"
+    # chosen beside the copy buttons: only these are saved, the PDF app and the title stay
+    api, _, db = api
+    window.save_settings(db, title="手順書", pdf_app={"command": ["x.exe", "{file}"]})
+    saved = api.save_copy_options({"copy_caption": False, "cite_heading": "last", "cite_page": "print", "cite_path": "bogus"})
+    assert saved == {"copy_caption": False, "cite_path": "root", "cite_heading": "last", "cite_page": "print"}
+    assert window.title(db) == "手順書" and window.load_settings(db)["pdf_app"] == {"command": ["x.exe", "{file}"]}
