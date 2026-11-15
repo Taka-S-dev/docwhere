@@ -250,6 +250,30 @@ def test_the_search_tab_searches_like_the_agent_and_opens_only_its_own_hits(api,
         api.open_hits([5], "")  # only the hits this window found
 
 
+def test_the_window_has_the_reading_windows_settings(api, folder, tmp_path, monkeypatch):
+    from docwhere import opener, window
+
+    monkeypatch.setattr(window, "_set_window_title", lambda text: None)
+    exe = Path(os.environ["WINDIR"]) / "notepad.exe"
+    api.save_settings({"pdf_program": str(exe), "pdf_args": "-p {file}", "title": "資料", "viewer": "browser"})
+    saved = api.settings()
+    assert (saved["title"], saved["viewer"], saved["pdf_args"]) == ("資料", "browser", "-p {file}")
+    assert saved == window.settings_values(tmp_path / "db" / "index.db")  # the reading window's own file
+    # checked as the reading window checks them: a shell is refused and nothing is changed
+    with pytest.raises(PermissionError):
+        api.save_settings({"pdf_program": str(Path(os.environ["WINDIR"]) / "System32" / "cmd.exe"), "title": "x"})
+    assert api.settings()["title"] == "資料"
+    # tried on the search tab's chosen hit, at its page, and only on a PDF
+    api.search({"text": "timeout"})
+    with pytest.raises(ValueError, match="PDF"):
+        api.try_pdf(str(exe), "{file}", 1)
+    opened = []
+    monkeypatch.setattr(opener, "open_at", lambda path, anchor, pdf_app=None: opened.append((anchor, pdf_app)) or "opened")
+    api._results = (["x"], [{"path": str(folder / "spec.pdf"), "anchor": {"page": 3}}])
+    assert api.try_pdf(str(exe), "{file}", 1) == "spec.pdf: opened"
+    assert opened[0][0] == {"page": 3} and opened[0][1]["command"][0].lower().endswith("notepad.exe")
+
+
 def test_search_hits_are_counted_by_format_and_folder_and_can_be_narrowed(api, folder):
     (folder / "e.txt").write_text("timeout\n", encoding="utf-8")
     index = Index(api._db)

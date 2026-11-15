@@ -120,6 +120,38 @@ def _split_args(args: str) -> list[str]:
     return shlex.split(args.replace("\\", "\\\\"), posix=True)
 
 
+# The settings dialog's values, shared by the reading window and the index window.
+
+def settings_values(db: Path) -> dict:
+    command = pdf_app(db).get("command")
+    return {
+        "title": title(db),
+        "viewer": mode(db),
+        "pdf_program": command[0] if command else "",
+        "pdf_args": subprocess.list2cmdline(command[1:]) if command else "",
+    }
+
+
+def save_settings_values(db: Path, values: dict) -> None:
+    """Validate everything first, then save; a bad entry changes nothing."""
+    program = str(values.get("pdf_program") or "").strip()
+    command = checked_command([program, *_split_args(str(values.get("pdf_args") or ""))]) if program else None
+    viewer = "browser" if values.get("viewer") == "browser" else "window"
+    set_pdf_app(db, command)
+    set_title(db, str(values.get("title") or "")[:80])
+    set_mode(db, viewer)
+
+
+def try_pdf_app(pdf: str, page: int, program: str, args: str) -> str:
+    """Open ``pdf`` at ``page`` with the program being set up, before it is saved. The caller
+    checks that ``pdf`` is one docwhere may open."""
+    from docwhere.opener import open_at
+
+    program = str(program or "").strip()
+    command = checked_command([program, *_split_args(str(args or ""))]) if program else None
+    return f"{Path(pdf).name}: {open_at(pdf, {'page': int(page)}, {'command': command} if command else None)}"
+
+
 def available() -> bool:
     try:
         import webview  # noqa: F401
@@ -476,13 +508,7 @@ class Api:
 
     @bridge_method
     def settings(self) -> dict:
-        command = pdf_app(self._db).get("command")
-        return {
-            "title": title(self._db),
-            "viewer": mode(self._db),
-            "pdf_program": command[0] if command else "",
-            "pdf_args": subprocess.list2cmdline(command[1:]) if command else "",
-        }
+        return settings_values(self._db)
 
     @bridge_method
     def preset(self, program: str) -> str:
@@ -499,25 +525,15 @@ class Api:
 
     @bridge_method
     def save_settings(self, values: dict) -> dict:
-        """Validate everything first, then save; a bad entry changes nothing."""
-        program = str(values.get("pdf_program") or "").strip()
-        command = checked_command([program, *_split_args(str(values.get("pdf_args") or ""))]) if program else None
-        viewer = "browser" if values.get("viewer") == "browser" else "window"
-        set_pdf_app(self._db, command)
-        set_title(self._db, str(values.get("title") or "")[:80])
-        set_mode(self._db, viewer)
+        save_settings_values(self._db, values)
         _set_window_title(title(self._db))
         return self.settings()
 
     @bridge_method
     def try_pdf(self, program: str, args: str, pdf: str, page: int) -> str:
         """Open ``pdf`` at ``page`` with the program being set up, before it is saved."""
-        from docwhere.opener import open_at
-
         allowed(self._db, pdf, renditions=True, pdf_only=True)
-        program = str(program or "").strip()
-        command = checked_command([program, *_split_args(str(args or ""))]) if program else None
-        return f"{Path(pdf).name}: {open_at(pdf, {'page': int(page)}, {'command': command} if command else None)}"
+        return try_pdf_app(pdf, page, program, args)
 
     @bridge_method
     def pin(self, on: bool) -> bool:

@@ -605,6 +605,47 @@ class ManageApi:
         finally:
             pythoncom.CoUninitialize()
 
+    # ---- settings: the reading window's own, kept in the same file and checked the same way
+
+    @bridge_method
+    def settings(self) -> dict:
+        from docwhere.window import settings_values
+
+        return settings_values(self._db)
+
+    @bridge_method
+    def preset(self, program: str) -> str:
+        from docwhere.window import preset_args
+
+        return preset_args(str(program))
+
+    @bridge_method
+    def choose_program(self) -> str | None:
+        import webview
+
+        if self._window is None:
+            return None
+        chosen = self._window.create_file_dialog(webview.FileDialog.OPEN, file_types=("プログラム (*.exe)",))
+        return str(chosen[0]) if chosen else None
+
+    @bridge_method
+    def save_settings(self, values: dict) -> dict:
+        from docwhere import window as viewer_window
+
+        viewer_window.save_settings_values(self._db, values)
+        viewer_window._set_window_title(f"{viewer_window.title(self._db)} - インデックス")
+        return viewer_window.settings_values(self._db)
+
+    @bridge_method
+    def try_pdf(self, program: str, args: str, n: int) -> str:
+        """Open the search tab's hit ``n``, a PDF, at its page with the program being set up."""
+        from docwhere.window import try_pdf_app
+
+        hit = self._hit(int(n))
+        if Path(hit["path"]).suffix.lower() != ".pdf":
+            raise ValueError("検索タブで PDF の結果を選ぶと、そのページで試せます")
+        return try_pdf_app(hit["path"], int((hit.get("anchor") or {}).get("page") or 1), program, args)
+
     # ---- the notes map
 
     def _describe(self, index: Index, path: str, wikis: set[str]) -> dict:
@@ -813,11 +854,14 @@ def run(db: Path, tab: str = "folders") -> None:
 
 # Without the window (opened in a browser), the page says where it works; the script replaces it.
 BODY = """<div class="wrap" id="app">
+<div class="topbar">
 <nav class="tabs" id="tabs" role="tablist" aria-label="表示するもの" hidden>
   <button type="button" role="tab" id="tab-folders" aria-controls="panel-folders" aria-selected="true" data-tab="folders">フォルダ</button>
   <button type="button" role="tab" id="tab-map" aria-controls="panel-map" aria-selected="false" data-tab="map" tabindex="-1" title="資料の地図: どのフォルダに何の資料があるかを書いた表（notes.csv）。AI はこれを見て探す場所を選びます">地図</button>
   <button type="button" role="tab" id="tab-search" aria-controls="panel-search" aria-selected="false" data-tab="search" tabindex="-1">検索</button>
 </nav>
+<button type="button" class="link" id="settings-open" data-act="settings" hidden title="PDF を開くアプリ、ウィンドウの名前、回答ページの開き方">設定</button>
+</div>
 <div id="panel-folders" role="tabpanel" aria-labelledby="tab-folders">
 <header class="head">
   <div class="head-text">
@@ -927,6 +971,30 @@ BODY = """<div class="wrap" id="app">
 <dialog id="confirm"><form method="dialog" class="confirm">
   <h2 id="confirm-title"></h2><p id="confirm-text"></p>
   <div class="buttons"><button value="cancel" class="btn">やめる</button><button value="ok" class="btn" id="confirm-ok"></button></div>
+</form></dialog>
+<dialog id="settings" aria-labelledby="settings-title"><form method="dialog" class="confirm settings">
+  <h2 id="settings-title">設定</h2>
+  <fieldset>
+    <legend>PDF を開くアプリ</legend>
+    <label class="choice"><input type="radio" name="pdfmode" value="auto"> 自動（Acrobat があれば Acrobat、なければ Windows の既定のアプリ）</label>
+    <label class="choice"><input type="radio" name="pdfmode" value="custom"> アプリを指定する</label>
+    <div class="custom" id="settings-custom">
+      <label>プログラム<span class="add-row"><input type="text" name="program" spellcheck="false"><button type="button" class="btn" id="settings-browse">参照…</button></span></label>
+      <label>引数<input type="text" name="args" spellcheck="false"></label>
+      <p class="hint">{page} にページ番号、{file} に PDF のパスが入ります。SumatraPDF と Acrobat は選ぶと自動で入ります。</p>
+      <button type="button" class="btn" id="settings-try" title="検索タブで選んでいる PDF の結果を、そのページで開きます">選んでいる PDF の結果で試す</button>
+      <p class="hint" id="settings-tried" aria-live="polite" hidden></p>
+    </div>
+  </fieldset>
+  <label>ウィンドウの名前<input type="text" name="title" spellcheck="false" maxlength="80"></label>
+  <p class="hint">読み取り画面と、この窓の名前に使います。</p>
+  <fieldset>
+    <legend>回答ページの開き方</legend>
+    <label class="choice"><input type="radio" name="viewer" value="window"> 専用のウィンドウ</label>
+    <label class="choice"><input type="radio" name="viewer" value="browser"> ブラウザ</label>
+  </fieldset>
+  <p class="error" id="settings-error" role="alert" hidden></p>
+  <div class="buttons"><button value="cancel" class="btn">キャンセル</button><button type="button" class="btn primary" id="settings-save">保存</button></div>
 </form></dialog>"""
 
 STYLE = """
@@ -945,7 +1013,10 @@ button { font: inherit; }
 .btn.quiet { border-color: transparent; background: transparent; color: var(--blue); padding: 3px 6px; }
 :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 4px; }
 
-.tabs { display: flex; gap: 4px; margin: -8px 0 20px; border-bottom: 1px solid var(--rule); }
+/* the tabs, and at their end the settings shared with the reading window */
+.topbar { display: flex; align-items: center; gap: 16px; margin: -8px 0 20px; border-bottom: 1px solid var(--rule); }
+.tabs { display: flex; gap: 4px; flex: 1; }
+.topbar > .link { font-size: 13px; }
 .tabs button { margin-bottom: -1px; padding: 8px 18px; border: 0; border-bottom: 3px solid transparent; background: none;
   color: var(--muted); font-weight: 700; cursor: pointer; }
 .tabs button:hover { color: var(--ink); }
@@ -1220,9 +1291,21 @@ mark { color: inherit; background: var(--marker-soft); border-radius: 2px; }
   color: var(--bg); box-shadow: 0 6px 24px rgba(0, 0, 0, .25); z-index: 10; }
 #toast button { padding: 3px 10px; border: 1px solid currentColor; border-radius: 6px; background: transparent;
   color: inherit; cursor: pointer; }
-dialog#confirm { width: min(480px, 92vw); padding: 0; color: var(--ink); background: var(--surface);
+dialog#confirm, dialog#settings { width: min(480px, 92vw); padding: 0; color: var(--ink); background: var(--surface);
   border: 1px solid var(--rule); border-radius: 10px; }
-dialog#confirm::backdrop { background: rgba(0, 0, 0, .45); }
+dialog#settings { width: min(600px, 92vw); }
+dialog#confirm::backdrop, dialog#settings::backdrop { background: rgba(0, 0, 0, .45); }
+.settings fieldset { margin: 0 0 14px; padding: 8px 12px 10px; border: 1px solid var(--rule); border-radius: 8px; }
+.settings legend { padding: 0 4px; color: var(--muted); font-size: 13px; }
+.settings label { display: block; margin: 6px 0; }
+.settings label > input[type=text] { display: block; width: 100%; margin-top: 4px; padding: 5px 10px; font: inherit;
+  color: var(--ink); background: var(--bg); border: 1px solid var(--rule); border-radius: 6px; }
+.settings input[type=text]:focus-visible { outline: 2px solid var(--blue); outline-offset: 0; border-color: transparent; }
+.settings .add-row { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+.settings .add-row input { flex: 1; }
+.settings .custom[aria-disabled="true"] { opacity: .5; pointer-events: none; }
+.settings .hint { margin: 4px 0 8px; color: var(--muted); font-size: 12px; }
+.settings .error { margin: 0 0 12px; color: var(--warn); }
 .confirm { padding: 20px 22px; }
 .confirm h2 { margin: 0 0 8px; font-size: 17px; }
 .confirm p { margin: 0 0 18px; color: var(--muted); white-space: pre-line; }
@@ -1401,6 +1484,53 @@ MANAGE_JS = r"""(() => {
     dialog.onclose = () => resolve(dialog.returnValue === "ok");
     dialog.showModal();
     $("button[value=cancel]", dialog).focus();
+  });
+
+  // ---- settings: the reading window's, filled through .value / .checked only
+  const settingsBox = $("#settings");
+  const settingsForm = $("form", settingsBox);
+  const field = (name) => settingsForm.elements.namedItem(name);
+  const settingsError = $("#settings-error");
+  const showSettingsError = (e) => { settingsError.textContent = reason(e); settingsError.hidden = false; };
+  const pdfMode = (mode) => {
+    $(`input[name=pdfmode][value=${mode}]`, settingsForm).checked = true;
+    $("#settings-custom").setAttribute("aria-disabled", String(mode === "auto"));
+  };
+  const openSettings = () => api.settings().then((current) => {
+    field("program").value = current.pdf_program;
+    field("args").value = current.pdf_args;
+    field("title").value = current.title;
+    $(`input[name=viewer][value=${current.viewer === "browser" ? "browser" : "window"}]`, settingsForm).checked = true;
+    pdfMode(current.pdf_program ? "custom" : "auto");
+    settingsError.hidden = true;
+    $("#settings-tried").hidden = true;
+    settingsBox.showModal();
+  }).catch(failed("設定を開けませんでした"));
+  settingsForm.querySelectorAll("input[name=pdfmode]").forEach((r) => r.addEventListener("change", () => pdfMode(r.value)));
+  field("program").addEventListener("change", () => {
+    if (!field("args").value.trim()) api.preset(field("program").value).then((a) => { field("args").value = a; });
+  });
+  $("#settings-browse").addEventListener("click", () => api.choose_program().then((chosen) => {
+    if (!chosen) return;
+    field("program").value = chosen;
+    return api.preset(chosen).then((a) => { field("args").value = a; });
+  }).catch(showSettingsError));
+  $("#settings-try").addEventListener("click", () => {
+    const hit = results && results.hits ? results.hits[activeHit] : null;
+    if (!hit) { showSettingsError("検索タブで PDF の結果を選ぶと、そのページで試せます"); return; }
+    settingsError.hidden = true;
+    // said in the dialog: a toast would sit behind it
+    api.try_pdf(field("program").value, field("args").value, hit.n)
+      .then((r) => { $("#settings-tried").textContent = r; $("#settings-tried").hidden = false; }).catch(showSettingsError);
+  });
+  $("#settings-save").addEventListener("click", () => {
+    const auto = $("input[name=pdfmode][value=auto]", settingsForm).checked;
+    api.save_settings({
+      pdf_program: auto ? "" : field("program").value,
+      pdf_args: auto ? "" : field("args").value,
+      title: field("title").value,
+      viewer: $("input[name=viewer]:checked", settingsForm).value,
+    }).then(() => { settingsBox.close(); toast("設定を保存しました"); }).catch(showSettingsError);
   });
 
   // ---- state
@@ -2493,6 +2623,7 @@ MANAGE_JS = r"""(() => {
       api.open_synonyms().then(() => toast("言い換えのファイルを開きました。保存すると、次の検索から使います")).catch(failed("開けませんでした"));
     }
     else if (what === "view-all") viewHits(results.hits.filter((x) => x.chunk_id).slice(0, VIEW_TOGETHER).map((x) => x.n));
+    else if (what === "settings") openSettings();
     else if (what === "map-add") addMapRow();
     else if (what === "map-save") saveMap();
     else if (what === "map-revert") loadMap(true).then(() => toast("変更を取り消しました"));
@@ -2521,7 +2652,7 @@ MANAGE_JS = r"""(() => {
     }
   });
   document.addEventListener("keydown", (e) => {
-    const typing = e.target.closest("input, textarea, [contenteditable]") || $("#confirm").open;
+    const typing = e.target.closest("input, textarea, [contenteditable]") || $("#confirm").open || $("#settings").open;
     if (e.key === "s" && e.ctrlKey && tab === "map") { e.preventDefault(); saveMap(); return; }
     if ((e.key === "/" && !typing) || (e.key === "f" && e.ctrlKey)) {
       const box = tab === "map" ? $("#map-filter-box") : tab === "search" ? $("#search-bar-box") : $("#filter-box");
@@ -2544,6 +2675,7 @@ MANAGE_JS = r"""(() => {
   document.addEventListener("click", (e) => { if (e.target.closest("a[href]")) e.preventDefault(); }, true);
 
   $("#tabs").hidden = false;
+  $("#settings-open").hidden = false;
   ready.then(() => { showTab(["#map", "#search"].includes(location.hash) ? location.hash.slice(1) : "folders"); return refresh(); }).catch((e) => { $("#summary").textContent = `この窓を開き直してください（${reason(e)}）`; });
 })();
 """
