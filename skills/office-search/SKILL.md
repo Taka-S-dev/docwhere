@@ -148,7 +148,9 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
      (`旧資料\仕様書_v1.4.pdf` → `仕様書\仕様書_v2.3.docx`). Such hits are ranked lower; treat
      their content as possibly outdated and check the newer file, which is a guess from the
      names, not a certainty.
-   - `capped` — terms found in so many sections that only the likeliest were ranked. A better
+   - `capped` — terms found in so many sections that only the likeliest were ranked, or that
+     needed a scan of every section (under three letters, a pattern without three plain letters
+     in a row) longer than a few seconds, cut short there. A better
      section may have been passed over: before saying something is not there, search again
      narrower (another term with `--all`, `--not`, or a subfolder with `--in`).
    - `matched` — how many sections and files matched in all (with `at_least`, more did: a term

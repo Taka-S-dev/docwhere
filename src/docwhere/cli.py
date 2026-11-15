@@ -334,7 +334,7 @@ def cmd_search(args) -> int:
         print(f"\n{matched['sections']}{more} section(s) in {matched['files']} file(s) matched; {len(hits)} shown"
               f" (at most {args.per_file} a file): -n or --per-file for more", file=sys.stderr)
     if capped:
-        print(f"\n{', '.join(capped)}: found in too many sections to rank them all, so a better one may be missing;"
+        print(f"\n{', '.join(capped)}: found in too many sections to look at them all, or in too long a scan, so a better one may be missing;"
               " add a term with --all, --not or a narrower --in", file=sys.stderr)
     if unreadable:
         print(f"\n{len(unreadable)} file(s) here could not be searched; see: docwhere status --errors", file=sys.stderr)

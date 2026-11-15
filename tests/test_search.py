@@ -221,3 +221,16 @@ def test_a_file_over_the_size_limit_is_listed_as_unreadable_not_skipped_unseen(d
     errors = dict(index.errors([docs]))
     assert "too large to read" in errors[str(docs / "huge.txt")]
     assert all(not h.path.endswith("huge.txt") for h in search(index, [docs], ["config"], limit=50))
+
+
+def test_a_scan_of_every_section_stops_at_its_time_and_says_so(docs, index, monkeypatch):
+    import docwhere.search as search_module
+
+    index.sync(docs)
+    capped: list[str] = []
+    assert search(index, [docs], ["c.nfig"], regex=True, capped=capped)  # no three plain letters: every section
+    assert capped == []
+    monkeypatch.setattr(search_module, "SCAN_SECONDS", 0.0)
+    found: dict = {}
+    search(index, [docs], ["c.nfig"], regex=True, capped=capped, found=found)
+    assert capped == ["c.nfig"] and found["at_least"] is True  # cut short, and the rest is said to be unseen

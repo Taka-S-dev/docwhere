@@ -447,7 +447,7 @@ class ManageApi:
             if not pool and every and len(terms) > 1 and run(terms, exclude, False, 1):
                 hints.append("「すべての語を含む」を外すと見つかります")
             if capped:
-                hints.append(f"{'、'.join(capped)} は当たる節が多すぎるため、見込みの高い一部だけを順位付けしました。"
+                hints.append(f"{'、'.join(capped)} は当たる節が多すぎるか、調べるのに時間がかかりすぎるため、一部だけを調べました。"
                              "探している箇所が出ないときは、語を足して「すべての語を含む」にするか、範囲を絞ってください")
             # said only when it matters: a one-letter term matches nearly everything, and a term
             # under three letters is searched without the index, which shows on a large one

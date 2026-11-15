@@ -17,6 +17,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -26,6 +27,10 @@ from docwhere.model import norm
 from docwhere.versions import family
 
 CANDIDATES_PER_TERM = 3000
+# seconds a search may spend going through sections one by one (a term under three letters, a
+# pattern with no plain run of three): past it the search answers with what it went through and
+# says the rest was not looked at, rather than keep the window or the agent waiting minutes
+SCAN_SECONDS = 5.0
 REGEX_CANDIDATES = 20000  # a pattern is asked for every match, not the best few
 MAX_SHOWN_MATCHES = 5  # distinct strings a pattern matched, kept per hit for highlighting
 SNIPPET_BEFORE = 40
@@ -97,6 +102,7 @@ def search(
     unwanted = _folded(exclude)
 
     candidates: set[int] = set()
+    deadline = time.monotonic() + SCAN_SECONDS
     for term in terms:
         if len(term) >= 3:
             sql = (
@@ -112,8 +118,8 @@ def search(
                 f" AND {scope_sql} LIMIT ?"
             )
             args = [like, like, like]
-        ids = [r[0] for r in index.db.execute(sql, [*args, *scope_args, CANDIDATES_PER_TERM])]
-        if len(ids) >= CANDIDATES_PER_TERM:
+        ids, cut = _ids(index, sql, [*args, *scope_args, CANDIDATES_PER_TERM], deadline)
+        if cut or len(ids) >= CANDIDATES_PER_TERM:
             if capped is not None:
                 capped.append(term)
             if found is not None:
@@ -260,6 +266,7 @@ def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, ex
     scope_sql, scope_args = _scope(roots, exts)
     unwanted = _folded(exclude)
     candidates: set[int] = set()
+    deadline = time.monotonic() + SCAN_SECONDS
     for pattern in compiled:
         literal = required_literal(pattern.pattern)
         if len(literal) >= 3:  # the full-text index finds the sections that can match
@@ -269,8 +276,8 @@ def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, ex
         else:  # nothing to narrow by: every section in scope is looked at
             sql = f"SELECT c.id FROM chunks c JOIN files f ON f.id = c.file_id WHERE {scope_sql}"
             args = scope_args
-        ids = [r[0] for r in index.db.execute(sql, args)]
-        if len(literal) >= 3 and len(ids) >= REGEX_CANDIDATES:
+        ids, cut = _ids(index, sql, args, deadline)
+        if cut or (len(literal) >= 3 and len(ids) >= REGEX_CANDIDATES):
             if capped is not None:
                 capped.append(pattern.pattern)
             if found is not None:
@@ -278,10 +285,14 @@ def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, ex
         candidates.update(ids)
     if not candidates:
         return []
-    rows = list(_fetch(index, candidates))
-    newer = index.newer_among({r["family"] for r in rows if r["family"]}, roots)
     scored = []
-    for row in rows:
+    for n, row in enumerate(_fetch(index, candidates)):
+        if n % 500 == 0 and time.monotonic() > deadline:  # the rest is not looked at, and that is said
+            if capped is not None and not capped:
+                capped.extend(p.pattern for p in compiled)
+            if found is not None:
+                found["at_least"] = True
+            break
         if _excluded(row, unwanted):
             continue
         text = "\n".join((row["title"], row["crumb"], row["body"]))
@@ -293,9 +304,9 @@ def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, ex
         if not matched:
             continue
         score = math.log1p(len(strings)) + W_TITLE * any(p.search(row["title"]) for p in compiled)
-        if row["path"] in newer:
-            score *= SUPERSEDED_FACTOR
         scored.append((score, row, matched))
+    newer = index.newer_among({s[1]["family"] for s in scored if s[1]["family"]}, roots)
+    scored = [(score * SUPERSEDED_FACTOR if row["path"] in newer else score, row, m) for score, row, m in scored]
     _count(scored, found)
     return _hits(scored, newer, limit, per_file, found)
 
@@ -375,6 +386,22 @@ def _scope(roots: list[Path], exts: list[str] | None) -> tuple[str, list]:
         sql += " AND (" + " OR ".join("f.key LIKE ?" for _ in exts) + ")"
         args += ["%." + e.lower().lstrip(".") for e in exts]
     return sql, args
+
+
+def _ids(index: Index, sql: str, args: list, deadline: float) -> tuple[list[int], bool]:
+    """The ids ``sql`` yields until ``deadline``; True when it was stopped there, the rest not seen."""
+    ids: list[int] = []
+    index.db.set_progress_handler(lambda: time.monotonic() > deadline, 20000)
+    try:
+        for r in index.db.execute(sql, args):
+            ids.append(r[0])
+    except sqlite3.OperationalError as e:
+        if "interrupt" not in str(e):
+            raise
+        return ids, True
+    finally:
+        index.db.set_progress_handler(None, 0)
+    return ids, False
 
 
 def _fetch(index: Index, ids: set[int]):
