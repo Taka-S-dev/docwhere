@@ -120,6 +120,73 @@ def _split_args(args: str) -> list[str]:
     return shlex.split(args.replace("\\", "\\\\"), posix=True)
 
 
+# A page copied as a picture, to paste into a report: sharp enough to read once pasted, small
+# enough that a sheet of them stays a reasonable file.
+COPY_DPI = 150
+MIN_REGION = 0.01  # a region narrower or lower than this share of the page is a slip, not a choice
+CAPTION_PX = 18  # the source written under a copied picture
+CAPTION_FONTS = ("meiryo.ttc", "YuGothM.ttc", "msgothic.ttc")
+
+
+def copy_caption(db: Path) -> bool:
+    """Whether a copied page carries its source under it (on unless turned off in the settings)."""
+    return load_settings(db).get("copy_caption") is not False
+
+
+def page_picture(png: bytes, region: list | None, caption: str) -> tuple[bytes, bytes, tuple[int, int]]:
+    """(PNG, device-independent bitmap, size) of a rendered page, cut to ``region`` (fractions of
+    the page) and with ``caption`` in a band under it."""
+    import io
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    picture = Image.open(io.BytesIO(png)).convert("RGB")
+    if region:
+        x0, y0, x1, y1 = (min(1.0, max(0.0, float(v))) for v in region)
+        x0, x1, y0, y1 = min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1)
+        if x1 - x0 < MIN_REGION or y1 - y0 < MIN_REGION:
+            raise ValueError("範囲が小さすぎます。もう少し大きく囲んでください")
+        w, h = picture.size
+        picture = picture.crop((round(x0 * w), round(y0 * h), round(x1 * w), round(y1 * h)))
+    if caption:
+        fonts = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+        font = next((ImageFont.truetype(str(fonts / f), CAPTION_PX) for f in CAPTION_FONTS if (fonts / f).is_file()), None)
+        font = font or ImageFont.load_default()
+        # wrapped to the picture's width: a narrow region would cut a one-line source short
+        lines, line = [], ""
+        for ch in caption:
+            if line and font.getlength(line + ch) > picture.width - 16:
+                lines.append(line)
+                line = ""
+            line += ch
+        lines.append(line)
+        step = CAPTION_PX + 6
+        framed = Image.new("RGB", (picture.width, picture.height + 8 + step * len(lines)), "white")
+        framed.paste(picture, (0, 0))
+        draw = ImageDraw.Draw(framed)
+        for i, text in enumerate(lines):
+            draw.text((8, picture.height + 6 + step * i), text, fill=(60, 60, 60), font=font)
+        picture = framed
+    out_png, out_bmp = io.BytesIO(), io.BytesIO()
+    picture.save(out_png, "PNG")
+    picture.save(out_bmp, "BMP")
+    return out_png.getvalue(), out_bmp.getvalue()[14:], picture.size  # the bitmap without its file header
+
+
+def _put_picture(png: bytes, dib: bytes) -> None:
+    """The picture on the clipboard as PNG (what Office pastes at full quality) and as a bitmap
+    (what every other program takes)."""
+    import win32clipboard
+
+    win32clipboard.OpenClipboard()
+    try:
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32clipboard.RegisterClipboardFormat("PNG"), png)
+        win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib)
+    finally:
+        win32clipboard.CloseClipboard()
+
+
 # The settings dialog's values, shared by the reading window and the index window.
 
 def settings_values(db: Path) -> dict:
@@ -129,6 +196,7 @@ def settings_values(db: Path) -> dict:
         "viewer": mode(db),
         "pdf_program": command[0] if command else "",
         "pdf_args": subprocess.list2cmdline(command[1:]) if command else "",
+        "copy_caption": copy_caption(db),
     }
 
 
@@ -140,6 +208,8 @@ def save_settings_values(db: Path, values: dict) -> None:
     set_pdf_app(db, command)
     set_title(db, str(values.get("title") or "")[:80])
     set_mode(db, viewer)
+    if "copy_caption" in values:  # a dialog of an older page does not have the switch
+        save_settings(db, copy_caption=bool(values["copy_caption"]))
 
 
 def try_pdf_app(pdf: str, page: int, program: str, args: str) -> str:
@@ -402,6 +472,20 @@ class Api:
             doc = self._open_pdf(pdf)
             data = render_page(pdf, int(page), _texts(terms), dpi, "jpeg", _texts(quotes), source=doc)
         return _data_uri(data)
+
+    @bridge_method
+    def copy_page(self, pdf: str, page: int, terms: list, quotes: list, region: list | None, caption: str) -> str:
+        """Put the page (or ``region`` of it: [x0, y0, x1, y1] as fractions of its width and
+        height) on the clipboard as a picture, with the terms marked as shown, and ``caption``
+        written under it unless the settings say not to."""
+        from docwhere.viewer import render_page
+
+        allowed(self._db, pdf, renditions=True, pdf_only=True)
+        with self._pdf_lock:
+            data = render_page(pdf, int(page), _texts(terms), COPY_DPI, "png", _texts(quotes), source=self._open_pdf(pdf))
+        png, dib, size = page_picture(data, region, str(caption or "")[:300] if copy_caption(self._db) else "")
+        _put_picture(png, dib)
+        return f"{size[0]} x {size[1]}"
 
     @bridge_method
     def zoom(self) -> dict:

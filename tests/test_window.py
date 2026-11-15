@@ -128,13 +128,14 @@ def test_settings_round_trip_and_bad_entries_change_nothing(api, tmp_path, monke
 
     saved = api.save_settings({"pdf_program": str(exe), "pdf_args": api.preset(str(exe)), "title": "手順書", "viewer": "window"})
     assert saved == {"title": "手順書", "viewer": "window", "pdf_program": str(exe.resolve()),
-                     "pdf_args": "-reuse-instance -page {page} {file}"}
+                     "pdf_args": "-reuse-instance -page {page} {file}", "copy_caption": True}
     with pytest.raises(FileNotFoundError):
         api.save_settings({"pdf_program": str(tmp_path / "gone.exe"), "pdf_args": "{file}", "title": "x", "viewer": "browser"})
     assert api.settings() == saved  # nothing was half-saved
 
     api.save_settings({"pdf_program": "", "pdf_args": "", "title": "", "viewer": "browser"})
-    assert api.settings() == {"title": "Reference", "viewer": "browser", "pdf_program": "", "pdf_args": ""}
+    assert api.settings() == {"title": "Reference", "viewer": "browser", "pdf_program": "", "pdf_args": "",
+                              "copy_caption": True}
 
 
 def test_args_keep_windows_paths_and_quoted_parts():
@@ -289,3 +290,32 @@ def test_webview_files_go_to_one_folder_emptied_at_each_start(tmp_path):
     (folder / "EBWebView").mkdir()
     (folder / "EBWebView" / "cache").write_bytes(b"x" * 100)
     assert window.fresh_storage(db) == folder and list(folder.iterdir()) == []
+
+
+def test_a_page_or_a_region_of_it_is_copied_as_a_picture_with_its_source(api, tmp_path, monkeypatch):
+    import io
+
+    from PIL import Image
+
+    api, docs, db = api
+    pdf = str(docs / "sub" / "設計書.pdf")
+    put = []
+    monkeypatch.setattr(window, "_put_picture", lambda png, dib: put.append((png, dib)))  # not the user's clipboard
+    whole = api.copy_page(pdf, 2, ["config"], [], None, "設計書.pdf「CLI」 p.2")
+    part = api.copy_page(pdf, 2, ["config"], [], [0.5, 0.5, 0.0, 0.0], "設計書.pdf「CLI」 p.2")  # dragged up and left
+    w, h = (int(x) for x in whole.split(" x "))
+    pw, ph = (int(x) for x in part.split(" x "))
+    assert abs(pw - w / 2) <= 1 and h > ph > (h - 40) / 2  # half the page, and the source under each
+    png, dib = put[1]
+    assert Image.open(io.BytesIO(png)).size == (pw, ph)
+    assert int.from_bytes(dib[4:8], "little") == pw  # the bitmap's own header: its width
+    # without the source when the settings say so
+    window.save_settings_values(db, {"title": "", "viewer": "window", "copy_caption": False})
+    assert window.settings_values(db)["copy_caption"] is False
+    api.copy_page(pdf, 2, [], [], [0.0, 0.0, 0.5, 0.5], "x")
+    plain = Image.open(io.BytesIO(put[2][0])).size
+    assert plain[0] == pw and plain[1] < ph  # the same region, with no band under it
+    with pytest.raises(ValueError, match="小さすぎ"):
+        api.copy_page(pdf, 2, [], [], [0.2, 0.2, 0.2005, 0.5], "")
+    with pytest.raises(PermissionError):
+        api.copy_page(str(tmp_path / "elsewhere.pdf"), 1, [], [], None, "")

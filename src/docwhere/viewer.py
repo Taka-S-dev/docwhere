@@ -985,6 +985,8 @@ def _pager(hit: dict, page: int) -> str:
         '<button type="button" data-zoom="1" aria-label="拡大">＋</button></span>'
         '<form class="jump" data-jump><input type="text" inputmode="numeric" placeholder="印刷ページ" aria-label="印刷されたページ番号で移動" size="6">'
         '<button type="submit">移動</button></form>'
+        '<button type="button" data-copy-page title="このページを画像でコピーします（検索語の印つき）。Excel などに貼れます">画像をコピー</button>'
+        '<button type="button" data-copy-region title="ページの一部をドラッグで囲んで、画像でコピーします（Esc でやめる）">囲んでコピー</button>'
         f'<span class="spacer"></span>{opener}</div>'
         '<nav class="trail" data-live hidden aria-label="この位置の見出し"></nav>'
     )
@@ -1175,6 +1177,9 @@ blockquote { margin: 14px 0 0; padding: 2px 0 2px 14px; border-left: 3px solid v
 .evidence .sheet { margin-top: 12px; }
 .page { margin: 22px 0 0; max-width: 880px; scroll-margin-top: 12px; }
 .page figcaption { margin: 0 0 6px; color: var(--muted); font-size: 13px; }
+/* a region of the page being chosen to copy: drawn over the page, links included */
+.select-layer { position: absolute; inset: 0; z-index: 5; cursor: crosshair; background: rgba(0, 0, 0, .06); touch-action: none; }
+.select-box { position: absolute; border: 2px dashed #2563eb; background: rgba(37, 99, 235, .12); pointer-events: none; }
 .page.is-hit figcaption, .page.has-evidence figcaption { color: var(--ink); font-weight: 700; }
 .tag { margin-left: 8px; padding: 0 8px; border-radius: 3px; font-weight: 400; font-size: 12px; }
 .hit-tag { background: var(--term); }
@@ -1541,6 +1546,60 @@ APP_JS = r"""(() => {
     back.addEventListener("click", reader.back);
     homeButton.addEventListener("click", reader.home);
     figure.querySelector("[data-toc]").addEventListener("click", () => openToc(reader));
+    // copy the page, or a region of it, as a picture with its source under it
+    const caption = () => {
+      const name = img.alt.replace(/ p\.\d+$/, "");
+      const section = outline.textContent.trim();
+      return `${name}${section ? `「${section}」` : ""} ${pageText(page)}`;
+    };
+    const copyPicture = async (region) => {
+      toast("画像を作っています…");
+      try {
+        await (await bridge()).copy_page(pdf, page, terms, quotes, region, caption());
+        toast("画像をコピーしました。Excel などに貼り付けられます");
+      } catch (e) { failed("コピーでき")(e); }
+    };
+    figure.querySelector("[data-copy-page]").addEventListener("click", () => copyPicture(null));
+    figure.querySelector("[data-copy-region]").addEventListener("click", () => {
+      if (frame.querySelector(".select-layer")) return;
+      const layer = document.createElement("div");
+      layer.className = "select-layer";
+      layer.title = "コピーする範囲をドラッグで囲みます（Esc でやめる）";
+      const box = document.createElement("div");
+      box.className = "select-box";
+      box.hidden = true;
+      layer.appendChild(box);
+      frame.appendChild(layer);
+      toast("コピーしたい部分を、ページの上でドラッグして囲んでください（Esc でやめる）");
+      let start = null;
+      const end = () => { layer.remove(); document.removeEventListener("keydown", onKey, true); };
+      const onKey = (event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); end(); } };
+      document.addEventListener("keydown", onKey, true);
+      const at = (event) => {
+        const r = img.getBoundingClientRect();
+        return { x: Math.min(1, Math.max(0, (event.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (event.clientY - r.top) / r.height)) };
+      };
+      layer.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        layer.setPointerCapture(event.pointerId);
+        start = at(event);
+      });
+      layer.addEventListener("pointermove", (event) => {
+        if (!start) return;
+        const now = at(event), r = img.getBoundingClientRect(), f = frame.getBoundingClientRect();
+        box.hidden = false;
+        box.style.left = `${r.left - f.left + Math.min(start.x, now.x) * r.width}px`;
+        box.style.top = `${r.top - f.top + Math.min(start.y, now.y) * r.height}px`;
+        box.style.width = `${Math.abs(now.x - start.x) * r.width}px`;
+        box.style.height = `${Math.abs(now.y - start.y) * r.height}px`;
+      });
+      layer.addEventListener("pointerup", (event) => {
+        if (!start) return;
+        const now = at(event);
+        end();
+        copyPicture([start.x, start.y, now.x, now.y]);
+      });
+    });
     figure.querySelector("[data-jump]").addEventListener("submit", (event) => {
       event.preventDefault();
       const input = event.target.querySelector("input");
@@ -1682,6 +1741,7 @@ APP_JS = r"""(() => {
         </div>
       </fieldset>
       <label>ウィンドウの名前<input type="text" name="title" spellcheck="false" maxlength="80"></label>
+      <label class="check"><input type="checkbox" name="caption"> 画像をコピーするとき、下に出典（ファイル名・見出し・ページ）を入れる</label>
       <fieldset>
         <legend>回答ページの開き方</legend>
         <label><input type="radio" name="viewer" value="window"> このウィンドウ</label>
@@ -1714,6 +1774,7 @@ APP_JS = r"""(() => {
     field("program").value = current.pdf_program;
     field("args").value = current.pdf_args;
     field("title").value = current.title;
+    field("caption").checked = current.copy_caption !== false;
     form.querySelector(`input[name=viewer][value=${current.viewer}]`).checked = true;
     setMode(current.pdf_program ? "custom" : "auto");
     const showError = (e) => { error.textContent = (e && e.message) || String(e); error.hidden = false; };
@@ -1746,6 +1807,7 @@ APP_JS = r"""(() => {
           pdf_args: auto ? "" : field("args").value,
           title: field("title").value,
           viewer: form.querySelector("input[name=viewer]:checked").value,
+          copy_caption: field("caption").checked,
         });
         dialog.close();
         toast("設定を保存しました");

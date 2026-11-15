@@ -1085,6 +1085,7 @@ BODY = """<div class="wrap" id="app">
   </fieldset>
   <label>ウィンドウの名前<input type="text" name="title" spellcheck="false" maxlength="80"></label>
   <p class="hint">読み取り画面と、この窓の名前に使います。</p>
+  <label class="check"><input type="checkbox" name="caption"> 画像をコピーするとき、下に出典（ファイル名・見出し・ページ）を入れる</label>
   <fieldset>
     <legend>回答ページの開き方</legend>
     <label class="choice"><input type="radio" name="viewer" value="window"> 専用のウィンドウ</label>
@@ -1606,6 +1607,7 @@ MANAGE_JS = r"""(() => {
     field("program").value = current.pdf_program;
     field("args").value = current.pdf_args;
     field("title").value = current.title;
+    field("caption").checked = current.copy_caption !== false;
     $(`input[name=viewer][value=${current.viewer === "browser" ? "browser" : "window"}]`, settingsForm).checked = true;
     pdfMode(current.pdf_program ? "custom" : "auto");
     settingsError.hidden = true;
@@ -1636,6 +1638,7 @@ MANAGE_JS = r"""(() => {
       pdf_args: auto ? "" : field("args").value,
       title: field("title").value,
       viewer: $("input[name=viewer]:checked", settingsForm).value,
+      copy_caption: field("caption").checked,
     }).then(() => { settingsBox.close(); toast("設定を保存しました"); }).catch(showSettingsError);
   });
 
