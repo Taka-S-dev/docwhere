@@ -9,7 +9,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
+import sys
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -37,6 +39,15 @@ SKIP_DIRS = {"node_modules", "__pycache__", "$RECYCLE.BIN", "System Volume Infor
 # Each worker loads the extraction libraries once (a second or more), so a few files share one.
 FILES_PER_WORKER = 20
 MAX_WORKERS = 8
+# A reader working on a large PDF holds about this much memory; the readers started together are
+# as many as the memory free when reading starts can hold, leaving MEMORY_KEPT_FREE to the rest of
+# the PC, so a PC with little memory to spare reads more slowly instead of slowing to a crawl.
+MEMORY_PER_WORKER = 400 * 1024 * 1024
+MEMORY_KEPT_FREE = 1024 * 1024 * 1024
+# Reading stops when the drive holding the index has less free than this: the index of a large
+# folder grows to many gigabytes, and a drive filled to the last byte leaves Windows itself
+# unable to work. What was read is kept.
+MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024
 # A file still being read after this long is given up on and recorded as unreadable: an Office
 # conversion waiting on a dialog, or a reader stuck in a damaged file, would otherwise stop the
 # whole sync. Generous, since a large workbook can legitimately take minutes.
@@ -125,6 +136,10 @@ class Scan:
     # the entries of ``todo`` read before and modified since (not new, not a retry after an
     # extractor update): a search can leave these as last read
     changed: list[tuple] = field(default_factory=list)
+
+
+class LowDisk(OSError):
+    """Reading stopped because the drive holding the index is almost full (``MIN_FREE_BYTES``)."""
 
 
 class Stopped(Exception):
@@ -253,6 +268,8 @@ class Index:
             stats.updated += 1
             stats.failed += 1
         todo = [t for t in todo if t[3] <= MAX_FILE_BYTES]
+        if todo:
+            self._check_disk()
         done, reading, saved = 0, [], time.monotonic()
         workers = _pool_size(todo, workers)
         history = {ext: k["seconds"] / k["files"] for ext, k in self.read_times().items() if k["files"]} if todo else {}
@@ -284,11 +301,24 @@ class Index:
                 if done % SAVE_EVERY_FILES == 0 or time.monotonic() - saved >= SAVE_EVERY_SECONDS:
                     self.db.commit()  # a sync stopped part way keeps what it read
                     saved = time.monotonic()
+                    self._check_disk()
                 tick()
         finally:
             outcomes.close()  # stops the readers, and the Office instances they started, at once
             self.db.commit()
         return stats
+
+    def disk_low(self) -> int | None:
+        """The bytes free on the drive holding the index, when fewer than ``MIN_FREE_BYTES``."""
+        free = free_bytes(self.path)
+        return free if free is not None and free < MIN_FREE_BYTES else None
+
+    def _check_disk(self) -> None:
+        if (free := self.disk_low()) is not None:
+            raise LowDisk(
+                f"the drive holding the index has {free / 2**30:.1f} GB free, so reading stopped"
+                f" (it stops below {MIN_FREE_BYTES / 2**30:.0f} GB); what was read is kept and searched"
+            )
 
     def pending(self, todo: list[tuple]) -> list[tuple]:
         """The entries of a scan's ``todo`` that are still not read (another process may be
@@ -747,9 +777,46 @@ def _comparable_hash(row: sqlite3.Row | None, size: int) -> str | None:
 
 
 def _pool_size(todo: list[tuple], workers: int | None) -> int:
-    """Readers working in parallel on the files that need no Office application."""
+    """Readers working in parallel on the files that need no Office application: as many as
+    asked for, else as the processors, the files and the free memory allow."""
+    if workers:
+        return workers
     pooled = sum(not is_serial(t[1]) for t in todo)
-    return max(1, workers or min(MAX_WORKERS, os.cpu_count() or 1, -(-pooled // FILES_PER_WORKER)))
+    size = min(MAX_WORKERS, os.cpu_count() or 1, -(-pooled // FILES_PER_WORKER))
+    if (free := available_memory()) is not None:
+        size = min(size, (free - MEMORY_KEPT_FREE) // MEMORY_PER_WORKER)
+    return max(1, size)
+
+
+def free_bytes(path: Path) -> int | None:
+    """Bytes free on the drive holding ``path``; None when that cannot be told."""
+    try:
+        return shutil.disk_usage(Path(path).parent).free
+    except OSError:
+        return None
+
+
+def available_memory() -> int | None:
+    """Bytes of memory free for new processes now; None when that cannot be told."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong)] + [
+                    (name, ctypes.c_ulonglong)
+                    for name in ("total", "available", "total_page", "available_page", "total_virtual",
+                                 "available_virtual", "available_extended")
+                ]
+
+            status = MemoryStatus()
+            status.length = ctypes.sizeof(MemoryStatus)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return None
+            return int(status.available)
+        return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 def _extract_all(todo: list[tuple], workers: int | None, timeout: float, tick) -> Iterator[tuple]:

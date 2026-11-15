@@ -27,7 +27,7 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from docwhere import background, notes
-from docwhere.index import Index, path_key, prefix_of
+from docwhere.index import MIN_FREE_BYTES, Index, path_key, prefix_of
 from docwhere.model import display_lines
 from docwhere.settings import load_settings, private, save_settings
 from docwhere.window import bridge_method
@@ -166,6 +166,9 @@ class ManageApi:
                 "roots": out,
                 "pending": [q for q in queued if path_key(Path(q)) not in keys],  # added, not read yet
                 "reader": state,
+                "disk_low": index.disk_low(),  # bytes free, when too few to go on reading
+                "disk_min": MIN_FREE_BYTES,
+                "disk": index.path.anchor,
                 "now": time.time(),
             }
         finally:
@@ -1004,6 +1007,7 @@ BODY = """<div class="wrap" id="app">
   </div>
 </header>
 <section class="costs" id="costs" hidden></section>
+<p class="search-note error" id="disk-low" role="status" hidden></p>
 <section class="band" id="band" hidden aria-live="polite"></section>
 <div class="filter" id="filter-box" hidden>
   <input type="search" id="filter" placeholder="フォルダを絞り込む（名前やパスの一部。/ で移動）" autocomplete="off" spellcheck="false"
@@ -2217,6 +2221,14 @@ MANAGE_JS = r"""(() => {
     all.textContent = changed.length > 1 ? `変更のあるフォルダを更新（${changed.length}）` : "変更のあるフォルダを更新";
     renderBand();
     renderCosts();
+    const low = $("#disk-low");
+    low.hidden = data.disk_low == null;
+    if (data.disk_low != null) {
+      const gb = (n) => (n / 2 ** 30).toFixed(n < 10 * 2 ** 30 ? 1 : 0);
+      low.textContent = `インデックスを置いているドライブ（${data.disk}）の空きが ${gb(data.disk_low)} GB しかないため、`
+        + `読み込みを止めています（${Math.round(data.disk_min / 2 ** 30)} GB を下回ると止めます）。`
+        + "ここまでに読み込んだ分は検索できます。空きを増やしてから更新すると、続きから読み込みます。";
+    }
   };
 
   // ---- the notes map: the user's file, edited in place and written only when saved

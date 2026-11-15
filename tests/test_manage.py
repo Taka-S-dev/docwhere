@@ -420,3 +420,14 @@ def test_every_match_is_counted_and_the_list_reads_on_past_a_few_of_each_file(ap
     assert [h["n"] for h in out["hits"]] == list(range(1, 10))  # numbered as listed, so each can be opened
     narrowed = api.search({"text": "timeout", "facet": {"folder": "old"}})
     assert (narrowed["total"], narrowed["files"]) == (1, 1)  # counted from what the narrowing keeps
+
+
+def test_overview_says_when_the_index_drive_is_too_full_to_go_on_reading(api, monkeypatch):
+    import docwhere.index as index_module
+
+    assert api.overview()["disk_low"] is None or api.overview()["disk_low"] < index_module.MIN_FREE_BYTES
+    monkeypatch.setattr(index_module, "free_bytes", lambda path: 10 * 1024**3)
+    assert api.overview()["disk_low"] is None
+    monkeypatch.setattr(index_module, "free_bytes", lambda path: 1024**3)
+    out = api.overview()
+    assert out["disk_low"] == 1024**3 and out["disk_min"] == index_module.MIN_FREE_BYTES and out["disk"]

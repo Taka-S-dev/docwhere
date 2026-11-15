@@ -26,6 +26,7 @@ from pathlib import Path
 from docwhere.index import (
     FILE_TIMEOUT,
     Index,
+    LowDisk,
     Stopped,
     SyncProgress,
     path_key,
@@ -164,6 +165,9 @@ def serve(index: Index, timeout: float = FILE_TIMEOUT) -> int:
                 index.extract(scan, _Progress(index, report), timeout=timeout, should_stop=lambda: _stop_asked(index))
             except Stopped:
                 print("stopped", file=log)
+                break
+            except LowDisk as e:  # every folder after this one would stop the same way
+                print(f"stopped: {e}", file=log)
                 break
             except (OSError, sqlite3.Error) as e:  # the folder is gone or unreachable: move on
                 print(f"skipped {job['path']}: {e}", file=log)

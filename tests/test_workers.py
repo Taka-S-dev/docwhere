@@ -139,3 +139,40 @@ def test_what_a_reader_started_ends_with_it_even_when_it_is_killed():
         if win32event.WaitForSingleObject(child, 0) == win32event.WAIT_TIMEOUT:
             win32api.TerminateProcess(child, 1)
         win32api.CloseHandle(child)
+
+
+def test_as_many_readers_start_as_the_free_memory_holds(monkeypatch):
+    todo = [(str(i), Path(f"{i}.txt"), 0, 1, None) for i in range(400)]
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
+    monkeypatch.setattr(index_module, "available_memory", lambda: None)  # cannot be told: as before
+    assert index_module._pool_size(todo, None) == index_module.MAX_WORKERS
+    gb = 1024**3
+    monkeypatch.setattr(index_module, "available_memory", lambda: 2 * gb)
+    assert index_module._pool_size(todo, None) == 2  # 1 GB kept free, 400 MB a reader
+    monkeypatch.setattr(index_module, "available_memory", lambda: gb // 2)
+    assert index_module._pool_size(todo, None) == 1  # never none at all
+    assert index_module._pool_size(todo, 6) == 6  # as many as asked for
+
+
+def test_the_free_memory_can_be_told_here():
+    free = index_module.available_memory()
+    assert free is None or free > 0
+
+
+def test_reading_stops_when_the_index_drive_is_almost_full_and_keeps_what_was_read(docs, index, monkeypatch):
+    import pytest
+
+    free = iter([10 * 1024**3] + [1024**2] * 100)  # enough when reading starts, then next to none
+    monkeypatch.setattr(index_module, "free_bytes", lambda path: next(free))
+    monkeypatch.setattr(index_module, "SAVE_EVERY_FILES", 1)
+    with pytest.raises(index_module.LowDisk, match="GB free"):
+        index.sync(docs, workers=1)
+    read = index.db.execute("SELECT count(*) FROM files").fetchone()[0]
+    assert read == 1  # saved before stopping
+    monkeypatch.setattr(index_module, "free_bytes", lambda path: 1024**2)
+    with pytest.raises(index_module.LowDisk):
+        index.sync(docs, workers=1)  # nothing read while it stays full
+    assert index.db.execute("SELECT count(*) FROM files").fetchone()[0] == read
+    monkeypatch.setattr(index_module, "free_bytes", lambda path: 10 * 1024**3)
+    index.sync(docs, workers=1)  # room again: the rest is read
+    assert index.db.execute("SELECT count(*) FROM files").fetchone()[0] > read

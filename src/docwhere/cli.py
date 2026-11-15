@@ -16,6 +16,7 @@ from docwhere.extractors import is_serial
 from docwhere.index import (
     FILE_TIMEOUT,
     Index,
+    LowDisk,
     SyncProgress,
     SyncStats,
     default_db_path,
@@ -44,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         return args.func(args)
-    except (FileNotFoundError, NotADirectoryError, LookupError, PermissionError) as e:
+    except (FileNotFoundError, NotADirectoryError, LookupError, PermissionError, LowDisk) as e:
         print(f"docwhere: {e}", file=sys.stderr)
         return 2
 
@@ -427,7 +428,11 @@ def _not_finished(reading: dict) -> str:
 def _extract(index: Index, scan) -> SyncStats:
     from docwhere.progress import Reporter
 
-    stats = index.extract(scan, progress=Reporter(f"indexing {scan.root}"))
+    try:
+        stats = index.extract(scan, progress=Reporter(f"indexing {scan.root}"))
+    except LowDisk as e:  # a search still answers from what is in the index
+        print(f"docwhere: {e}", file=sys.stderr)
+        return scan.stats
     for path in stats.timed_out:
         print(f"gave up on (took too long, listed as unreadable): {path}", file=sys.stderr)
     return stats
