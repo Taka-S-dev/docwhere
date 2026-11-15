@@ -29,6 +29,7 @@ from docwhere.extractors import (
     supported_extensions,
 )
 from docwhere.model import Chunk
+from docwhere.versions import family, newer_versions
 
 SCHEMA_VERSION = 1
 MAX_FILE_BYTES = 200 * 1024 * 1024
@@ -163,6 +164,13 @@ class Index:
             db.execute("ALTER TABLE files ADD COLUMN sha256 TEXT")  # of the content that was read
         if "note" not in {r["name"] for r in db.execute("PRAGMA table_info(files)")}:
             db.execute("ALTER TABLE files ADD COLUMN note TEXT")  # read, but part of it could not be
+        if "family" not in {r["name"] for r in db.execute("PRAGMA table_info(files)")}:
+            # the name versions of one document share (versions.family): a search looks up the
+            # versions of the files it found, not every file of the folders searched
+            db.execute("ALTER TABLE files ADD COLUMN family TEXT")
+            db.executemany("UPDATE files SET family = ? WHERE id = ?",
+                           [(family(r["path"])[0], r["id"]) for r in db.execute("SELECT id, path FROM files")])
+        db.execute("CREATE INDEX IF NOT EXISTS files_family ON files(family)")
         if "reading" not in {r["name"] for r in db.execute("PRAGMA table_info(reader)")}:
             db.execute("ALTER TABLE reader ADD COLUMN reading TEXT")  # files being read now, as JSON
         if "seconds_left" not in {r["name"] for r in db.execute("PRAGMA table_info(reader)")}:
@@ -465,14 +473,14 @@ class Index:
             self.db.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))
             self.db.execute(
                 "UPDATE files SET path = ?, mtime_ns = ?, size = ?, version = ?, error = ?, read_ms = ?, sha256 = ?,"
-                " note = ? WHERE id = ?",
-                (str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, digest, note, file_id),
+                " note = ?, family = ? WHERE id = ?",
+                (str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, digest, note, family(str(path))[0], file_id),
             )
         else:
             file_id = self.db.execute(
-                "INSERT INTO files(key, path, mtime_ns, size, version, error, read_ms, sha256, note)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (key, str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, digest, note),
+                "INSERT INTO files(key, path, mtime_ns, size, version, error, read_ms, sha256, note, family)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (key, str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, digest, note, family(str(path))[0]),
             ).lastrowid
         self.db.executemany(
             "INSERT INTO chunks(file_id, title, crumb, body, anchors) VALUES (?, ?, ?, ?, ?)",
@@ -610,6 +618,19 @@ class Index:
             rows += [r for r in self._files_under(path_key(Path(root).resolve()), "path, error, note")
                      if r["note"] and not r["error"]]
         return sorted(((r["path"], r["note"]) for r in rows), key=lambda x: x[0])
+
+    def newer_among(self, families: set[str], roots: list[Path]) -> dict[str, str]:
+        """``versions.newer_versions`` over the files of ``families`` under ``roots``: each file
+        of those families superseded by a newer version, mapped to that version."""
+        prefixes = [prefix_of(path_key(Path(r).resolve())) for r in roots]
+        names = sorted(families)
+        rows = []
+        for i in range(0, len(names), 500):
+            batch = names[i : i + 500]
+            rows += self.db.execute(
+                f"SELECT key, path, mtime_ns FROM files WHERE family IN ({','.join('?' * len(batch))})", batch
+            ).fetchall()
+        return newer_versions([(r["path"], r["mtime_ns"]) for r in rows if any(r["key"].startswith(p) for p in prefixes)])
 
     def files_in(self, roots: list[Path]) -> list[sqlite3.Row]:
         """path and mtime of every indexed file under ``roots``."""

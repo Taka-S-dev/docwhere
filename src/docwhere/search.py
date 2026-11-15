@@ -23,7 +23,7 @@ from pathlib import Path
 
 from docwhere.index import Index, path_key, prefix_of
 from docwhere.model import norm
-from docwhere.versions import newer_versions
+from docwhere.versions import family
 
 CANDIDATES_PER_TERM = 3000
 REGEX_CANDIDATES = 20000  # a pattern is asked for every match, not the best few
@@ -122,10 +122,11 @@ def search(
     if not candidates:
         return []
 
-    newer = newer_versions([(r["path"], r["mtime_ns"]) for r in index.files_in(roots)])
+    rows = list(_fetch(index, candidates))
+    newer = index.newer_among({r["family"] for r in rows if r["family"]}, roots)  # the versions of these files only
     folded = [t.lower() for t in terms]
     scored = []
-    for row in _fetch(index, candidates):
+    for row in rows:
         if _excluded(row, unwanted):
             continue
         score, matched = score_row(row, folded)
@@ -277,9 +278,10 @@ def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, ex
         candidates.update(ids)
     if not candidates:
         return []
-    newer = newer_versions([(r["path"], r["mtime_ns"]) for r in index.files_in(roots)])
+    rows = list(_fetch(index, candidates))
+    newer = index.newer_among({r["family"] for r in rows if r["family"]}, roots)
     scored = []
-    for row in _fetch(index, candidates):
+    for row in rows:
         if _excluded(row, unwanted):
             continue
         text = "\n".join((row["title"], row["crumb"], row["body"]))
@@ -325,7 +327,6 @@ def search_names(
     known = {path_key(Path(r["path"])) for r in rows}
     rows += [{"path": str(p), "mtime_ns": m, "error": None, "first": None, "unread": True}
              for p, m in unread if path_key(Path(p)) not in known]
-    newer = newer_versions([(r["path"], r["mtime_ns"]) for r in index.files_in(roots)])
     scored = []
     for r in rows:
         path = norm(r["path"])
@@ -346,9 +347,9 @@ def search_names(
             score = sum(W_TITLE if w in folded_name else W_CRUMB for w in words)
         score -= len(name) / 1e4  # of equal matches, the shorter name (the closer one) first
         score += r["mtime_ns"] / 1e9 / 1e10  # then the newer file
-        if r["path"] in newer:
-            score *= SUPERSEDED_FACTOR
         scored.append((score, r, matched))
+    newer = index.newer_among({family(s[1]["path"])[0] for s in scored}, roots)
+    scored = [(score * SUPERSEDED_FACTOR if r["path"] in newer else score, r, m) for score, r, m in scored]
     scored.sort(key=lambda s: (-s[0], s[1]["path"]))
     hits = []
     for score, r, matched in scored[:limit]:
@@ -381,7 +382,7 @@ def _fetch(index: Index, ids: set[int]):
     for i in range(0, len(ids), 900):
         batch = ids[i : i + 900]
         yield from index.db.execute(
-            "SELECT c.id, c.title, c.crumb, c.body, c.anchors, f.path, f.mtime_ns,"
+            "SELECT c.id, c.title, c.crumb, c.body, c.anchors, f.path, f.mtime_ns, f.family,"
             " (SELECT p.title FROM chunks p WHERE p.id = c.id - 1 AND p.file_id = c.file_id) = c.title AS continued"
             " FROM chunks c JOIN files f ON f.id = c.file_id"
             f" WHERE c.id IN ({','.join('?' * len(batch))})",
