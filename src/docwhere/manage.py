@@ -1314,6 +1314,8 @@ MANAGE_JS = r"""(() => {
   };
 
   const base = (p) => String(p).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || String(p);
+  // a key pressed while a Japanese conversion is open (229: the key the IME took for itself)
+  const composing = (e) => e.isComposing || e.keyCode === 229;
   // the two folders a file lies in: what tells hits apart in a list (the full path is the title)
   const nearDir = (p) => {
     const parts = String(p).split(/[\\/]/).filter(Boolean).slice(0, -1);
@@ -1619,7 +1621,7 @@ MANAGE_JS = r"""(() => {
     const hadFocus = box.contains(document.activeElement) && document.activeElement.tagName === "INPUT";
     const input = h("input", { type: "text", placeholder: "例: 旧版、*_bak*、old/2019", "aria-label": `${root.name} で除外するもの` });
     input.value = typed;
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter") addExclude(root, input); });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !composing(e)) addExclude(root, input); });
     const chips = root.excludes.map((x) => h("li", { class: "chip" },
       h("span", { text: x.pattern }),
       x.matched ? h("small", { text: `${fmt(x.matched)} か所` }) : null,
@@ -1933,7 +1935,7 @@ MANAGE_JS = r"""(() => {
     const editing = (on) => { path.hidden = !on; shown.hidden = on; if (on) { path.focus(); path.select(); } else showPath(); };
     shown.addEventListener("click", () => editing(true));
     path.addEventListener("blur", () => { if (path.value.trim()) editing(false); });
-    path.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); path.blur(); } });
+    path.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === "Escape") && !composing(e)) { e.preventDefault(); path.blur(); } });
     const mark = h("span", { class: "mark" });
     const saved = () => contentOf(it) === savedById.get(it.id);
     const showMark = () => {
@@ -2325,10 +2327,14 @@ MANAGE_JS = r"""(() => {
   // the note and the narrowing buttons above change height as results come and go
   const aboveObserver = new ResizeObserver(() => fitPanes());
   for (const id of ["#search-bar-box", "#search-note", "#facets"]) aboveObserver.observe($(id));
-  q.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => runSearch(false), 250); });
+  // the reading typed before a Japanese conversion is not a term yet: search once it is confirmed
+  const searchSoon = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => runSearch(false), 250); };
+  q.addEventListener("input", (e) => { if (!e.isComposing) searchSoon(); });
+  q.addEventListener("compositionend", searchSoon);
   scopeSel.addEventListener("change", () => runSearch(false));
   Object.values(switches).forEach((box) => box.addEventListener("change", () => runSearch(false)));
   q.addEventListener("keydown", (e) => {
+    if (composing(e)) return;  // Enter, the arrows and Escape belong to the conversion then
     const hits = results && results.hits ? results.hits : [];
     if (e.key === "Enter") {
       e.preventDefault();
