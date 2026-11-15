@@ -59,6 +59,48 @@ def test_pdf_pages_take_bookmark_titles(docs):
     assert chunks[2].crumb == "2 CLI > 2.1 config"
 
 
+def test_a_bookmarked_pdf_leaves_its_running_header_and_footer_out_of_each_page(tmp_path):
+    import pymupdf
+
+    doc = pymupdf.open()
+    bodies = ["キャベツを洗う", "ニンジンを切る", "タマネギを炒める", "スープを煮る"]
+    for body in bodies:
+        page = doc.new_page()
+        page.insert_htmlbox(pymupdf.Rect(50, 20, 545, 60), "<p>9 野菜の下ごしらえ</p>")  # running header
+        page.insert_htmlbox(pymupdf.Rect(50, 300, 545, 340), f"<p>{body}</p>")
+        page.insert_htmlbox(pymupdf.Rect(50, 800, 545, 830), "<p>架空の料理本</p>")  # running footer
+    doc.set_toc([[1, "9 野菜の下ごしらえ", 1], [2, "9.1 切り方", 2]])
+    doc.save(tmp_path / "bm.pdf")
+
+    chunks = extract(tmp_path / "bm.pdf")
+    assert [c.lines for c in chunks] == [[b] for b in bodies]
+    assert chunks[2].title == "9.1 切り方"  # the header is gone from the text, not from the title
+
+
+def test_a_line_in_the_middle_of_pages_is_kept_even_when_it_repeats(tmp_path):
+    import pymupdf
+
+    doc = pymupdf.open()
+    for _ in range(4):
+        doc.new_page().insert_htmlbox(pymupdf.Rect(50, 300, 545, 340), "<p>材料を量る</p>")
+    doc.set_toc([[1, "1 準備", 1]])
+    doc.save(tmp_path / "same.pdf")
+    assert [c.lines for c in extract(tmp_path / "same.pdf")] == [["材料を量る"]] * 4
+
+
+def test_a_word_that_only_sometimes_ends_a_page_is_kept_there(tmp_path):
+    import pymupdf
+
+    doc = pymupdf.open()
+    for i in range(8):
+        page = doc.new_page()
+        page.insert_htmlbox(pymupdf.Rect(50, 300, 545, 340), f"<p>手順 {i}</p>")
+        page.insert_htmlbox(pymupdf.Rect(50, 800 if i < 3 else 400, 545, 830 if i < 3 else 430), "<p>注意</p>")
+    doc.set_toc([[1, "1 準備", 1]])
+    doc.save(tmp_path / "word.pdf")
+    assert all("注意" in c.lines for c in extract(tmp_path / "word.pdf"))
+
+
 def test_excel_lines_are_rows_led_by_the_header(docs):
     (chunk,) = extract(docs / "コマンド一覧.xlsx")
     assert chunk.title == "CLI"

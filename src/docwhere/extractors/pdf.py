@@ -1,7 +1,8 @@
 """PDF: sectioned by the bookmark (outline) tree when there is one, otherwise by headings
 recognised from the layout (larger or bold short lines, 第N章 lines).
 
-With bookmarks, a chunk is a page titled by the bookmark it falls under. Without them, a
+With bookmarks, a chunk is a page titled by the bookmark it falls under, without the running
+header and footer lines that repeat at the page's top and bottom edge. Without them, a
 chunk is a detected section that may span pages, each line anchored to its own page.
 """
 
@@ -18,6 +19,10 @@ HEADING_SIZE_RATIO = 1.15  # this much larger than body text counts as a heading
 MAX_HEADING_CHARS = 60
 MAX_HEADING_LEVELS = 3
 MAX_PAGES_NAMED = 10  # pages without text named in the file's note; the count is always given
+EDGE_BAND = 0.1  # this share of the page height at the top and bottom holds running headers/footers
+EDGE_BLOCKS = 2  # outermost text blocks at the top and at the bottom looked at for one
+RUNNING_PAGES = 3  # an edge line on this many pages is a running header or footer...
+RUNNING_AT_EDGE = 0.9  # ...when this share of the pages it is on have it at the edge
 _CHAPTER = re.compile(r"^第\s*[0-9一二三四五六七八九十百]+\s*([章部編節])")
 _NUMBERED = re.compile(r"^(\d+(?:\.\d+){0,4})\.?\s+\S")
 _SENTENCE_END = ("。", "、", "，", ",", ":", "：")
@@ -51,24 +56,48 @@ def _by_bookmarks(doc, toc: list[tuple[int, str, int]], textless: list[int]) -> 
     for level, title, page in toc:
         starts.setdefault(page, []).append((level, title))
 
+    pages = [(page.number + 1, _page_lines(page)) for page in doc]
+    at_edge: Counter[str] = Counter()
+    anywhere: Counter[str] = Counter()
+    for _, tagged in pages:
+        at_edge.update({line for line, edge in tagged if edge})
+        anywhere.update({line for line, _ in tagged})
+    # A chapter's running header changes from chapter to chapter, so it is counted by pages, not
+    # as a share of the document. It is at the edge wherever it is; a word or a list's "1)" that
+    # only now and then ends a page is body text.
+    running = {line for line, n in at_edge.items() if n >= RUNNING_PAGES and n >= anywhere[line] * RUNNING_AT_EDGE}
+
     chunks: list[Chunk] = []
     stack: list[str] = []
-    for page in doc:
-        no = page.number + 1
+    for no, tagged in pages:
         here = starts.get(no, [])
         for level, title in here:
             del stack[level - 1 :]
             stack.extend([""] * (level - 1 - len(stack)))
             stack.append(title)
-        lines = [line for line in map(norm, page.get_text().splitlines()) if line]
-        if not lines:
+        if not tagged:
             textless.append(no)
             continue
         # Every bookmark that starts on this page is searchable as a heading; a page in the
         # middle of a section inherits the section's title.
         title = " / ".join(t for _, t in here) if here else (stack[-1] if stack else "")
+        # a running header or footer is on every page of a chapter: as the body it would be every
+        # page's snippet and score; a page that holds nothing else keeps it
+        lines = [line for line, edge in tagged if not (edge and line in running)] or [line for line, _ in tagged]
         chunks.append(Chunk(title, " > ".join(t for t in stack if t), lines, [{"page": no}]))
     return chunks
+
+
+def _page_lines(page) -> list[tuple[str, bool]]:
+    """(line, at the edge) for each line of the page in reading order. At the edge means in one of
+    the EDGE_BLOCKS outermost text blocks at the top or bottom, within EDGE_BAND of the page
+    height: where a running header or footer sits, and a table's cells only seldom."""
+    blocks = [b for b in page.get_text("blocks") if b[6] == 0]  # 0: text, 1: image
+    height = page.rect.height
+    top, bottom = page.rect.y0 + height * EDGE_BAND, page.rect.y1 - height * EDGE_BAND
+    by_y = sorted(range(len(blocks)), key=lambda i: blocks[i][1])
+    edge = {i for i in by_y[:EDGE_BLOCKS] if blocks[i][3] <= top} | {i for i in by_y[-EDGE_BLOCKS:] if blocks[i][1] >= bottom}
+    return [(line, i in edge) for i, b in enumerate(blocks) for line in map(norm, b[4].splitlines()) if line]
 
 
 def _by_layout(doc, textless: list[int]) -> list[Chunk]:
