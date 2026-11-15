@@ -190,3 +190,10 @@ def test_a_partly_scanned_pdf_is_listed_and_old_reads_are_redone(docs, index):
     # PDFs read before pages without text were noted are read again; other formats are not
     index.db.execute("UPDATE files SET version = version - 1")
     assert [Path(t[1]).suffix for t in index.scan(docs).todo] == [".pdf", ".pdf"]
+
+
+def test_every_match_is_counted_before_a_few_of_each_file_are_kept(docs, index):
+    index.sync(docs)
+    found: dict = {}
+    hits = search(index, [docs], ["config"], per_file=1, limit=2, found=found)
+    assert len(hits) == 2 and found["files"] == 4 and found["sections"] > 4

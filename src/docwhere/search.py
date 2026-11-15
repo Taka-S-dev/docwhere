@@ -76,6 +76,7 @@ def search(
     exclude: list[str] = (),
     regex: bool = False,
     capped: list[str] | None = None,
+    found: dict | None = None,
 ) -> list[Hit]:
     """Sections under ``roots`` matching ``terms`` (any of them, or all with ``require_all``),
     best first. A term is matched as written, spaces included, so a quoted phrase stays one.
@@ -84,9 +85,10 @@ def search(
 
     Each term brings at most CANDIDATES_PER_TERM sections to be ranked (REGEX_CANDIDATES for a
     pattern); the terms that reached it are added to ``capped``, as sections past it were never
-    looked at and a better one may be among them."""
+    looked at and a better one may be among them. ``found`` is given how many sections matched
+    and in how many files, before ``limit`` and ``per_file`` keep the first of them."""
     if regex:
-        return _search_regex(index, roots, terms, require_all, exts, limit, per_file, exclude, capped)
+        return _search_regex(index, roots, terms, require_all, exts, limit, per_file, exclude, capped, found)
     terms = list(dict.fromkeys(t for t in map(norm, terms) if t))
     if not terms:
         return []
@@ -109,10 +111,10 @@ def search(
                 f" AND {scope_sql} LIMIT ?"
             )
             args = [like, like, like]
-        found = [r[0] for r in index.db.execute(sql, [*args, *scope_args, CANDIDATES_PER_TERM])]
-        if len(found) >= CANDIDATES_PER_TERM and capped is not None:
+        ids = [r[0] for r in index.db.execute(sql, [*args, *scope_args, CANDIDATES_PER_TERM])]
+        if len(ids) >= CANDIDATES_PER_TERM and capped is not None:
             capped.append(term)
-        candidates.update(found)
+        candidates.update(ids)
     if not candidates:
         return []
 
@@ -127,17 +129,36 @@ def search(
             if row["path"] in newer:
                 score *= SUPERSEDED_FACTOR
             scored.append((score, row, [terms[i] for i in matched]))
-    return _hits(scored, newer, limit, per_file)
+    _count(scored, found)
+    return _hits(scored, newer, limit, per_file, found)
 
 
-def _hits(scored: list[tuple], newer: dict, limit: int, per_file: int) -> list[Hit]:
+def _count(scored: list[tuple], found: dict | None) -> None:
+    if found is not None:
+        found["sections"] = len(scored)
+        found["files"] = len({s[1]["path"] for s in scored})
+
+
+def _hits(scored: list[tuple], newer: dict, limit: int, per_file: int, found: dict | None = None) -> list[Hit]:
+    """The first ``limit`` of ``scored``, at most ``per_file`` of a file. With ``found`` holding
+    "then_rest", the sections past ``per_file`` follow in rank order up to ``limit`` in all, and
+    ``found["first"]`` says how many came before them."""
     scored.sort(key=lambda s: (-s[0], s[1]["path"], s[1]["id"]))
-    hits: list[Hit] = []
     per_path: dict[str, int] = {}
-    for score, row, matched in scored:
-        if per_path.get(row["path"], 0) >= per_file:
-            continue
-        per_path[row["path"]] = per_path.get(row["path"], 0) + 1
+    first, rest = [], []
+    for item in scored:
+        path = item[1]["path"]
+        if per_path.get(path, 0) < per_file:
+            per_path[path] = per_path.get(path, 0) + 1
+            first.append(item)
+            if len(first) >= limit:
+                break
+        elif found is not None and found.get("then_rest"):
+            rest.append(item)
+    if found is not None and found.get("then_rest"):
+        found["first"] = len(first)
+    hits: list[Hit] = []
+    for score, row, matched in (first + rest)[:limit]:
         snippet, anchor = locate_snippet(row, matched)
         hits.append(
             Hit(
@@ -155,8 +176,6 @@ def _hits(scored: list[tuple], newer: dict, limit: int, per_file: int) -> list[H
                 chunk_id=row["id"],
             )
         )
-        if len(hits) >= limit:
-            break
     return hits
 
 
@@ -228,7 +247,7 @@ def required_literal(pattern: str) -> str:
     return max(runs, key=len)
 
 
-def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, exclude, capped=None) -> list[Hit]:
+def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, exclude, capped=None, found=None) -> list[Hit]:
     compiled = compile_patterns([p for p in patterns if p])
     if not compiled:
         return []
@@ -244,10 +263,10 @@ def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, ex
         else:  # nothing to narrow by: every section in scope is looked at
             sql = f"SELECT c.id FROM chunks c JOIN files f ON f.id = c.file_id WHERE {scope_sql}"
             args = scope_args
-        found = [r[0] for r in index.db.execute(sql, args)]
-        if len(literal) >= 3 and len(found) >= REGEX_CANDIDATES and capped is not None:
+        ids = [r[0] for r in index.db.execute(sql, args)]
+        if len(literal) >= 3 and len(ids) >= REGEX_CANDIDATES and capped is not None:
             capped.append(pattern.pattern)
-        candidates.update(found)
+        candidates.update(ids)
     if not candidates:
         return []
     newer = newer_versions([(r["path"], r["mtime_ns"]) for r in index.files_in(roots)])
@@ -256,10 +275,10 @@ def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, ex
         if _excluded(row, unwanted):
             continue
         text = "\n".join((row["title"], row["crumb"], row["body"]))
-        found = [[m.group(0) for m in p.finditer(text)] for p in compiled]
-        if not any(found) or (require_all and not all(found)):
+        matches = [[m.group(0) for m in p.finditer(text)] for p in compiled]
+        if not any(matches) or (require_all and not all(matches)):
             continue
-        strings = [m for ms in found for m in ms]
+        strings = [m for ms in matches for m in ms]
         matched = list(dict.fromkeys(s for s in strings if s))[:MAX_SHOWN_MATCHES]
         if not matched:
             continue
@@ -267,7 +286,8 @@ def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, ex
         if row["path"] in newer:
             score *= SUPERSEDED_FACTOR
         scored.append((score, row, matched))
-    return _hits(scored, newer, limit, per_file)
+    _count(scored, found)
+    return _hits(scored, newer, limit, per_file, found)
 
 
 def search_names(

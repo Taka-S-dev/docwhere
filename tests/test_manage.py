@@ -405,3 +405,18 @@ def test_hits_collected_across_searches_open_together_as_the_index_has_them(api,
     assert api.clear_collected()["count"] == 0
     with pytest.raises(LookupError):
         api.open_collected("")
+
+
+def test_every_match_is_counted_and_the_list_reads_on_past_a_few_of_each_file(api, folder, tmp_path):
+    (folder / "long.md").write_text("".join(f"# part {i}\ntimeout here\n\n" for i in range(5)), encoding="utf-8")
+    index = Index(tmp_path / "db" / "index.db")
+    index.sync(folder)
+    index.close()
+    out = api.search({"text": "timeout"})
+    names = [Path(h["path"]).name for h in out["hits"]]
+    assert out["total"] == 9 and out["files"] == 5  # a.md, b.md, c.md, old/d.md and long.md's five
+    assert out["first"] == 7 and names[:7].count("long.md") == manage.FIRST_PER_FILE  # a few of each first
+    assert names[7:] == ["long.md", "long.md"]  # then the rest, in rank order
+    assert [h["n"] for h in out["hits"]] == list(range(1, 10))  # numbered as listed, so each can be opened
+    narrowed = api.search({"text": "timeout", "facet": {"folder": "old"}})
+    assert (narrowed["total"], narrowed["files"]) == (1, 1)  # counted from what the narrowing keeps

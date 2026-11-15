@@ -38,7 +38,8 @@ DEFAULT_SIZE = (1040, 800)
 START_TIMEOUT = 15.0
 MAX_UNREADABLE = 200  # unreadable files listed per folder; the count is always given
 SLOWEST_SHOWN = 5  # files that took longest, listed per folder
-SEARCH_LIMIT = 30  # hits shown in the search tab
+SEARCH_LIMIT = 30  # hits opened together at most
+FIRST_PER_FILE = 3  # sections of one file in the first hits shown, so one long file does not fill the list
 COLLECTED_NAME = "collected.json"  # hits collected in the search tab, beside the index
 MAX_COLLECTED = 50  # hits one reading page shows together
 SEARCH_POOL = 300  # hits counted by kind, format and folder, so a narrowing button tells what it keeps
@@ -389,24 +390,32 @@ class ManageApi:
             if query.get("variants") and not (regex or name or every):
                 variants = expand_variants(terms, load_variant_groups(self._db.with_name(SYNONYMS_NAME)))
 
-            def run(words: list[str], leave_out: list[str], require_all: bool, limit: int, capped=None) -> list[dict]:
+            def run(words: list[str], leave_out: list[str], require_all: bool, limit: int, capped=None,
+                    per_file: int = FIRST_PER_FILE, counted: dict | None = None) -> list[dict]:
                 if not roots:
                     return []
                 try:
                     if name:
-                        found = search_names(index, roots, words, limit=limit, exclude=leave_out, regex=regex)
+                        hits = search_names(index, roots, words, limit=limit, exclude=leave_out, regex=regex)
                     else:
-                        found = search(index, roots, words, require_all=require_all, limit=limit,
-                                       exclude=leave_out, regex=regex, capped=capped)
+                        hits = search(index, roots, words, require_all=require_all, limit=limit, per_file=per_file,
+                                      exclude=leave_out, regex=regex, capped=capped, found=counted)
                 except PatternError as e:
                     raise ValueError(f"正規表現として読めません: {e}") from None
-                return [h.to_dict() for h in found]
+                return [h.to_dict() for h in hits]
 
             capped: list[str] = []  # terms in more sections than are ranked: a better one may be missed
-            pool = run(terms + variants, exclude, every, SEARCH_POOL, capped)
+            # how many sections matched, in how many files; and, in one search, first a few of each
+            # file, so one long manual does not fill the list, then every other match in rank
+            # order, whatever its file, which "show more" reads on into
+            counted: dict = {"then_rest": True}
+            pool = run(terms + variants, exclude, every, SEARCH_POOL, capped, FIRST_PER_FILE, counted)
+            for hit in pool[: counted.get("first", len(pool))]:
+                hit["first"] = True
             facets = self._facets(pool, roots)
             chosen = query.get("facet") if isinstance(query.get("facet"), dict) else {}
             kept = [h for h, f in zip(pool, facets["of"]) if all(f.get(k) == v for k, v in chosen.items() if v)]
+            narrowed = any(chosen.values())  # by kind, format or folder: counted from the list
             for n, hit in enumerate(kept, 1):
                 hit["n"] = n  # numbered as shown, so the buttons name the hit they show
             self._results = (terms + variants, kept)
@@ -429,7 +438,11 @@ class ManageApi:
                     hints.append(f"{'、'.join(short)} のような 2 文字の語は索引を使わずに探すため、時間がかかります。"
                                  "3 文字以上の語を足すと速くなります")
             return {
-                "hits": kept[:SEARCH_LIMIT], "total": len(kept), "pooled": len(pool) >= SEARCH_POOL,
+                # every match is counted; the list holds the first SEARCH_POOL of them
+                "hits": kept, "first": sum(1 for h in kept if h.get("first")),
+                "total": len(kept) if narrowed else counted.get("sections", len(kept)),
+                "files": len({h["path"] for h in kept}) if narrowed else counted.get("files", len({h["path"] for h in kept})),
+                "pooled": not narrowed and counted.get("sections", 0) > len(pool),
                 "terms": terms, "variants": variants, "exclude": exclude, "roots": [str(r) for r in roots],
                 "missing": missing, "ms": round((time.monotonic() - started) * 1000), "limit": SEARCH_LIMIT,
                 "facets": facets["counts"], "facet": chosen, "hints": hints,
@@ -1052,6 +1065,7 @@ BODY = """<div class="wrap" id="app">
   <div class="search-list">
     <ol class="results" id="results" role="listbox" aria-label="検索結果"></ol>
     <div class="search-more" id="search-more" hidden>
+      <button type="button" class="btn" id="more-hits" data-act="more-hits" hidden>もっと見る</button>
       <button type="button" class="btn" id="view-all" data-act="view-all" title="上から順に、該当箇所に枠を付けて読み取り画面に並べます">該当箇所をまとめて見る</button>
     </div>
   </div>
@@ -1260,7 +1274,8 @@ html { scrollbar-gutter: stable; }
 .search-body.fit .search-list { display: flex; flex-direction: column; }
 .search-body.fit .results { flex: 0 1 auto; min-height: 0; overflow: auto; }
 .search-body.fit .preview { position: relative; top: auto; max-height: none; }
-.search-more { margin: 12px 0 0; }
+.search-more { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; }
+.search-more[hidden] { display: none; }
 .search-tips p { max-width: 640px; margin: 0 auto 8px; color: var(--muted); }
 .search-tips p.empty-title { color: var(--ink); }
 .head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap;
@@ -2435,7 +2450,7 @@ MANAGE_JS = r"""(() => {
     busy(true);
     api.search({ text, scope: scopeSel.value, all: switches.all.checked, name: switches.name.checked,
       regex: switches.regex.checked, variants: switches.variants.checked, facet })
-      .then((r) => { if (mine === searchSeq) { busy(false); results = r; activeHit = 0; renderResults(); } })
+      .then((r) => { if (mine === searchSeq) { busy(false); results = r; activeHit = 0; visible = firstShown(r); renderResults(); } })
       .catch((e) => { if (mine === searchSeq) { busy(false); results = { error: reason(e), hits: [] }; renderResults(); } });
   };
   const viewHits = (numbers) => opening("読み取り画面を作っています…（Word・PowerPoint は数秒かかることがあります）",
@@ -2615,7 +2630,13 @@ MANAGE_JS = r"""(() => {
     renderPreview();
   };
 
-  const renderResults = () => {
+  // how many of the answer's hits the list shows: at first a few of each file (at least
+  // MORE_STEP / 2, at most SEARCH_SHOWN), then MORE_STEP more each time "show more" is pressed
+  const MORE_STEP = 20;
+  const SEARCH_SHOWN = 30;
+  let visible = 0;
+  const firstShown = (r) => (r && r.hits ? Math.min(r.hits.length, Math.min(SEARCH_SHOWN, Math.max(r.first || 0, MORE_STEP / 2))) : 0);
+  const renderResults = (keepPane) => {
     const list = $("#results");
     const note = $("#search-note");
     $("#search-tips").hidden = Boolean(results);
@@ -2633,10 +2654,13 @@ MANAGE_JS = r"""(() => {
       renderFacets();
       return;
     }
-    const hits = results.hits;
-    const shown = hits.length < results.total ? `（上位 ${fmt(hits.length)} 件を表示）` : "";
+    const hits = results.hits.slice(0, visible);
+    // every match counted, then how many are shown: the list holds a few of each file first
+    const unit = switches.name.checked ? "件" : "か所";
+    const files = !switches.name.checked && results.files ? `（${fmt(results.files)} ファイル）` : "";
+    const shown = hits.length < results.total ? `のうち ${fmt(hits.length)} ${unit}を表示` : "";
     $("#search-meta").textContent = results.total
-      ? `${fmt(results.total)}${results.pooled ? " 件以上" : " 件"}${shown}　${fmt(results.ms)} ミリ秒` : "見つかりません";
+      ? `${fmt(results.total)}${results.pooled ? ` ${unit}以上` : ` ${unit}`}${files}${shown}　${fmt(results.ms)} ミリ秒` : "見つかりません";
     const notes = [];
     if (results.variants && results.variants.length) notes.push(`言い換えも探しました: ${results.variants.join("、")}`);
     const pending = pendingIn(results.roots || []);
@@ -2681,10 +2705,19 @@ MANAGE_JS = r"""(() => {
     }));
     // the hits with a spot to frame, up to VIEW_TOGETHER: named by their count, like the single one's button
     const together = Math.min(VIEW_TOGETHER, hits.filter((x) => x.chunk_id).length);
-    $("#search-more").hidden = together < 2;
+    const left = results.hits.length - hits.length;
+    $("#view-all").hidden = together < 2;
     $("#view-all").textContent = `${together} 件の該当箇所をまとめて見る`;
+    $("#more-hits").hidden = !left;
+    $("#more-hits").textContent = `もっと見る（残り ${fmt(left)} ${unit}）`;
+    $("#search-more").hidden = together < 2 && !left;
     fitPanes();
-    renderPreview();
+    if (!keepPane) renderPreview();
+  };
+  // more hits under the list, in rank order whatever their file; the chosen one stays in the pane
+  const showMoreHits = () => {
+    visible = Math.min(results.hits.length, visible + MORE_STEP);
+    renderResults(true);
   };
 
   // the list and the pane take the rest of the window's height; a window too short or too narrow
@@ -2724,7 +2757,7 @@ MANAGE_JS = r"""(() => {
   [switches.all, switches.name, switches.regex].forEach((box) => box.addEventListener("change", showMore));
   q.addEventListener("keydown", (e) => {
     if (composing(e)) return;  // Enter, the arrows and Escape belong to the conversion then
-    const hits = results && results.hits ? results.hits : [];
+    const hits = results && results.hits ? results.hits.slice(0, visible) : [];
     if (e.key === "Enter") {
       e.preventDefault();
       if (!results || results.error || !hits.length) { runSearch(false); return; }
@@ -2732,6 +2765,11 @@ MANAGE_JS = r"""(() => {
       if (hit) (hit.chunk_id ? viewHits([hit.n]) : openFile(hit.n));
     } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && hits.length) {
       e.preventDefault();
+      if (e.key === "ArrowDown" && activeHit === hits.length - 1 && visible < results.hits.length) {
+        showMoreHits();  // past the last hit shown: the next ones come in
+        selectHit(activeHit + 1, true);
+        return;
+      }
       selectHit(Math.max(0, Math.min(hits.length - 1, activeHit + (e.key === "ArrowDown" ? 1 : -1))), true);
     } else if (e.key === "c" && e.ctrlKey && e.shiftKey && hits[activeHit]) {
       e.preventDefault();
@@ -2830,6 +2868,7 @@ MANAGE_JS = r"""(() => {
     }
     else if (what === "view-all") viewHits(results.hits.filter((x) => x.chunk_id).slice(0, VIEW_TOGETHER).map((x) => x.n));
     else if (what === "settings") openSettings();
+    else if (what === "more-hits") showMoreHits();
     else if (what === "collect-view") viewCollected();
     else if (what === "collect-clear") {
       confirmAction("調査リストを空にしますか", "調査リストの中身を消します。リストから開いたページは質問の履歴に残ります。", "空にする", true)
