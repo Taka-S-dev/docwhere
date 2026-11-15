@@ -234,3 +234,28 @@ def test_a_scan_of_every_section_stops_at_its_time_and_says_so(docs, index, monk
     found: dict = {}
     search(index, [docs], ["c.nfig"], regex=True, capped=capped, found=found)
     assert capped == ["c.nfig"] and found["at_least"] is True  # cut short, and the rest is said to be unseen
+
+
+def test_a_hit_says_which_pages_its_heading_runs_over(tmp_path, capsys, monkeypatch):
+    import json
+
+    import pymupdf
+
+    from docwhere.cli import main
+
+    folder = tmp_path / "books"
+    folder.mkdir()
+    doc = pymupdf.open()
+    for body in ["献立を決める", "キャベツを洗う", "ニンジンを切る", "ドレッシングを混ぜる", "タマネギを炒める", "皿に盛る"]:
+        doc.new_page().insert_htmlbox(pymupdf.Rect(50, 300, 545, 340), f"<p>{body}</p>")
+    doc.set_toc([[1, "1 準備", 1], [1, "2 サラダ", 2], [1, "3 仕上げ", 6]])
+    doc.save(folder / "料理.pdf")
+    monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "index" / "index.db"))
+
+    assert main(["search", "ドレッシング", "皿", "--in", str(folder), "--json"]) == 0
+    hits = {h["location"]: h for h in json.loads(capsys.readouterr().out)["hits"]}
+    assert hits["p.4"]["heading_pages"] == "p.2-5"  # the salad's heading runs over pages 2 to 5
+    assert hits["p.6"]["heading_pages"] is None  # a heading on one page says nothing more
+
+    assert main(["search", "ドレッシング", "--in", str(folder)]) == 0
+    assert "p.4 (the heading runs over p.2-5)" in capsys.readouterr().out

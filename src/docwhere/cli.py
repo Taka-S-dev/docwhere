@@ -325,7 +325,8 @@ def cmd_search(args) -> int:
         print("no hits")
     for h in hits:
         heading = h.crumb or (h.title if h.title != Path(h.path).name else "")  # a --name hit is the file itself
-        line = "  ".join(x for x in (Path(h.path).name, heading, h.location, f"({h.modified})") if x)
+        where = h.location + (f" (the heading runs over {h.heading_pages})" if h.heading_pages else "")
+        line = "  ".join(x for x in (Path(h.path).name, heading, where, f"({h.modified})") if x)
         print(f"{h.n:>2}. {line}")
         print(f"    {highlight(h.snippet, h.terms)}")
         print(f"    {h.path}")

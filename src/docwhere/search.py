@@ -60,6 +60,9 @@ class Hit:
     newer_version: str | None
     anchor: dict
     chunk_id: int
+    # "p.12-18" when the hit is one page of a PDF section that runs over several pages, each
+    # its own section with the same heading: the answer may be on a page next to this one
+    heading_pages: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -94,7 +97,7 @@ def search(
     and in how many files, before ``limit`` and ``per_file`` keep the first of them; with
     ``at_least`` set when a term reached its limit, so more may match than were counted."""
     if regex:
-        return _search_regex(index, roots, terms, require_all, exts, limit, per_file, exclude, capped, found)
+        return _with_heading_pages(index, _search_regex(index, roots, terms, require_all, exts, limit, per_file, exclude, capped, found))
     terms = list(dict.fromkeys(t for t in map(norm, terms) if t))
     if not terms:
         return []
@@ -141,7 +144,40 @@ def search(
                 score *= SUPERSEDED_FACTOR
             scored.append((score, row, [terms[i] for i in matched]))
     _count(scored, found)
-    return _hits(scored, newer, limit, per_file, found)
+    return _with_heading_pages(index, _hits(scored, newer, limit, per_file, found))
+
+
+HEADING_PAGES_LOOKED_AT = 300  # pages either side of a hit looked at for the rest of its heading
+
+
+def _with_heading_pages(index: Index, hits: list[Hit]) -> list[Hit]:
+    """Set ``heading_pages`` on each hit that is one page of a heading spanning several pages (a
+    bookmarked PDF is read a page a section). Only shown, never ranked: the order of the hits
+    is the same with or without it."""
+    for hit in hits:
+        if "page" not in hit.anchor or not hit.title:
+            continue
+        rows = index.db.execute(
+            "SELECT id, title, anchors FROM chunks WHERE file_id = (SELECT file_id FROM chunks WHERE id = ?)"
+            " AND id BETWEEN ? AND ? ORDER BY id",
+            (hit.chunk_id, hit.chunk_id - HEADING_PAGES_LOOKED_AT, hit.chunk_id + HEADING_PAGES_LOOKED_AT),
+        ).fetchall()
+        at = next((i for i, r in enumerate(rows) if r["id"] == hit.chunk_id), None)
+        if at is None:
+            continue
+
+        def page_of(r, title: str = hit.title):
+            anchors = json.loads(r["anchors"])
+            return anchors[0].get("page") if len(anchors) == 1 and r["title"] == title else None
+
+        first = last = at
+        while first > 0 and rows[first - 1]["id"] == rows[first]["id"] - 1 and page_of(rows[first - 1]) is not None:
+            first -= 1
+        while last + 1 < len(rows) and rows[last + 1]["id"] == rows[last]["id"] + 1 and page_of(rows[last + 1]) is not None:
+            last += 1
+        if first < last and page_of(rows[first]) is not None and page_of(rows[last]) is not None:
+            hit.heading_pages = f"p.{page_of(rows[first])}-{page_of(rows[last])}"
+    return hits
 
 
 def _count(scored: list[tuple], found: dict | None) -> None:
