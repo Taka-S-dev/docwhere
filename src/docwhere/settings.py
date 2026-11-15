@@ -34,6 +34,33 @@ def save_settings(db: Path, **changes) -> None:
     path.write_text(json.dumps(settings, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
+# How much of a file's place a source names, as set in the settings dialog: the file's name,
+# its path from the indexed folder it lies in (folders often name the document, and the
+# indexed folder is where the user chose to start), or the whole path.
+CITE_MODES = ("name", "root", "full")
+
+
+def cite_mode(db: Path) -> str:
+    mode = load_settings(db).get("cite_path")
+    return mode if mode in CITE_MODES else "root"
+
+
+def cite_name(path: str, mode: str, roots: list[str] = ()) -> str:
+    """The file as a source names it (see CITE_MODES). With "root", the outermost of ``roots``
+    the file lies in is named with the path below it; a file in none is named alone."""
+    p = Path(path)
+    if mode == "full":
+        return str(p)
+    if mode == "root":
+        key = os.path.normcase(str(p))
+        inside = [Path(r) for r in roots if key.startswith(os.path.normcase(str(Path(r))).rstrip("\\/") + os.sep)]
+        if inside:
+            top = min(inside, key=lambda r: len(str(r)))  # a folder inside another: from the outer one
+            below = str(p)[len(str(top).rstrip("\\/")):].strip("\\/")  # matched ignoring case above
+            return f"{top.name or str(top).rstrip(chr(92))}\\{below}"
+    return p.name
+
+
 # SYSTEM and the local Administrators group can write anywhere anyway.
 _TRUSTED_SIDS = {"S-1-5-18", "S-1-5-32-544"}
 _INHERIT_ONLY_ACE = 0x08

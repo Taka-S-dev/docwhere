@@ -128,14 +128,15 @@ def test_settings_round_trip_and_bad_entries_change_nothing(api, tmp_path, monke
 
     saved = api.save_settings({"pdf_program": str(exe), "pdf_args": api.preset(str(exe)), "title": "手順書", "viewer": "window"})
     assert saved == {"title": "手順書", "viewer": "window", "pdf_program": str(exe.resolve()),
-                     "pdf_args": "-reuse-instance -page {page} {file}", "copy_caption": True}
+                     "pdf_args": "-reuse-instance -page {page} {file}", "copy_caption": True,
+                     "cite_path": "root"}
     with pytest.raises(FileNotFoundError):
         api.save_settings({"pdf_program": str(tmp_path / "gone.exe"), "pdf_args": "{file}", "title": "x", "viewer": "browser"})
     assert api.settings() == saved  # nothing was half-saved
 
     api.save_settings({"pdf_program": "", "pdf_args": "", "title": "", "viewer": "browser"})
     assert api.settings() == {"title": "Reference", "viewer": "browser", "pdf_program": "", "pdf_args": "",
-                              "copy_caption": True}
+                              "copy_caption": True, "cite_path": "root"}
 
 
 def test_args_keep_windows_paths_and_quoted_parts():
@@ -301,8 +302,8 @@ def test_a_page_or_a_region_of_it_is_copied_as_a_picture_with_its_source(api, tm
     pdf = str(docs / "sub" / "設計書.pdf")
     put = []
     monkeypatch.setattr(window, "_put_picture", lambda png, dib: put.append((png, dib)))  # not the user's clipboard
-    whole = api.copy_page(pdf, 2, ["config"], [], None, "設計書.pdf「CLI」 p.2")
-    part = api.copy_page(pdf, 2, ["config"], [], [0.5, 0.5, 0.0, 0.0], "設計書.pdf「CLI」 p.2")  # dragged up and left
+    whole = api.copy_page(pdf, 2, ["config"], [], None, pdf, "「CLI」 p.2")
+    part = api.copy_page(pdf, 2, ["config"], [], [0.5, 0.5, 0.0, 0.0], pdf, "「CLI」 p.2")  # dragged up and left
     w, h = (int(x) for x in whole.split(" x "))
     pw, ph = (int(x) for x in part.split(" x "))
     assert abs(pw - w / 2) <= 1 and h > ph > (h - 40) / 2  # half the page, and the source under each
@@ -312,10 +313,32 @@ def test_a_page_or_a_region_of_it_is_copied_as_a_picture_with_its_source(api, tm
     # without the source when the settings say so
     window.save_settings_values(db, {"title": "", "viewer": "window", "copy_caption": False})
     assert window.settings_values(db)["copy_caption"] is False
-    api.copy_page(pdf, 2, [], [], [0.0, 0.0, 0.5, 0.5], "x")
+    api.copy_page(pdf, 2, [], [], [0.0, 0.0, 0.5, 0.5], pdf, "x")
     plain = Image.open(io.BytesIO(put[2][0])).size
     assert plain[0] == pw and plain[1] < ph  # the same region, with no band under it
     with pytest.raises(ValueError, match="小さすぎ"):
-        api.copy_page(pdf, 2, [], [], [0.2, 0.2, 0.2005, 0.5], "")
+        api.copy_page(pdf, 2, [], [], [0.2, 0.2, 0.2005, 0.5], pdf, "")
     with pytest.raises(PermissionError):
-        api.copy_page(str(tmp_path / "elsewhere.pdf"), 1, [], [], None, "")
+        api.copy_page(str(tmp_path / "elsewhere.pdf"), 1, [], [], None, "", "")
+
+
+def test_a_source_names_its_file_as_the_settings_say(api, monkeypatch):
+    from docwhere.settings import cite_name
+
+    roots = [r"C:\data\手順書", r"C:\data\手順書\第2版"]
+    path = r"C:\data\手順書\第2版\設計書.pdf"
+    assert cite_name(path, "name", roots) == "設計書.pdf"
+    assert cite_name(path, "root", roots) == r"手順書\第2版\設計書.pdf"  # from the outer folder, the inner one named
+    assert cite_name(r"c:\DATA\手順書\a.pdf", "root", roots) == r"手順書\a.pdf"  # letter case aside
+    assert cite_name(r"E:\x\a.pdf", "root", roots) == "a.pdf"  # in no folder of the index
+    assert cite_name(path, "full", roots) == path
+    # a copied page names the file it is from, from its indexed folder, as set
+    api, docs, db = api
+    pdf = str(docs / "sub" / "設計書.pdf")
+    captions = []
+    monkeypatch.setattr(window, "page_picture", lambda png, region, caption: captions.append(caption) or (b"", b"", (1, 1)))
+    monkeypatch.setattr(window, "_put_picture", lambda png, dib: None)
+    api.copy_page(pdf, 1, [], [], None, pdf, "「CLI」 p.1")
+    window.save_settings_values(db, {"title": "", "viewer": "window", "cite_path": "name"})
+    api.copy_page(pdf, 1, [], [], None, pdf, "「CLI」 p.1")
+    assert captions == [rf"{docs.name}\sub\設計書.pdf「CLI」 p.1", "設計書.pdf「CLI」 p.1"]

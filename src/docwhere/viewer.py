@@ -339,7 +339,10 @@ def build_html(
             else:
                 ev["target"] = f"hit{n}"
 
-    answer_html = _answer_html(answer, evidence, excerpts)
+    from docwhere.settings import cite_mode
+
+    cite = (cite_mode(index.path), [r["path"] for r in index.roots()])  # how a source names its file
+    answer_html = _answer_html(answer, evidence, excerpts, cite)
     rail = _rail_html(bool(answer_html), evidence, hits, targets)
     shown_title = title or " ".join(terms)
     body = RESULT_BODY.format(
@@ -762,7 +765,7 @@ def _reading_html(reading: dict | None) -> str:
     )
 
 
-def _answer_html(answer: str, evidence: list[dict], excerpts=None) -> str:
+def _answer_html(answer: str, evidence: list[dict], excerpts=None, cite: tuple = ("name", [])) -> str:
     """The answer, then each piece of evidence: where it is written and a close-up, both
     jumping to that page further down."""
     if not (answer or evidence):
@@ -798,8 +801,8 @@ def _answer_html(answer: str, evidence: list[dict], excerpts=None) -> str:
             shown = ev["table"]
         else:
             shown = f'<a class="quote" href="#{ev["target"]}"><blockquote>{esc(ev["quote"])}</blockquote></a>'
-        cite = _citation(hit, ev)
-        button = f'<button type="button" class="cite" data-live hidden data-cite="{esc(cite)}">引用をコピー</button>'
+        citation = _citation(hit, ev, *cite)
+        button = f'<button type="button" class="cite" data-live hidden data-cite="{esc(citation)}">引用をコピー</button>'
         source = source.replace("</p>", f"{button}</p>", 1)
         items.append(f'<div class="evidence">{source}<div>{lead}{shown}</div></div>' if flow
                      else f'<div class="evidence">{source}{shown}</div>')
@@ -918,7 +921,7 @@ def _card(
     elif page_images:
         # pages in page order, each with its number; the hit page is marked
         page = hit["anchor"]["page"]
-        reader = {"data-pdf": hit["pdf"], "data-terms": json.dumps(hit["terms"], ensure_ascii=False),
+        reader = {"data-pdf": hit["pdf"], "data-source": hit["path"], "data-terms": json.dumps(hit["terms"], ensure_ascii=False),
                   "data-quotes": json.dumps(quotes, ensure_ascii=False)}
         attrs = "".join(f' {k}="{esc(v)}"' for k, v in reader.items())
         figures = "".join(
@@ -992,8 +995,10 @@ def _pager(hit: dict, page: int) -> str:
     )
 
 
-def _citation(hit: dict, ev: dict) -> str:
-    where = [Path(hit["path"]).name]
+def _citation(hit: dict, ev: dict, mode: str = "name", roots: list[str] = ()) -> str:
+    from docwhere.settings import cite_name
+
+    where = [cite_name(hit["path"], mode, roots)]
     if ev["section"]:
         where.append(ev["section"])
     if ev["page"]:
@@ -1547,15 +1552,15 @@ APP_JS = r"""(() => {
     homeButton.addEventListener("click", reader.home);
     figure.querySelector("[data-toc]").addEventListener("click", () => openToc(reader));
     // copy the page, or a region of it, as a picture with its source under it
-    const caption = () => {
-      const name = img.alt.replace(/ p\.\d+$/, "");
+    // the heading and page; the file is named in the window, as the settings say
+    const where = () => {
       const section = outline.textContent.trim();
-      return `${name}${section ? `「${section}」` : ""} ${pageText(page)}`;
+      return `${section ? `「${section}」` : ""} ${pageText(page)}`;
     };
     const copyPicture = async (region) => {
       toast("画像を作っています…");
       try {
-        await (await bridge()).copy_page(pdf, page, terms, quotes, region, caption());
+        await (await bridge()).copy_page(pdf, page, terms, quotes, region, figure.dataset.source || pdf, where());
         toast("画像をコピーしました。Excel などに貼り付けられます");
       } catch (e) { failed("コピーでき")(e); }
     };
@@ -1743,6 +1748,12 @@ APP_JS = r"""(() => {
       <label>ウィンドウの名前<input type="text" name="title" spellcheck="false" maxlength="80"></label>
       <label class="check"><input type="checkbox" name="caption"> 画像をコピーするとき、下に出典（ファイル名・見出し・ページ）を入れる</label>
       <fieldset>
+        <legend>出典に入れる場所</legend>
+        <label><input type="radio" name="cite" value="name"> ファイル名だけ</label>
+        <label><input type="radio" name="cite" value="root"> インデックスのフォルダから（例: 資料&#92;第2版&#92;仕様書.pdf）</label>
+        <label><input type="radio" name="cite" value="full"> フルパス（PC の中の場所がそのまま写ります）</label>
+      </fieldset>
+      <fieldset>
         <legend>回答ページの開き方</legend>
         <label><input type="radio" name="viewer" value="window"> このウィンドウ</label>
         <label><input type="radio" name="viewer" value="browser"> ブラウザ</label>
@@ -1775,6 +1786,7 @@ APP_JS = r"""(() => {
     field("args").value = current.pdf_args;
     field("title").value = current.title;
     field("caption").checked = current.copy_caption !== false;
+    form.querySelector(`input[name=cite][value=${["name", "root", "full"].includes(current.cite_path) ? current.cite_path : "root"}]`).checked = true;
     form.querySelector(`input[name=viewer][value=${current.viewer}]`).checked = true;
     setMode(current.pdf_program ? "custom" : "auto");
     const showError = (e) => { error.textContent = (e && e.message) || String(e); error.hidden = false; };
@@ -1808,6 +1820,7 @@ APP_JS = r"""(() => {
           title: field("title").value,
           viewer: form.querySelector("input[name=viewer]:checked").value,
           copy_caption: field("caption").checked,
+          cite_path: form.querySelector("input[name=cite]:checked").value,
         });
         dialog.close();
         toast("設定を保存しました");

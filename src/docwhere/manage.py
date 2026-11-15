@@ -1087,6 +1087,12 @@ BODY = """<div class="wrap" id="app">
   <p class="hint">読み取り画面と、この窓の名前に使います。</p>
   <label class="check"><input type="checkbox" name="caption"> 画像をコピーするとき、下に出典（ファイル名・見出し・ページ）を入れる</label>
   <fieldset>
+    <legend>出典に入れる場所</legend>
+    <label class="choice"><input type="radio" name="cite" value="name"> ファイル名だけ</label>
+    <label class="choice"><input type="radio" name="cite" value="root"> インデックスのフォルダから（例: 資料&#92;第2版&#92;仕様書.pdf）</label>
+    <label class="choice"><input type="radio" name="cite" value="full"> フルパス（PC の中の場所がそのまま写ります）</label>
+  </fieldset>
+  <fieldset>
     <legend>回答ページの開き方</legend>
     <label class="choice"><input type="radio" name="viewer" value="window"> 専用のウィンドウ</label>
     <label class="choice"><input type="radio" name="viewer" value="browser"> ブラウザ</label>
@@ -1518,6 +1524,19 @@ MANAGE_JS = r"""(() => {
 
   const base = (p) => String(p).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || String(p);
   const VIEW_TOGETHER = 10;  // hits put on one reading page by the button under the list
+  // how a source names its file (the settings' choice; see settings.cite_name): its name, its
+  // path from the outermost indexed folder it lies in, or the whole path
+  const CITE_MODES = ["name", "root", "full"];
+  let citeMode = "root";
+  const citeName = (path) => {
+    if (citeMode === "full") return String(path);
+    if (citeMode === "root" && data) {
+      const key = keyOf(path);
+      const tops = data.roots.filter((r) => key.startsWith(`${keyOf(r.path)}\\`)).sort((a, b) => a.path.length - b.path.length);
+      if (tops.length) return `${base(tops[0].path)}\\${String(path).slice(String(tops[0].path).replace(/[\\/]+$/, "").length).replace(/^[\\/]+/, "")}`;
+    }
+    return base(path);
+  };
   // a key pressed while a Japanese conversion is open (229: the key the IME took for itself)
   const composing = (e) => e.isComposing || e.keyCode === 229;
   // the two folders a file lies in: what tells hits apart in a list (the full path is the title)
@@ -1608,6 +1627,7 @@ MANAGE_JS = r"""(() => {
     field("args").value = current.pdf_args;
     field("title").value = current.title;
     field("caption").checked = current.copy_caption !== false;
+    $(`input[name=cite][value=${CITE_MODES.includes(current.cite_path) ? current.cite_path : "root"}]`, settingsForm).checked = true;
     $(`input[name=viewer][value=${current.viewer === "browser" ? "browser" : "window"}]`, settingsForm).checked = true;
     pdfMode(current.pdf_program ? "custom" : "auto");
     settingsError.hidden = true;
@@ -1639,7 +1659,8 @@ MANAGE_JS = r"""(() => {
       title: field("title").value,
       viewer: $("input[name=viewer]:checked", settingsForm).value,
       copy_caption: field("caption").checked,
-    }).then(() => { settingsBox.close(); toast("設定を保存しました"); }).catch(showSettingsError);
+      cite_path: $("input[name=cite]:checked", settingsForm).value,
+    }).then((saved) => { citeMode = saved.cite_path; settingsBox.close(); toast("設定を保存しました"); }).catch(showSettingsError);
   });
 
   // ---- state
@@ -2386,7 +2407,7 @@ MANAGE_JS = r"""(() => {
     .then(() => toast("ファイルを開きました"))
     .catch(failed("ファイルを開けませんでした"));
   const citation = (hit) => {
-    const name = base(hit.path);
+    const name = citeName(hit.path);
     const section = hit.crumb || (hit.title !== name ? hit.title : "");
     return `${name}${section ? `「${section}」` : ""}${hit.location ? ` ${hit.location}` : ""}`;
   };
@@ -2493,6 +2514,7 @@ MANAGE_JS = r"""(() => {
     .catch(failed("開けませんでした"));
   $("#collect-title").addEventListener("keydown", (e) => { if (e.key === "Enter" && !composing(e)) { e.preventDefault(); viewCollected(); } });
   ready.then(() => api.collected()).then(showCollected).catch(() => {});
+  ready.then(() => api.settings()).then((current) => { if (CITE_MODES.includes(current.cite_path)) citeMode = current.cite_path; }).catch(() => {});
 
   // the pane beside the results: the chosen hit's section with those around it, or its page
   const renderPreview = () => {

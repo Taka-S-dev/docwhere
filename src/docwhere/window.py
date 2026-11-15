@@ -32,7 +32,14 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from docwhere.settings import load_settings, private, save_settings
+from docwhere.settings import (
+    CITE_MODES,
+    cite_mode,
+    cite_name,
+    load_settings,
+    private,
+    save_settings,
+)
 
 START_TIMEOUT = 15.0
 DEFAULT_TITLE = "Reference"  # what others see on screen and in the taskbar: no tool name
@@ -128,6 +135,17 @@ CAPTION_PX = 18  # the source written under a copied picture
 CAPTION_FONTS = ("meiryo.ttc", "YuGothM.ttc", "msgothic.ttc")
 
 
+def indexed_roots(db: Path) -> list[str]:
+    """The folders of the index, from which a source may be named (see settings.cite_name)."""
+    from docwhere.index import Index
+
+    index = Index(db)
+    try:
+        return [r["path"] for r in index.roots()]
+    finally:
+        index.close()
+
+
 def copy_caption(db: Path) -> bool:
     """Whether a copied page carries its source under it (on unless turned off in the settings)."""
     return load_settings(db).get("copy_caption") is not False
@@ -197,6 +215,7 @@ def settings_values(db: Path) -> dict:
         "pdf_program": command[0] if command else "",
         "pdf_args": subprocess.list2cmdline(command[1:]) if command else "",
         "copy_caption": copy_caption(db),
+        "cite_path": cite_mode(db),
     }
 
 
@@ -210,6 +229,8 @@ def save_settings_values(db: Path, values: dict) -> None:
     set_mode(db, viewer)
     if "copy_caption" in values:  # a dialog of an older page does not have the switch
         save_settings(db, copy_caption=bool(values["copy_caption"]))
+    if values.get("cite_path") in CITE_MODES:
+        save_settings(db, cite_path=values["cite_path"])
 
 
 def try_pdf_app(pdf: str, page: int, program: str, args: str) -> str:
@@ -474,16 +495,18 @@ class Api:
         return _data_uri(data)
 
     @bridge_method
-    def copy_page(self, pdf: str, page: int, terms: list, quotes: list, region: list | None, caption: str) -> str:
+    def copy_page(self, pdf: str, page: int, terms: list, quotes: list, region: list | None, source: str, where: str) -> str:
         """Put the page (or ``region`` of it: [x0, y0, x1, y1] as fractions of its width and
-        height) on the clipboard as a picture, with the terms marked as shown, and ``caption``
-        written under it unless the settings say not to."""
+        height) on the clipboard as a picture, with the terms marked as shown, and its source
+        written under it unless the settings say not to: ``source`` (the file the page is from,
+        a Word file for its PDF export) named as the settings say, then ``where`` (heading, page)."""
         from docwhere.viewer import render_page
 
         allowed(self._db, pdf, renditions=True, pdf_only=True)
         with self._pdf_lock:
             data = render_page(pdf, int(page), _texts(terms), COPY_DPI, "png", _texts(quotes), source=self._open_pdf(pdf))
-        png, dib, size = page_picture(data, region, str(caption or "")[:300] if copy_caption(self._db) else "")
+        caption = f"{cite_name(str(source or pdf), cite_mode(self._db), indexed_roots(self._db))}{where or ''!s}"[:400]
+        png, dib, size = page_picture(data, region, caption if copy_caption(self._db) else "")
         _put_picture(png, dib)
         return f"{size[0]} x {size[1]}"
 
