@@ -2151,13 +2151,16 @@ MANAGE_JS = r"""(() => {
   const pendingIn = (roots) => {
     // changes the folder tab found in the searched folders, not read yet: the answer may lie there
     let n = 0;
+    const folders = [];
     for (const root of data ? data.roots.filter((r) => !r.parent) : []) {
       const inScope = roots.some((p) => { const k = keyOf(p), r = keyOf(root.path); return k === r || within(k, r) || within(r, k); });
       const c = checks.get(keyOf(root.path));
-      if (inScope && c && c.state === "done" && c.result.exists) n += c.result.new + c.result.changed;
+      const changes = inScope && c && c.state === "done" && c.result.exists ? c.result.new + c.result.changed : 0;
+      if (changes) { n += changes; folders.push(root.path); }
     }
-    return n;
+    return { n, folders };
   };
+  let searchAfterUpdate = false;  // the search to run again once the folders asked for are read
 
   // narrowing buttons: the hits by kind in the map, by format and by folder, with their counts
   const FACETS = [["kind", "種類"], ["ext", "形式"], ["folder", "フォルダ"]];
@@ -2297,13 +2300,27 @@ MANAGE_JS = r"""(() => {
     const notes = [];
     if (results.variants && results.variants.length) notes.push(`言い換えも探しました: ${results.variants.join("、")}`);
     const pending = pendingIn(results.roots || []);
-    if (pending) notes.push(`探した範囲に、まだ読み込んでいない変更が ${fmt(pending)} 件あります。フォルダのタブで更新すると、それも探せます。`);
+    if (pending.n && !searchAfterUpdate) {
+      notes.push(h("span", {}, `探した範囲に、まだ読み込んでいない変更が ${fmt(pending.n)} 件あります。`,
+        h("button", { type: "button", class: "link", text: "更新して探し直す",
+          title: "変わったファイルを読み込み、終わったら同じ条件で探し直します",
+          onclick: () => {
+            searchAfterUpdate = true;
+            renderResults();
+            // not taken (the reading could not start): nothing to wait for
+            update(pending.folders).then(() => {
+              if (!pending.folders.some((p) => requested.has(keyOf(p)))) { searchAfterUpdate = false; renderResults(); }
+            });
+          } })));
+    } else if (searchAfterUpdate) {
+      notes.push("変わったファイルを読み込んでいます。終わったら同じ条件で探し直します。");
+    }
     if (readerOf()) notes.push("裏で読み込み中です。読み込めた分から探しています。");
     if (results.missing) notes.push(`地図のこの種類のうち ${results.missing} フォルダはインデックスにないため、探していません。`);
     if (results.exclude && results.exclude.length) notes.push(`除外: ${results.exclude.join("、")}`);
     notes.push(...(results.hints || []));
     if (!hits.length && !results.roots.length) notes.push("探すフォルダがありません。フォルダのタブで追加してください。");
-    if (notes.length) { note.hidden = false; note.replaceChildren(...notes.map((t) => h("span", { text: t }))); }
+    if (notes.length) { note.hidden = false; note.replaceChildren(...notes.map((t) => (typeof t === "string" ? h("span", { text: t }) : t))); }
     renderFacets();
     const terms = allTerms();
     put(list, hits.map((hit, i) => {
@@ -2439,6 +2456,10 @@ MANAGE_JS = r"""(() => {
       }
       for (const root of next.roots) if (!checks.has(keyOf(root.path)) && root.exists && !statusOf(root).busy) queueCheck(root.path);
       render();
+      if (searchAfterUpdate && !next.reader && !requested.size) {
+        searchAfterUpdate = false;
+        if (q.value.trim()) runSearch(true);  // the narrowing chosen stays
+      }
     } catch (e) {
       toast(`インデックスを読み込めませんでした: ${reason(e)}`);
     } finally {
