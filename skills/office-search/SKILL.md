@@ -44,8 +44,9 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    search it with `docwhere wiki search … --wiki NAME [--space SPACE]` alongside or instead of
    the local folders (read `references/wiki.md` first).
 
-   If the user named a folder, use it. If there is no notes file or no row fits, ask once and
-   offer to draft the map (below); do not search the whole drive.
+   If the user named a folder, use it. If there is no notes file or no row fits, look at
+   `docwhere status` first: when it lists one indexed folder only, search that. Otherwise ask
+   once and offer to draft the map (below); do not search the whole drive.
 
    Also look at the file rows: one whose `note` or `section` fits the question is the first
    place to check: search with `--in` set to its folder and confirm the hit from that file
@@ -179,7 +180,10 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
 
    When a PDF hit's answer sits in a table, figure or boxed note whose extracted text reads
    jumbled, look at the page itself: `docwhere snap --id 412 --term タイムアウト` saves the page
-   as a PNG with the term highlighted and prints its path; read that image.
+   as a PNG with the term highlighted and prints its path; read that image. Do the same when a
+   table's cells come out empty where marks belong (○, ×, ✓ of a permission or support
+   table): such marks are often drawn as shapes, not letters, so the text has nothing there
+   and reads as if the cell were blank.
 
 4. **Answer.**
    - A value question: the value first, then where it is written — "30秒です（通信仕様_v2.docx
