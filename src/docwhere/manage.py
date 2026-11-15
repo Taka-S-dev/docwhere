@@ -381,7 +381,7 @@ class ManageApi:
             if query.get("variants") and not (regex or name or every):
                 variants = expand_variants(terms, load_variant_groups(self._db.with_name(SYNONYMS_NAME)))
 
-            def run(words: list[str], leave_out: list[str], require_all: bool, limit: int) -> list[dict]:
+            def run(words: list[str], leave_out: list[str], require_all: bool, limit: int, capped=None) -> list[dict]:
                 if not roots:
                     return []
                 try:
@@ -389,12 +389,13 @@ class ManageApi:
                         found = search_names(index, roots, words, limit=limit, exclude=leave_out, regex=regex)
                     else:
                         found = search(index, roots, words, require_all=require_all, limit=limit,
-                                       exclude=leave_out, regex=regex)
+                                       exclude=leave_out, regex=regex, capped=capped)
                 except PatternError as e:
                     raise ValueError(f"正規表現として読めません: {e}") from None
                 return [h.to_dict() for h in found]
 
-            pool = run(terms + variants, exclude, every, SEARCH_POOL)
+            capped: list[str] = []  # terms in more sections than are ranked: a better one may be missed
+            pool = run(terms + variants, exclude, every, SEARCH_POOL, capped)
             facets = self._facets(pool, roots)
             chosen = query.get("facet") if isinstance(query.get("facet"), dict) else {}
             kept = [h for h, f in zip(pool, facets["of"]) if all(f.get(k) == v for k, v in chosen.items() if v)]
@@ -406,6 +407,9 @@ class ManageApi:
                 hints.append(f"除外（{'、'.join(exclude)}）を外すと見つかります")
             if not pool and every and len(terms) > 1 and run(terms, exclude, False, 1):
                 hints.append("「すべての語を含む」を外すと見つかります")
+            if capped:
+                hints.append(f"{'、'.join(capped)} は当たる節が多すぎるため、見込みの高い一部だけを順位付けしました。"
+                             "探している箇所が出ないときは、語を足して「すべての語を含む」にするか、範囲を絞ってください")
             # said only when it matters: a one-letter term matches nearly everything, and a term
             # under three letters is searched without the index, which shows on a large one
             if not (regex or name):

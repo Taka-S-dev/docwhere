@@ -148,6 +148,9 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
      (`旧資料\仕様書_v1.4.pdf` → `仕様書\仕様書_v2.3.docx`). Such hits are ranked lower; treat
      their content as possibly outdated and check the newer file, which is a guess from the
      names, not a certainty.
+   - `capped` — terms found in so many sections that only the likeliest were ranked. A better
+     section may have been passed over: before saying something is not there, search again
+     narrower (another term with `--all`, `--not`, or a subfolder with `--in`).
 
    A hit whose `title`/`crumb` names the subject is usually the specification; a hit that only
    mentions it in body text usually is not. When the top hits are ambiguous, read the section:

@@ -44,6 +44,18 @@ def test_short_terms_width_variants_and_require_all(docs, index):
     assert both and all(set(h.terms) == {"config", "--force"} for h in both)
 
 
+def test_a_term_past_the_candidate_limit_is_reported(docs, index, monkeypatch):
+    import docwhere.search as search_module
+
+    index.sync(docs)
+    capped: list[str] = []
+    search(index, [docs], ["config", "退避"], capped=capped)
+    assert capped == []  # a few sections each: all of them ranked
+    monkeypatch.setattr(search_module, "CANDIDATES_PER_TERM", 1)
+    search(index, [docs], ["config", "退避"], capped=capped)  # indexed and short (LIKE) terms alike
+    assert capped == ["config", "退避"]
+
+
 def test_scope_by_folder_and_extension(docs, index):
     index.sync(docs)
     assert {Path(h.path).name for h in search(index, [docs / "sub"], ["config"])} == {"設計書.pdf"}

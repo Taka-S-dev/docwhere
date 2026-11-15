@@ -75,13 +75,18 @@ def search(
     per_file: int = 3,
     exclude: list[str] = (),
     regex: bool = False,
+    capped: list[str] | None = None,
 ) -> list[Hit]:
     """Sections under ``roots`` matching ``terms`` (any of them, or all with ``require_all``),
     best first. A term is matched as written, spaces included, so a quoted phrase stays one.
     Sections or paths containing an ``exclude`` word are left out. With ``regex`` the terms
-    are regular expressions (case ignored) and a hit's ``terms`` are the strings they matched."""
+    are regular expressions (case ignored) and a hit's ``terms`` are the strings they matched.
+
+    Each term brings at most CANDIDATES_PER_TERM sections to be ranked (REGEX_CANDIDATES for a
+    pattern); the terms that reached it are added to ``capped``, as sections past it were never
+    looked at and a better one may be among them."""
     if regex:
-        return _search_regex(index, roots, terms, require_all, exts, limit, per_file, exclude)
+        return _search_regex(index, roots, terms, require_all, exts, limit, per_file, exclude, capped)
     terms = list(dict.fromkeys(t for t in map(norm, terms) if t))
     if not terms:
         return []
@@ -104,7 +109,10 @@ def search(
                 f" AND {scope_sql} LIMIT ?"
             )
             args = [like, like, like]
-        candidates.update(r[0] for r in index.db.execute(sql, [*args, *scope_args, CANDIDATES_PER_TERM]))
+        found = [r[0] for r in index.db.execute(sql, [*args, *scope_args, CANDIDATES_PER_TERM])]
+        if len(found) >= CANDIDATES_PER_TERM and capped is not None:
+            capped.append(term)
+        candidates.update(found)
     if not candidates:
         return []
 
@@ -220,7 +228,7 @@ def required_literal(pattern: str) -> str:
     return max(runs, key=len)
 
 
-def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, exclude) -> list[Hit]:
+def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, exclude, capped=None) -> list[Hit]:
     compiled = compile_patterns([p for p in patterns if p])
     if not compiled:
         return []
@@ -236,7 +244,10 @@ def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, ex
         else:  # nothing to narrow by: every section in scope is looked at
             sql = f"SELECT c.id FROM chunks c JOIN files f ON f.id = c.file_id WHERE {scope_sql}"
             args = scope_args
-        candidates.update(r[0] for r in index.db.execute(sql, args))
+        found = [r[0] for r in index.db.execute(sql, args)]
+        if len(literal) >= 3 and len(found) >= REGEX_CANDIDATES and capped is not None:
+            capped.append(pattern.pattern)
+        candidates.update(found)
     if not candidates:
         return []
     newer = newer_versions([(r["path"], r["mtime_ns"]) for r in index.files_in(roots)])

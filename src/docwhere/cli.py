@@ -247,12 +247,13 @@ def cmd_search(args) -> int:
                 waiting.append(scan)
         reading = _reading(index, updates, _wait_for_reader(index, waiting, None if args.wait_all else args.wait))
     exts = [e.strip() for e in args.ext.split(",")] if args.ext else None
+    capped: list[str] = []  # terms matching more sections than are looked at
     if args.name:
         hits = search_names(index, roots, args.terms, exts=exts, limit=args.limit, exclude=args.exclude,
                             regex=args.regex, unread=unread)
     else:
         hits = search(index, roots, args.terms, require_all=args.all, exts=exts, limit=args.limit,
-                      per_file=args.per_file, exclude=args.exclude, regex=args.regex)
+                      per_file=args.per_file, exclude=args.exclude, regex=args.regex, capped=capped)
     _last_path(index).write_text(
         json.dumps({"terms": args.terms, "hits": [h.to_dict() for h in hits], "reading": reading}, ensure_ascii=False),
         encoding="utf-8",
@@ -273,6 +274,9 @@ def cmd_search(args) -> int:
             # what the terms were matched against and how, and the words that left sections out
             "mode": ("name" if args.name else "text") + (" regex" if args.regex else ""),
             "not": args.exclude,
+            # terms matching so many sections that only the likeliest were ranked: a better
+            # section may have been passed over, so narrow the search before concluding
+            "capped": capped,
             "roots": [str(Path(r).resolve()) for r in roots],
             "reading": reading,
             # None: not checked (--no-update). kept: searched as last read (--keep-changed)
@@ -317,6 +321,9 @@ def cmd_search(args) -> int:
             print(f"    ! maybe a newer version: {Path(h.newer_version).name}")
         if path_key(h.path) in kept:
             print("    ! modified since it was read; this is the earlier content")
+    if capped:
+        print(f"\n{', '.join(capped)}: found in too many sections to rank them all, so a better one may be missing;"
+              " add a term with --all, --not or a narrower --in", file=sys.stderr)
     if unreadable:
         print(f"\n{len(unreadable)} file(s) here could not be searched; see: docwhere status --errors", file=sys.stderr)
     if any(e["left_out"] for e in excludes):
