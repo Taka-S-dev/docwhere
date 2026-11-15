@@ -570,7 +570,7 @@ def cmd_manage(args) -> int:
     queued: list[Path] = []
     if args.update is not None:
         # handed over before the window opens, so the reading goes on even where no window can
-        folders = [Path(f).resolve() for f in args.update] or [Path(r["path"]) for r in index.roots()]
+        folders = [Path(f).resolve() for f in args.update] or [Path(p) for p in index.root_paths()]
         for folder in folders:
             if not folder.is_dir():
                 raise NotADirectoryError(f"not a folder: {folder}")
@@ -724,7 +724,7 @@ def cmd_exclude(args) -> int:
 
 def cmd_forget(args) -> int:
     index = Index(args.db)
-    known = {r["path"] for r in index.roots()}
+    known = set(index.root_paths())
     for root in args.roots:
         path = str(Path(root).resolve())
         if path not in known:

@@ -141,7 +141,7 @@ def indexed_roots(db: Path) -> list[str]:
 
     index = Index(db)
     try:
-        return [r["path"] for r in index.roots()]
+        return index.root_paths()
     finally:
         index.close()
 

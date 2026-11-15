@@ -509,24 +509,39 @@ class Index:
             f"SELECT {columns} FROM files WHERE substr(key, 1, ?) = ?", (len(prefix), prefix)
         ).fetchall()
 
-    def roots(self) -> list[dict]:
+    def root_paths(self) -> list[str]:
+        """The indexed folders, without the counts ``roots`` makes, which read every section."""
+        return [r["path"] for r in self.db.execute("SELECT path FROM roots ORDER BY path")]
+
+    def roots(self, counted: dict[str, tuple] | None = None) -> list[dict]:
+        """The indexed folders with their counts of files, sections and unreadable files.
+        ``counted`` gives counts made before, by folder key, for the folders not to count again."""
         out = []
         for r in self.db.execute("SELECT key, path, synced_at, excludes, exclude_hits, once_until FROM roots ORDER BY path"):
             prefix = prefix_of(r["key"])
+            if counted and r["key"] in counted:
+                files, errors, partly, chunks = counted[r["key"]]
+                out.append(self._root_row(r, files, errors, partly, chunks))
+                continue
             files, errors, partly, chunks = self.db.execute(
                 "SELECT count(*), count(f.error), coalesce(sum(f.note IS NOT NULL AND f.error IS NULL), 0),"
                 " (SELECT count(*) FROM chunks c JOIN files g ON g.id = c.file_id WHERE substr(g.key, 1, ?) = ?)"
                 " FROM files f WHERE substr(f.key, 1, ?) = ?",
                 (len(prefix), prefix, len(prefix), prefix),
             ).fetchone()
-            hits = json.loads(r["exclude_hits"] or "{}")
-            excludes = [{"pattern": p, "matched": hits.get(p)} for p in json.loads(r["excludes"])]
-            out.append({
-                "path": r["path"], "synced_at": r["synced_at"], "files": files, "chunks": chunks, "errors": errors,
-                "partly": partly,  # read, but with pages that could not be (see partly_read)
-                "excludes": excludes, "once_until": r["once_until"],
-            })
+            out.append(self._root_row(r, files, errors, partly, chunks))
         return out
+
+    @staticmethod
+    def _root_row(r, files: int, errors: int, partly: int, chunks: int) -> dict:
+        hits = json.loads(r["exclude_hits"] or "{}")
+        excludes = [{"pattern": p, "matched": hits.get(p)} for p in json.loads(r["excludes"])]
+        return {
+            "path": r["path"], "key": r["key"], "synced_at": r["synced_at"], "files": files, "chunks": chunks,
+            "errors": errors,
+            "partly": partly,  # read, but with pages that could not be (see partly_read)
+            "excludes": excludes, "once_until": r["once_until"],
+        }
 
     def read_times(self, root: Path | None = None) -> dict[str, dict]:
         """Per extension, the files whose reading time is known and the seconds they took, the

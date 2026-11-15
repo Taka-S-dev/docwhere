@@ -341,7 +341,7 @@ def build_html(
 
     from docwhere.settings import cite_mode
 
-    cite = (cite_mode(index.path), [r["path"] for r in index.roots()])  # how a source names its file
+    cite = (cite_mode(index.path), index.root_paths())  # how a source names its file
     answer_html = _answer_html(answer, evidence, excerpts, cite)
     rail = _rail_html(bool(answer_html), evidence, hits, targets)
     shown_title = title or " ".join(terms)

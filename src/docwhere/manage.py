@@ -39,6 +39,7 @@ START_TIMEOUT = 15.0
 MAX_UNREADABLE = 200  # unreadable files listed per folder; the count is always given
 SLOWEST_SHOWN = 5  # files that took longest, listed per folder
 SEARCH_LIMIT = 30  # hits opened together at most
+ROOTS_RECOUNT = 10  # seconds between counts of the index's folders while it keeps changing
 FIRST_PER_FILE = 3  # sections of one file in the first hits shown, so one long file does not fill the list
 COLLECTED_NAME = "collected.json"  # hits collected in the search tab, beside the index
 MAX_COLLECTED = 50  # hits one reading page shows together
@@ -107,6 +108,8 @@ class ManageApi:
         self._results: tuple[list[str], list[dict]] = ([], [])  # the search tab's last hits, to open
         self._query = ""  # the words of that search, as typed: what a collected hit was found by
         self._page_asked = 0  # page pictures asked for so far: one that waited behind a newer one is dropped
+        self._roots_cache = None  # (what the index looked like, its folders with their counts, when counted)
+        self._roots_lock = threading.Lock()
 
     def _index(self) -> Index:
         return Index(self._db)
@@ -125,7 +128,7 @@ class ManageApi:
         index = self._index()
         try:
             background.expire(index)
-            roots = index.roots()
+            roots = self._counted_roots(index)
             keys = {path_key(Path(r["path"])): r["path"] for r in roots}
             # what the notes map says of each folder: the row for it, or how many rows lie inside it
             mapped: dict[str, dict] = {}
@@ -167,13 +170,32 @@ class ManageApi:
         finally:
             index.close()
 
+    def _counted_roots(self, index: Index) -> list[dict]:
+        """``index.roots()`` with its counts made again only when the files changed since (one
+        read, dropped or failed), and while they keep changing (being read) at most every
+        ROOTS_RECOUNT seconds: counting reads every section, which on a large index takes long
+        enough to show when the window asks every second. The folders themselves, their
+        exclusions and dates are read each time, so what is done in the window shows at once."""
+        mark = (
+            tuple(index.db.execute("SELECT count(*), max(id), total(mtime_ns), count(error), count(note) FROM files").fetchone()),
+            index.db.execute("SELECT max(id) FROM chunks").fetchone()[0],
+        )
+        with self._roots_lock:
+            cached = self._roots_cache
+        fresh = cached is not None and (cached[0] == mark or time.monotonic() - cached[2] < ROOTS_RECOUNT)
+        roots = index.roots(cached[1] if fresh else None)  # a folder new since is counted all the same
+        counts = {r["key"]: (r["files"], r["errors"], r["partly"], r["chunks"]) for r in roots}
+        with self._roots_lock:
+            self._roots_cache = (cached[0], counts, cached[2]) if fresh else (mark, counts, time.monotonic())
+        return roots
+
     @bridge_method
     def changes(self, path: str) -> dict:
         index = self._index()
         try:
             root = self._root(index, path)
             prefix = prefix_of(path_key(root))
-            inside = [Path(r["path"]) for r in index.roots() if path_key(Path(r["path"])).startswith(prefix)]
+            inside = [Path(p) for p in index.root_paths() if path_key(Path(p)).startswith(prefix)]
             return {"path": str(root), **index.changes(root, inside)}
         finally:
             index.close()
@@ -331,7 +353,7 @@ class ManageApi:
         """What the search may be limited to: an indexed folder, or a kind of the notes map."""
         index = self._index()
         try:
-            tops = [r["path"] for r in index.roots() if index.enclosing(path_key(Path(r["path"]))) is None]
+            tops = [p for p in index.root_paths() if index.enclosing(path_key(Path(p))) is None]
         finally:
             index.close()
         kinds: dict[str, int] = {}
@@ -365,7 +387,7 @@ class ManageApi:
         scope = str(query.get("scope") or "")
         index = self._index()
         try:
-            indexed = [Path(r["path"]) for r in index.roots()]
+            indexed = [Path(p) for p in index.root_paths()]
             missing = 0
             if scope.startswith("kind:"):
                 keys = [path_key(r) for r in indexed]
@@ -770,7 +792,7 @@ class ManageApi:
         if kind == "missing":
             return {"kind": kind}
         key = path_key(target)
-        indexed = any(key == k or key.startswith(prefix_of(k)) for k in (path_key(Path(r["path"])) for r in index.roots()))
+        indexed = any(key == k or key.startswith(prefix_of(k)) for k in (path_key(Path(p)) for p in index.root_paths()))
         return {"kind": kind, "indexed": indexed}
 
     def _wikis(self) -> list[dict]:
@@ -797,7 +819,7 @@ class ManageApi:
             for item in data["items"]:
                 if "cells" in item:
                     item["status"] = self._describe(index, item["cells"].get("path", ""), names)
-            data["roots"] = [r["path"] for r in index.roots()]
+            data["roots"] = index.root_paths()
         finally:
             index.close()
         data["wikis"] = [f"wiki:{w['name']}" for w in wikis] + [f"wiki:{w['name']}/{s}" for w in wikis for s in w.get("spaces") or []]
