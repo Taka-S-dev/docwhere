@@ -211,3 +211,11 @@ def _plain(tmp_path):
     doc.new_page().insert_text((72, 72), "Only text")
     doc.save(tmp_path / "plain.pdf")
     return tmp_path / "plain.pdf"
+
+
+def test_a_side_tab_cut_a_character_a_line_is_shown_as_one_line():
+    from docwhere.model import display_lines
+
+    lines = ["野菜の下ごしらえ", "料", "理", "編", "1.", "本文の続き"]
+    assert display_lines(lines) == [(0, "野菜の下ごしらえ"), (1, "料理編"), (4, "1."), (5, "本文の続き")]
+    assert display_lines(["1.", "手順", "2.", "手順"]) == [(0, "1."), (1, "手順"), (2, "2."), (3, "手順")]  # short, but apart

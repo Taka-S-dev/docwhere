@@ -16,7 +16,7 @@ import unicodedata
 from pathlib import Path
 
 from docwhere.index import Index
-from docwhere.model import norm
+from docwhere.model import display_lines, norm
 from docwhere.search import CELL_SEP, location_label
 
 STATIC_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'"  # no page script ever runs; see window.py
@@ -1022,7 +1022,7 @@ def _page_tags(is_hit: bool, has_evidence: bool) -> str:
 def section_html(row, terms: list[str], hit_line: str | None, quotes: list[str]) -> str:
     anchors = json.loads(row["anchors"])
     out, previous = [], None
-    for i, line in enumerate(row["body"].split("\n")):
+    for i, line in display_lines(row["body"].split("\n")):  # a side tab cut a character a line, put together
         anchor = anchors[i] if len(anchors) > 1 and i < len(anchors) else (anchors[0] if anchors else {})
         label = location_label(anchor) if len(anchors) > 1 else ""
         prefix = f'<span class="loc">{esc(label)}</span>' if label and label != previous else ""

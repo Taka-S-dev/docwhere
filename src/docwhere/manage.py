@@ -28,6 +28,7 @@ from urllib.request import url2pathname
 
 from docwhere import background, notes
 from docwhere.index import Index, path_key, prefix_of
+from docwhere.model import display_lines
 from docwhere.settings import load_settings, private, save_settings
 from docwhere.window import bridge_method
 
@@ -518,7 +519,8 @@ class ManageApi:
             index.close()
         return {
             "path": hit["path"],
-            "sections": [{"title": r["title"], "crumb": r["crumb"], "body": r["body"][:20000],
+            "sections": [{"title": r["title"], "crumb": r["crumb"],
+                          "body": "\n".join(t for _, t in display_lines(r["body"][:20000].split("\n"))),
                           "current": r["id"] == hit["chunk_id"]} for r in rows],
             "pages": pages,
         }

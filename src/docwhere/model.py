@@ -52,6 +52,32 @@ def table_lines(rows: list[list[str]]) -> list[str]:
     return lines
 
 
+# A run of this many lines of at most SHORT_LINE characters each is one line cut apart: a PDF's
+# side tab ("料 / 理 / 編") or vertical text comes out a character or two a line
+SHORT_LINE = 2
+SHORT_RUN = 3
+_LIST_MARK = re.compile(r"[(（]?[0-9０-９]+[.．)）]")  # "1.", "(2)": a step of a list, short but a line of its own
+
+
+def display_lines(lines: list[str]) -> list[tuple[int, str]]:
+    """``lines`` as they are shown: each run of SHORT_RUN or more very short lines put back into
+    one line. (index of the first line, text) for each line shown; what is searched is not
+    changed, only what is read."""
+    out: list[tuple[int, str]] = []
+    i = 0
+    while i < len(lines):
+        j = i
+        while j < len(lines) and 0 < len(lines[j].strip()) <= SHORT_LINE and not _LIST_MARK.fullmatch(lines[j].strip()):
+            j += 1
+        if j - i >= SHORT_RUN:
+            out.append((i, "".join(line.strip() for line in lines[i:j])))
+            i = j
+        else:
+            out.append((i, lines[i]))
+            i += 1
+    return out
+
+
 @dataclass
 class Chunk:
     """One searchable unit: a document section, a PDF page, a slide or a block of cells.
