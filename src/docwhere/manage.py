@@ -895,11 +895,14 @@ BODY = """<div class="wrap" id="app">
   <select id="scope" aria-label="探す範囲"><option value="">すべてのフォルダ</option></select>
 </div>
 <div class="search-opts">
-  <label><input type="checkbox" id="opt-all">すべての語を含む</label>
-  <label><input type="checkbox" id="opt-name">ファイル名で探す</label>
-  <label><input type="checkbox" id="opt-regex">正規表現</label>
   <label title="サーバ／サーバー、ログイン／ログオンのような言い方の違いも一緒に探します"><input type="checkbox" id="opt-variants" checked>言い換えも探す</label>
   <button type="button" class="link" data-act="synonyms" title="自分の言い換え（帳票／レポートなど）を書き足します">言い換えを編集</button>
+  <button type="button" class="link" id="more-opts-toggle" aria-expanded="false" aria-controls="more-opts">詳細条件</button>
+  <span class="more-opts" id="more-opts" hidden>
+    <label><input type="checkbox" id="opt-all">すべての語を含む</label>
+    <label><input type="checkbox" id="opt-name">ファイル名で探す</label>
+    <label><input type="checkbox" id="opt-regex">正規表現</label>
+  </span>
   <span class="search-meta" id="search-meta" aria-live="polite"></span>
 </div>
 <p class="search-note" id="search-note" hidden></p>
@@ -1006,6 +1009,9 @@ html { scrollbar-gutter: stable; }
   color: var(--muted); }
 .search-opts label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .search-meta { margin-left: auto; font-variant-numeric: tabular-nums; }
+/* the conditions used now and then, folded behind one switch that says how many are on */
+.more-opts { display: inline-flex; flex-wrap: wrap; gap: inherit; }
+.more-opts[hidden] { display: none; }
 .search-note { margin: 0 0 12px; padding: 8px 14px; font-size: 13px; background: var(--surface);
   border-left: 4px solid var(--marker); border-radius: 0 6px 6px 0; }
 .search-note.error { border-left-color: var(--warn); color: var(--warn); }
@@ -2370,6 +2376,16 @@ MANAGE_JS = r"""(() => {
   q.addEventListener("compositionend", searchSoon);
   scopeSel.addEventListener("change", () => runSearch(false));
   Object.values(switches).forEach((box) => box.addEventListener("change", () => runSearch(false)));
+  // the folded conditions: the switch counts the ones on, so a search narrowed by one says so
+  const moreToggle = $("#more-opts-toggle");
+  const moreBox = $("#more-opts");
+  const showMore = () => {
+    const on = [switches.all, switches.name, switches.regex].filter((box) => box.checked).length;
+    moreToggle.textContent = on ? `詳細条件（${on}）` : "詳細条件";
+    moreToggle.setAttribute("aria-expanded", String(!moreBox.hidden));
+  };
+  moreToggle.addEventListener("click", () => { moreBox.hidden = !moreBox.hidden; showMore(); });
+  [switches.all, switches.name, switches.regex].forEach((box) => box.addEventListener("change", showMore));
   q.addEventListener("keydown", (e) => {
     if (composing(e)) return;  // Enter, the arrows and Escape belong to the conversion then
     const hits = results && results.hits ? results.hits : [];
