@@ -369,3 +369,39 @@ def test_the_panes_choice_of_text_or_page_outlives_the_window(api, tmp_path):
     again._trusted = True
     assert again.preview_mode() == "page"
     assert again.preview_mode("anything") == "page"  # not a choice: nothing changes
+
+
+def test_hits_collected_across_searches_open_together_as_the_index_has_them(api, folder, tmp_path, monkeypatch):
+    import json
+
+    from docwhere import present, viewer
+
+    api.search({"text": "timeout -old"})
+    first = api._results[1][0]
+    assert api.collect(1)["count"] == 1
+    assert api.collect(1)["count"] == 1  # the same section once
+    api.search({"text": "d.md"})
+    assert api.collect(1)["count"] == 2
+    kept = api.collected()
+    assert [i["query"] for i in kept["items"]] == ["timeout -old", "d.md"]
+    again = manage.ManageApi(tmp_path / "db" / "index.db")  # the next window
+    again._trusted = True
+    assert again.collected() == kept
+
+    built = []
+    monkeypatch.setattr(viewer, "build_html", lambda index, terms, hits, *a, **k: built.append(hits) or "<html>")
+    monkeypatch.setattr(present, "show_page", lambda db, build, title, options, open_it: build(True) and title)
+    # the file comes from the index, whatever the saved list says; a section gone is left out
+    saved = tmp_path / "db" / manage.COLLECTED_NAME
+    items = json.loads(saved.read_text(encoding="utf-8"))["items"]
+    items[0]["path"] = r"C:\Windows\System32\drivers\etc\hosts"
+    items.append({**items[1], "chunk_id": 999999})
+    saved.write_text(json.dumps({"version": 1, "items": items}), encoding="utf-8")
+    assert api.open_collected("保存の調査") == "保存の調査"
+    assert [h["path"] for h in built[0]] == [first["path"], str(folder / "old" / "d.md")]
+    assert [h["query"] for h in built[0]] == ["timeout -old", "d.md"]
+
+    assert api.uncollect(items[0]["chunk_id"])["count"] == 2  # the stale entry stays until cleared
+    assert api.clear_collected()["count"] == 0
+    with pytest.raises(LookupError):
+        api.open_collected("")

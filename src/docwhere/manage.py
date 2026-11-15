@@ -14,6 +14,7 @@ the background reader that searches use, so the window never reads files on its 
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -38,6 +39,8 @@ START_TIMEOUT = 15.0
 MAX_UNREADABLE = 200  # unreadable files listed per folder; the count is always given
 SLOWEST_SHOWN = 5  # files that took longest, listed per folder
 SEARCH_LIMIT = 30  # hits shown in the search tab
+COLLECTED_NAME = "collected.json"  # hits collected in the search tab, beside the index
+MAX_COLLECTED = 50  # hits one reading page shows together
 SEARCH_POOL = 300  # hits counted by kind, format and folder, so a narrowing button tells what it keeps
 SLOW_SHORT = 1.0  # seconds a search with a two-letter term may take before the tab says why
 SYNONYMS_NAME = "synonyms.csv"
@@ -101,6 +104,7 @@ class ManageApi:
         self._window = None
         self._trusted = False  # set while the signed manager page is showing
         self._results: tuple[list[str], list[dict]] = ([], [])  # the search tab's last hits, to open
+        self._query = ""  # the words of that search, as typed: what a collected hit was found by
         self._page_asked = 0  # page pictures asked for so far: one that waited behind a newer one is dropped
 
     def _index(self) -> Index:
@@ -353,6 +357,7 @@ class ManageApi:
         )
 
         terms, exclude = parse_query(str(query.get("text") or "")[:500])
+        self._query = " ".join(str(query.get("text") or "").split())[:200]
         if not terms:
             self._results = ([], [])
             return {"hits": [], "terms": [], "exclude": exclude}
@@ -584,6 +589,92 @@ class ManageApi:
             with _PAGES:  # the page draws PDF pages too, and may export Word or PowerPoint files
                 return show_page(
                 index.path,
+                    lambda in_window: build_html(index, terms, hits, 1, 0, [], "", title, cut_excerpts=not in_window),
+                    title, options, True,
+                )
+        finally:
+            index.close()
+
+    # ---- collected hits: kept across searches and window starts, shown together on one page
+
+    def _collected(self) -> list[dict]:
+        try:
+            data = json.loads(self._db.with_name(COLLECTED_NAME).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        items = data.get("items") if isinstance(data, dict) else None
+        return [i for i in items if isinstance(i, dict) and isinstance(i.get("chunk_id"), int)] if isinstance(items, list) else []
+
+    def _keep_collected(self, items: list[dict]) -> None:
+        path = self._db.with_name(COLLECTED_NAME)
+        tmp = path.with_suffix(".tmp")
+        # a list of one group for now; named groups would be more entries of "groups"
+        tmp.write_text(json.dumps({"version": 1, "items": items}, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+
+    @staticmethod
+    def _collected_summary(items: list[dict]) -> dict:
+        return {"count": len(items), "ids": [i["chunk_id"] for i in items],
+                "items": [{k: i.get(k) for k in ("chunk_id", "path", "crumb", "title", "location", "query")} for i in items]}
+
+    @bridge_method
+    def collected(self) -> dict:
+        return self._collected_summary(self._collected())
+
+    @bridge_method
+    def collect(self, n: int) -> dict:
+        """Add the search tab's hit ``n`` to the collected hits, with the words it was found by."""
+        hit = self._hit(int(n))
+        if not hit.get("chunk_id"):
+            raise LookupError("ファイル名で見つけたものはリストに入れられません。ファイルを開いて見てください")
+        items = self._collected()
+        if all(i["chunk_id"] != hit["chunk_id"] for i in items):
+            if len(items) >= MAX_COLLECTED:
+                raise ValueError(f"調査リストに入れられるのは {MAX_COLLECTED} 件までです。見終わったものを外してください")
+            items.append({**{k: v for k, v in hit.items() if k != "n"}, "query": self._query})
+            self._keep_collected(items)
+        return self._collected_summary(items)
+
+    @bridge_method
+    def uncollect(self, chunk_id: int) -> dict:
+        items = [i for i in self._collected() if i["chunk_id"] != chunk_id]
+        self._keep_collected(items)
+        return self._collected_summary(items)
+
+    @bridge_method
+    def clear_collected(self) -> dict:
+        self._keep_collected([])
+        return self._collected_summary([])
+
+    @bridge_method
+    def open_collected(self, title: str = "") -> str:
+        """Show the collected hits on one reading page named ``title``, kept in the history of
+        questions. Each is shown only as it is in the index now: the file is taken from the index,
+        and a section no longer there is left out."""
+        from types import SimpleNamespace
+
+        from docwhere.present import show_page
+        from docwhere.viewer import build_html
+
+        index = self._index()
+        try:
+            hits = []
+            for item in self._collected():
+                row = index.db.execute("SELECT f.path FROM chunks c JOIN files f ON f.id = c.file_id WHERE c.id = ?",
+                                       (item["chunk_id"],)).fetchone()
+                if row is None:
+                    continue
+                hits.append({**item, "path": row["path"], "n": len(hits) + 1,
+                             "terms": [str(t) for t in item.get("terms") or []],
+                             "anchor": item.get("anchor") if isinstance(item.get("anchor"), dict) else {}})
+            if not hits:
+                raise LookupError("調査リストの箇所が、今のインデックスにありません。検索し直して入れ直してください")
+            terms = list(dict.fromkeys(t for h in hits for t in h["terms"]))
+            title = str(title).strip()[:200] or "調査リスト"
+            options = SimpleNamespace(pages=0, quote=[], answer="", title=title, browser=False, steps=None)
+            with _PAGES:  # the page draws PDF pages too, and may export Word or PowerPoint files
+                return show_page(
+                    index.path,
                     lambda in_window: build_html(index, terms, hits, 1, 0, [], "", title, cut_excerpts=not in_window),
                     title, options, True,
                 )
@@ -949,6 +1040,12 @@ BODY = """<div class="wrap" id="app">
   </span>
   <span class="search-meta" id="search-meta" aria-live="polite"></span>
 </div>
+<div class="collect-bar" id="collect-bar" hidden>
+  <span class="collect-count" id="collect-count"></span>
+  <input type="text" id="collect-title" maxlength="200" placeholder="ページの名前（省略可）" aria-label="リストから開くページの名前">
+  <button type="button" class="btn primary" data-act="collect-view" title="調査リストの箇所を読み取り画面に並べます。質問の履歴にも残ります">リストを見る</button>
+  <button type="button" class="btn" data-act="collect-clear">空にする</button>
+</div>
 <p class="search-note" id="search-note" hidden></p>
 <div class="facets" id="facets" hidden></div>
 <div class="search-body" id="search-body" hidden>
@@ -1099,6 +1196,15 @@ html { scrollbar-gutter: stable; }
 .r-snippet { margin: 0; overflow-wrap: anywhere; }
 .r-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
 .r-flag { color: var(--warn); font-size: 12px; }
+/* hits collected across searches: a bar with their count, and a mark on each one in the list */
+.collect-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; padding: 8px 12px;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+.collect-bar[hidden] { display: none; }
+.collect-count { font-weight: 700; }
+.collect-bar input { flex: 1; min-width: 160px; max-width: 360px; padding: 5px 10px; font: inherit; color: var(--ink);
+  background: var(--bg); border: 1px solid var(--rule); border-radius: 6px; }
+.r-collected { display: none; flex: none; white-space: nowrap; color: var(--blue); font-size: 12px; font-weight: 700; }
+.result.collected .r-collected { display: inline; }
 /* results on the left, the chosen one's text on the right: leafing through needs no window */
 .search-body { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 16px; align-items: start; }
 .result { grid-template-columns: minmax(0, 1fr); }
@@ -2354,6 +2460,37 @@ MANAGE_JS = r"""(() => {
     draw(false);
   };
 
+  // ---- collected hits: kept beside the index across searches, shown together on one reading page
+  let collectedIds = new Set();
+  const markCollected = () => {
+    for (const li of $("#results").children) li.classList.toggle("collected", collectedIds.has(Number(li.dataset.chunk)));
+    const button = $("#pv-collect");
+    const hit = results && results.hits ? results.hits[activeHit] : null;
+    if (button && hit) {
+      const has = collectedIds.has(hit.chunk_id);
+      button.textContent = has ? "リストから外す" : "リストに入れる";
+      button.setAttribute("aria-pressed", String(has));
+      button.title = has ? "調査リストから外します" : "この箇所を調査リストに入れます。検索を変えても残り、まとめて見られます";
+    }
+  };
+  const showCollected = (r) => {
+    collectedIds = new Set(r.ids);
+    $("#collect-bar").hidden = !r.count;
+    $("#collect-count").textContent = `調査リスト ${fmt(r.count)} 件`;
+    markCollected();
+  };
+  const toggleCollect = (hit) => {
+    const has = collectedIds.has(hit.chunk_id);
+    (has ? api.uncollect(hit.chunk_id) : api.collect(hit.n))
+      .then((r) => { showCollected(r); toast(has ? "調査リストから外しました" : "調査リストに入れました。検索を変えても残ります"); })
+      .catch(failed(has ? "外せませんでした" : "リストに入れられませんでした"));
+  };
+  const viewCollected = () => api.open_collected($("#collect-title").value)
+    .then(() => toast("読み取り画面で開きました。質問の履歴にも残ります"))
+    .catch(failed("開けませんでした"));
+  $("#collect-title").addEventListener("keydown", (e) => { if (e.key === "Enter" && !composing(e)) { e.preventDefault(); viewCollected(); } });
+  ready.then(() => api.collected()).then(showCollected).catch(() => {});
+
   // the pane beside the results: the chosen hit's section with those around it, or its page
   const renderPreview = () => {
     const pane = $("#preview");
@@ -2372,8 +2509,10 @@ MANAGE_JS = r"""(() => {
           onclick: () => viewHits([hit.n]) }) : null,
         h("button", { type: "button", class: "btn", text: "ファイルを開く", onclick: () => openFile(hit.n) }),
         h("button", { type: "button", class: "btn", text: "出典をコピー", title: citation(hit), onclick: () => copyCitation(hit) }),
+        hit.chunk_id ? h("button", { type: "button", class: "btn", id: "pv-collect", onclick: () => toggleCollect(hit) }) : null,
         modes));
     put(pane, head, h("p", { class: "pv-loading", text: "読み込んでいます…" }));
+    markCollected();
     // moving through the list quickly asks only for the hit it stops on
     previewTimer = setTimeout(() => api.preview(hit.n).then((p) => {
       if (mine !== previewSeq) return;
@@ -2462,9 +2601,11 @@ MANAGE_JS = r"""(() => {
     put(list, hits.map((hit, i) => {
       const name = base(hit.path);
       const heading = hit.crumb || (hit.title !== name ? hit.title : "");
-      const item = h("li", { class: `result${i === activeHit ? " active" : ""}`, role: "option", "aria-selected": String(i === activeHit) },
+      const item = h("li", { class: `result${i === activeHit ? " active" : ""}${collectedIds.has(hit.chunk_id) ? " collected" : ""}`,
+        role: "option", "aria-selected": String(i === activeHit), "data-chunk": hit.chunk_id || "" },
         h("div", { class: "r-head" }, h("span", { class: "r-name", text: name, title: hit.path }),
-          h("span", { class: "r-where", text: [heading, hit.location].filter(Boolean).join("　") })),
+          h("span", { class: "r-where", text: [heading, hit.location].filter(Boolean).join("　") }),
+          h("span", { class: "r-collected", text: "調査リスト" })),
         h("p", { class: "r-snippet" }, markTerms(hit.snippet, terms.concat(hit.terms))),
         // the name is in bold above: the date first, so it is never the part cut off, then the folder
         h("span", { class: "r-path", text: `${hit.modified}　${nearDir(hit.path)}`, title: hit.path }),
@@ -2624,6 +2765,12 @@ MANAGE_JS = r"""(() => {
     }
     else if (what === "view-all") viewHits(results.hits.filter((x) => x.chunk_id).slice(0, VIEW_TOGETHER).map((x) => x.n));
     else if (what === "settings") openSettings();
+    else if (what === "collect-view") viewCollected();
+    else if (what === "collect-clear") {
+      confirmAction("調査リストを空にしますか", "調査リストの中身を消します。リストから開いたページは質問の履歴に残ります。", "空にする", true)
+        .then((ok) => (ok ? api.clear_collected().then((r) => { showCollected(r); toast("調査リストを空にしました"); }) : null))
+        .catch(failed("空にできませんでした"));
+    }
     else if (what === "map-add") addMapRow();
     else if (what === "map-save") saveMap();
     else if (what === "map-revert") loadMap(true).then(() => toast("変更を取り消しました"));
