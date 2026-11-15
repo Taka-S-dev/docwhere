@@ -8,6 +8,17 @@ fictional CLI tool (OrbitSync).
 | `evals.json` | prompts, expected answers and assertions; `{corpus}` stands for the generated folder |
 | `make_corpus.py` | builds the document folder |
 | `grade.py` | keyword-checks each run's `answer.md` against the assertions and writes `grading.json` |
+| `bench.py` | measures the search alone on the same folder: hit@1 / hit@5, search time, outdated versions ranked first, files wrongly marked as superseded |
+
+## Measuring the search
+
+```
+uv run python skills/office-search/evals/bench.py <work-dir> [--noise 1000] [--json out.json]
+```
+
+The first run builds the folder (without the legacy `.doc`, so Word is not needed) and an
+index of its own under `<work-dir>`; later runs reuse both. Compare the summary line before
+and after a change to the search.
 
 ## Reproduce
 
