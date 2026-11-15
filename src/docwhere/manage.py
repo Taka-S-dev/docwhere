@@ -2210,7 +2210,7 @@ MANAGE_JS = r"""(() => {
       h("h2", { class: "pv-name", text: base(hit.path), title: hit.path }),
       h("p", { class: "pv-where", text: [hit.crumb || "", hit.location].filter(Boolean).join("　") }),
       h("p", { class: "pv-path", text: `${shortPath(hit.path)}　${hit.modified}`, title: hit.path }),
-      hit.newer_version ? h("p", { class: "r-flag", text: `新しい版があります: ${base(hit.newer_version)}` }) : null,
+      hit.newer_version ? h("p", { class: "r-flag", text: `新しい版かもしれません: ${base(hit.newer_version)}` }) : null,
       h("div", { class: "pv-ops" },
         hit.chunk_id ? h("button", { type: "button", class: "btn primary", text: "根拠を見る", title: "Enter",
           onclick: () => viewHits([hit.n]) }) : null,
@@ -2298,7 +2298,7 @@ MANAGE_JS = r"""(() => {
         h("p", { class: "r-snippet" }, markTerms(hit.snippet, terms.concat(hit.terms))),
         // the name is in bold above: the date first, so it is never the part cut off, then the folder
         h("span", { class: "r-path", text: `${hit.modified}　${nearDir(hit.path)}`, title: hit.path }),
-        hit.newer_version ? h("span", { class: "r-flag", text: `新しい版があります: ${base(hit.newer_version)}` }) : null);
+        hit.newer_version ? h("span", { class: "r-flag", text: `新しい版かもしれません: ${base(hit.newer_version)}` }) : null);
       item.addEventListener("click", () => selectHit(i, false));
       item.addEventListener("dblclick", () => (hit.chunk_id ? viewHits([hit.n]) : openFile(hit.n)));
       return item;

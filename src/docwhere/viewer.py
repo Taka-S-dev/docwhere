@@ -907,7 +907,7 @@ def _card(
     path = Path(hit["path"])
     facts = [f"<span>{esc(hit['location'])}</span>"] if hit["location"] else []
     facts.append(f"<span>更新 {esc(hit['modified'])}</span>")
-    newer = f'<p class="warn">新しい版があります: {esc(Path(hit["newer_version"]).name)}</p>' if hit.get("newer_version") else ""
+    newer = f'<p class="warn">新しい版かもしれません: {esc(Path(hit["newer_version"]).name)}</p>' if hit.get("newer_version") else ""
     if hit.get("rendered_from") in (".docx", ".docm", ".doc"):
         newer += '<p class="note">ページは Word で PDF にしたときの番号です。印刷設定によってずれることがあります。</p>'
 

@@ -314,7 +314,7 @@ def cmd_search(args) -> int:
         print(f"    {highlight(h.snippet, h.terms)}")
         print(f"    {h.path}")
         if h.newer_version:
-            print(f"    ! newer version: {Path(h.newer_version).name}")
+            print(f"    ! maybe a newer version: {Path(h.newer_version).name}")
         if path_key(h.path) in kept:
             print("    ! modified since it was read; this is the earlier content")
     if unreadable:

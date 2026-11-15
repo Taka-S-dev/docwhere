@@ -143,9 +143,11 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    - `snippet` — a table row comes labelled by its column headers
      (`項目: 接続タイムアウト / 既定値: 30秒`, `コード: E2041 / 対処: ...`) in Excel, Word and
      PowerPoint alike, so a value question is often answered by the snippet alone
-   - `modified` (file date) and `newer_version` — set when another file in the folder is a
-     newer version of the same document (`仕様書_v1.4.pdf` → `仕様書_v2.3.docx`). Such hits are
-     ranked lower; treat their content as possibly outdated and prefer the newer file.
+   - `modified` (file date) and `newer_version` — set when the file name suggests a newer
+     version of the same document: in the same folder, or named as versions on both sides
+     (`旧資料\仕様書_v1.4.pdf` → `仕様書\仕様書_v2.3.docx`). Such hits are ranked lower; treat
+     their content as possibly outdated and check the newer file, which is a guess from the
+     names, not a certainty.
 
    A hit whose `title`/`crumb` names the subject is usually the specification; a hit that only
    mentions it in body text usually is not. When the top hits are ambiguous, read the section:

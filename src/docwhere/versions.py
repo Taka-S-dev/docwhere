@@ -36,11 +36,21 @@ def family(path: str) -> tuple[str, tuple[int, ...]]:
     return (key if len(key) >= MIN_KEY_CHARS else norm(Path(path).stem).lower()), version
 
 
+def marked(path: str) -> bool:
+    """Whether the name says it is one version of a document: a number (v1.4, 第2版) or a
+    word (最終版, 旧版, コピー)."""
+    stem = norm(Path(path).stem).lower()
+    return bool(_VERSION.search(stem) or _EDITION.search(stem) or _MARKERS.search(stem))
+
+
 def newer_versions(files: list[tuple[str, int]]) -> dict[str, str]:
     """Map each superseded path to the newest path of its family.
 
-    ``files`` holds (path, mtime_ns). Within a family the newest is the highest version when
-    every member is numbered, else the most recently modified file.
+    ``files`` holds (path, mtime_ns). Files of one family are versions of one another when they
+    lie in the same folder, or when both names are marked as versions (``marked``): two
+    "設計書.docx" of two projects are different documents, while "旧資料/仕様書_v1.4.pdf" and
+    "仕様書/仕様書_v2.3.docx" are one. Among versions the newest is the highest version when
+    every one is numbered, else the most recently modified file.
     """
     families: dict[str, list[tuple[str, int, tuple[int, ...]]]] = {}
     for path, mtime in files:
@@ -51,11 +61,44 @@ def newer_versions(files: list[tuple[str, int]]) -> dict[str, str]:
     for members in families.values():
         if len(members) < 2:
             continue
-        if all(version for _, _, version in members):
-            newest = max(members, key=lambda m: (m[2], m[1]))
-        else:
-            newest = max(members, key=lambda m: m[1])
-        for path, _, _ in members:
-            if path != newest[0]:
-                newer[path] = newest[0]
+        for group in _versions_of_one(members):
+            if len(group) < 2:
+                continue
+            if all(version for _, _, version in group):
+                newest = max(group, key=lambda m: (m[2], m[1]))
+            else:
+                newest = max(group, key=lambda m: m[1])
+            for path, _, _ in group:
+                if path != newest[0]:
+                    newer[path] = newest[0]
     return newer
+
+
+def _versions_of_one(members: list[tuple]) -> list[list[tuple]]:
+    """Split a family into the files that are versions of one another: joined by a shared
+    folder, or by both being marked as versions."""
+    parent = list(range(len(members)))
+
+    def top(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    first_in: dict[str, int] = {}
+    first_marked = None
+    for i, (path, _, _) in enumerate(members):
+        folder = str(Path(path).parent).lower()
+        if folder in first_in:
+            parent[top(i)] = top(first_in[folder])
+        else:
+            first_in[folder] = i
+        if marked(path):
+            if first_marked is None:
+                first_marked = i
+            else:
+                parent[top(i)] = top(first_marked)
+    groups: dict[int, list[tuple]] = {}
+    for i, member in enumerate(members):
+        groups.setdefault(top(i), []).append(member)
+    return list(groups.values())

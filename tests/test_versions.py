@@ -26,3 +26,19 @@ def test_newest_by_version_when_all_numbered_else_by_mtime():
     assert newer == {"a/仕様_v2.docx": "b/仕様_v10.docx"}
     newer = newer_versions([("仕様_v3.docx", 1), ("仕様_最終.docx", 2)])
     assert newer == {"仕様_v3.docx": "仕様_最終.docx"}
+
+
+def test_same_name_in_two_folders_is_two_documents():
+    # two projects' files of one name: neither is a newer version of the other
+    assert newer_versions([("案件A/設計書.docx", 1), ("案件B/設計書.docx", 2)]) == {}
+    assert newer_versions([("案件A/README.txt", 1), ("案件B/readme.md", 2)]) == {}
+    # one marked as a version is not enough across folders
+    assert newer_versions([("案件A/設計書.docx", 1), ("案件B/設計書_最終版.docx", 2)]) == {}
+    # in one folder, a name without a mark is still a version of the marked one
+    assert newer_versions([("x/設計書.docx", 1), ("x/設計書_最終版.docx", 2)]) == {"x/設計書.docx": "x/設計書_最終版.docx"}
+    # marked on both sides, versions across folders
+    assert newer_versions([("旧資料/仕様書_v1.4.pdf", 2), ("仕様書/仕様書_v2.3.docx", 1)]) == {
+        "旧資料/仕様書_v1.4.pdf": "仕様書/仕様書_v2.3.docx"}
+    # an unmarked file beside a marked one joins its folder's versions, not another project's
+    newer = newer_versions([("a/設計書.docx", 1), ("a/設計書_v2.docx", 2), ("b/設計書.docx", 3)])
+    assert newer == {"a/設計書.docx": "a/設計書_v2.docx"}
