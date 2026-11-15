@@ -1402,6 +1402,11 @@ mark { color: inherit; background: var(--marker-soft); border-radius: 2px; }
 #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); display: flex; align-items: center;
   gap: 14px; max-width: min(640px, 92vw); padding: 10px 12px 10px 18px; border-radius: 8px; background: var(--ink);
   color: var(--bg); box-shadow: 0 6px 24px rgba(0, 0, 0, .25); z-index: 10; }
+/* something being opened: a turning mark in the toast and a busy pointer, still when motion is reduced */
+#toast .spinner { flex: none; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: turn .8s linear infinite; }
+@keyframes turn { to { transform: rotate(360deg); } }
+body.opening, body.opening * { cursor: progress; }
 #toast button { padding: 3px 10px; border: 1px solid currentColor; border-radius: 6px; background: transparent;
   color: inherit; cursor: pointer; }
 dialog#confirm, dialog#settings { width: min(480px, 92vw); padding: 0; color: var(--ink); background: var(--surface);
@@ -1424,6 +1429,8 @@ dialog#confirm::backdrop, dialog#settings::backdrop { background: rgba(0, 0, 0, 
 .confirm p { margin: 0 0 18px; color: var(--muted); white-space: pre-line; }
 .confirm .buttons { display: flex; justify-content: flex-end; gap: 8px; }
 @media (prefers-reduced-motion: reduce) {
+  /* still turning, slower: a mark that stands still cannot tell waiting from stopped */
+  #toast .spinner { animation-duration: 1.6s; }
   .bar > span, .disclose::before { transition: none; }
   .bar.scanning > span, .row-bar.scanning > span { animation: none; width: 100%; opacity: .5; }
   .row-bar > span { transition: none; }
@@ -1597,6 +1604,37 @@ MANAGE_JS = r"""(() => {
     toastTimer = setTimeout(() => { toastBox.hidden = true; }, action ? 8000 : 4000);
   };
   const failed = (message) => (e) => toast(`${message}: ${reason(e)}`);
+  // opening a page or a file can take seconds (Word and PowerPoint are exported first): past a
+  // moment, a turning mark says it is under way, until the toast that says how it went; a second
+  // press meanwhile opens nothing twice
+  let openingNow = "";  // the label of what is being opened, while it is
+  let openingSince = 0;
+  let openingTick = 0;
+  const OPENING_COUNT_FROM = 3;  // seconds: past them the toast counts the seconds, which shows it is not stuck
+  const showOpening = (label) => {
+    const text = h("span", { text: label });
+    toastBox.replaceChildren(h("span", { class: "spinner", "aria-hidden": "true" }), text);
+    toastBox.hidden = false;
+    clearTimeout(toastTimer);  // stays until the outcome replaces it
+    clearInterval(openingTick);
+    openingTick = setInterval(() => {
+      const seconds = Math.floor((Date.now() - openingSince) / 1000);
+      if (seconds >= OPENING_COUNT_FROM) text.textContent = `${label}（${seconds} 秒）`;
+    }, 1000);
+  };
+  const opening = (label, run) => {
+    if (openingNow) { showOpening(openingNow); return Promise.resolve(); }  // still under way: say so again
+    openingNow = label;
+    openingSince = Date.now();
+    document.body.classList.add("opening");
+    const shown = setTimeout(() => showOpening(label), 150);
+    return run().finally(() => {
+      clearTimeout(shown);
+      clearInterval(openingTick);
+      openingNow = "";
+      document.body.classList.remove("opening");
+    });
+  };
 
   // ---- confirmation
   const dialog = $("#confirm");
@@ -2400,12 +2438,13 @@ MANAGE_JS = r"""(() => {
       .then((r) => { if (mine === searchSeq) { busy(false); results = r; activeHit = 0; renderResults(); } })
       .catch((e) => { if (mine === searchSeq) { busy(false); results = { error: reason(e), hits: [] }; renderResults(); } });
   };
-  const viewHits = (numbers) => api.open_hits(numbers, q.value.trim())
-    .then(() => toast("読み取り画面で開きました"))
-    .catch(failed("読み取り画面で開けませんでした"));
-  const openFile = (n) => api.open_file(n)
+  const viewHits = (numbers) => opening("読み取り画面を作っています…（Word・PowerPoint は数秒かかることがあります）",
+    () => api.open_hits(numbers, q.value.trim())
+      .then(() => toast("読み取り画面で開きました"))
+      .catch(failed("読み取り画面で開けませんでした")));
+  const openFile = (n) => opening("ファイルを開いています…", () => api.open_file(n)
     .then(() => toast("ファイルを開きました"))
-    .catch(failed("ファイルを開けませんでした"));
+    .catch(failed("ファイルを開けませんでした")));
   const citation = (hit) => {
     const name = citeName(hit.path);
     const section = hit.crumb || (hit.title !== name ? hit.title : "");
@@ -2509,9 +2548,10 @@ MANAGE_JS = r"""(() => {
       .then((r) => { showCollected(r); toast(has ? "調査リストから外しました" : "調査リストに入れました。検索を変えても残ります"); })
       .catch(failed(has ? "外せませんでした" : "リストに入れられませんでした"));
   };
-  const viewCollected = () => api.open_collected($("#collect-title").value)
-    .then(() => toast("読み取り画面で開きました。質問の履歴にも残ります"))
-    .catch(failed("開けませんでした"));
+  const viewCollected = () => opening("読み取り画面を作っています…（Word・PowerPoint は数秒かかることがあります）",
+    () => api.open_collected($("#collect-title").value)
+      .then(() => toast("読み取り画面で開きました。質問の履歴にも残ります"))
+      .catch(failed("開けませんでした")));
   $("#collect-title").addEventListener("keydown", (e) => { if (e.key === "Enter" && !composing(e)) { e.preventDefault(); viewCollected(); } });
   ready.then(() => api.collected()).then(showCollected).catch(() => {});
   ready.then(() => api.settings()).then((current) => { if (CITE_MODES.includes(current.cite_path)) citeMode = current.cite_path; }).catch(() => {});
