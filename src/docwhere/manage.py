@@ -815,7 +815,7 @@ def run(db: Path, tab: str = "folders") -> None:
 BODY = """<div class="wrap" id="app">
 <nav class="tabs" id="tabs" role="tablist" aria-label="表示するもの" hidden>
   <button type="button" role="tab" id="tab-folders" aria-controls="panel-folders" aria-selected="true" data-tab="folders">フォルダ</button>
-  <button type="button" role="tab" id="tab-map" aria-controls="panel-map" aria-selected="false" data-tab="map" tabindex="-1">地図</button>
+  <button type="button" role="tab" id="tab-map" aria-controls="panel-map" aria-selected="false" data-tab="map" tabindex="-1" title="資料の地図: どのフォルダに何の資料があるかを書いた表（notes.csv）。AI はこれを見て探す場所を選びます">地図</button>
   <button type="button" role="tab" id="tab-search" aria-controls="panel-search" aria-selected="false" data-tab="search" tabindex="-1">検索</button>
 </nav>
 <div id="panel-folders" role="tabpanel" aria-labelledby="tab-folders">
@@ -908,7 +908,7 @@ BODY = """<div class="wrap" id="app">
   <div class="search-list">
     <ol class="results" id="results" role="listbox" aria-label="検索結果"></ol>
     <div class="search-more" id="search-more" hidden>
-      <button type="button" class="btn" data-act="view-all">上位の結果をまとめて読み取り画面で見る</button>
+      <button type="button" class="btn" id="view-all" data-act="view-all" title="上から順に、該当箇所に枠を付けて読み取り画面に並べます">該当箇所をまとめて見る</button>
     </div>
   </div>
   <aside class="preview" id="preview" aria-label="選んだ結果の中身"></aside>
@@ -1321,6 +1321,7 @@ MANAGE_JS = r"""(() => {
   };
 
   const base = (p) => String(p).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || String(p);
+  const VIEW_TOGETHER = 10;  // hits put on one reading page by the button under the list
   // a key pressed while a Japanese conversion is open (229: the key the IME took for itself)
   const composing = (e) => e.isComposing || e.keyCode === 229;
   // the two folders a file lies in: what tells hits apart in a list (the full path is the title)
@@ -2197,7 +2198,7 @@ MANAGE_JS = r"""(() => {
       if (mine !== previewSeq || r.stale) return;
       if (r.src) {
         put(box, h("img", { class: "pv-img", src: r.src, alt: `${base(hit.path)} の ${r.page} ページ目`,
-          title: "クリックで根拠を見る", onclick: () => viewHits([hit.n]) }),
+          title: "クリックで該当箇所を詳しく見る", onclick: () => viewHits([hit.n]) }),
           h("p", { class: "pv-cap", text: `${r.page} / ${r.pages} ページ${r.exported ? "（PDF に書き出したもの）" : ""}` }));
       } else if (r.convert) {
         const go = h("button", { type: "button", class: "btn", text: "ページの画像を作る" });
@@ -2228,7 +2229,7 @@ MANAGE_JS = r"""(() => {
       h("p", { class: "pv-path", text: `${shortPath(hit.path)}　${hit.modified}`, title: hit.path }),
       hit.newer_version ? h("p", { class: "r-flag", text: `新しい版かもしれません: ${base(hit.newer_version)}` }) : null,
       h("div", { class: "pv-ops" },
-        hit.chunk_id ? h("button", { type: "button", class: "btn primary", text: "根拠を見る", title: "Enter",
+        hit.chunk_id ? h("button", { type: "button", class: "btn primary", text: "該当箇所を詳しく見る", title: "読み取り画面で、該当箇所に枠を付けて見ます（Enter）",
           onclick: () => viewHits([hit.n]) }) : null,
         h("button", { type: "button", class: "btn", text: "ファイルを開く", onclick: () => openFile(hit.n) }),
         h("button", { type: "button", class: "btn", text: "出典をコピー", title: citation(hit), onclick: () => copyCitation(hit) }),
@@ -2319,7 +2320,10 @@ MANAGE_JS = r"""(() => {
       item.addEventListener("dblclick", () => (hit.chunk_id ? viewHits([hit.n]) : openFile(hit.n)));
       return item;
     }));
-    $("#search-more").hidden = hits.filter((x) => x.chunk_id).length < 2;
+    // the hits with a spot to frame, up to VIEW_TOGETHER: named by their count, like the single one's button
+    const together = Math.min(VIEW_TOGETHER, hits.filter((x) => x.chunk_id).length);
+    $("#search-more").hidden = together < 2;
+    $("#view-all").textContent = `${together} 件の該当箇所をまとめて見る`;
     fitPanes();
     renderPreview();
   };
@@ -2451,7 +2455,7 @@ MANAGE_JS = r"""(() => {
     else if (what === "synonyms") {
       api.open_synonyms().then(() => toast("言い換えのファイルを開きました。保存すると、次の検索から使います")).catch(failed("開けませんでした"));
     }
-    else if (what === "view-all") viewHits(results.hits.filter((x) => x.chunk_id).slice(0, 10).map((x) => x.n));
+    else if (what === "view-all") viewHits(results.hits.filter((x) => x.chunk_id).slice(0, VIEW_TOGETHER).map((x) => x.n));
     else if (what === "map-add") addMapRow();
     else if (what === "map-save") saveMap();
     else if (what === "map-revert") loadMap(true).then(() => toast("変更を取り消しました"));
