@@ -11,12 +11,13 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from docwhere.extractors import register
+from docwhere.extractors import note, register
 from docwhere.model import Chunk, SectionBuilder, norm
 
 HEADING_SIZE_RATIO = 1.15  # this much larger than body text counts as a heading
 MAX_HEADING_CHARS = 60
 MAX_HEADING_LEVELS = 3
+MAX_PAGES_NAMED = 10  # pages without text named in the file's note; the count is always given
 _CHAPTER = re.compile(r"^第\s*[0-9一二三四五六七八九十百]+\s*([章部編節])")
 _NUMBERED = re.compile(r"^(\d+(?:\.\d+){0,4})\.?\s+\S")
 _SENTENCE_END = ("。", "、", "，", ",", ":", "：")
@@ -30,13 +31,22 @@ def extract(path: Path) -> list[Chunk]:
         if doc.needs_pass:
             raise ValueError("password protected")
         toc = [(level, norm(title), page) for level, title, page in doc.get_toc(simple=True) if page >= 1 and norm(title)]
-        chunks = _by_bookmarks(doc, toc) if toc else _by_layout(doc)
+        textless: list[int] = []
+        chunks = _by_bookmarks(doc, toc, textless) if toc else _by_layout(doc, textless)
         if not chunks and doc.page_count:
             raise ValueError("no text layer (scanned PDF? OCR it first)")
+        # pages scanned into a PDF that has text elsewhere: nothing on them can be found, and
+        # nothing else says so (a blank page has no picture either, and is not counted)
+        scanned = [no for no in textless if doc[no - 1].get_images()]
+        if scanned:
+            shown = ", ".join(f"p.{no}" for no in scanned[:MAX_PAGES_NAMED])
+            more = f" and {len(scanned) - MAX_PAGES_NAMED} more" if len(scanned) > MAX_PAGES_NAMED else ""
+            note(f"{len(scanned)} of {doc.page_count} pages are pictures without text and cannot be searched"
+                 f" ({shown}{more}); OCR the file to search them")
     return chunks
 
 
-def _by_bookmarks(doc, toc: list[tuple[int, str, int]]) -> list[Chunk]:
+def _by_bookmarks(doc, toc: list[tuple[int, str, int]], textless: list[int]) -> list[Chunk]:
     starts: dict[int, list[tuple[int, str]]] = {}
     for level, title, page in toc:
         starts.setdefault(page, []).append((level, title))
@@ -52,6 +62,7 @@ def _by_bookmarks(doc, toc: list[tuple[int, str, int]]) -> list[Chunk]:
             stack.append(title)
         lines = [line for line in map(norm, page.get_text().splitlines()) if line]
         if not lines:
+            textless.append(no)
             continue
         # Every bookmark that starts on this page is searchable as a heading; a page in the
         # middle of a section inherits the section's title.
@@ -60,13 +71,15 @@ def _by_bookmarks(doc, toc: list[tuple[int, str, int]]) -> list[Chunk]:
     return chunks
 
 
-def _by_layout(doc) -> list[Chunk]:
+def _by_layout(doc, textless: list[int]) -> list[Chunk]:
     pages: list[tuple[int, list[tuple[str, float, bool]]]] = []
     chars_by_size: Counter[float] = Counter()
     pages_with_line: Counter[str] = Counter()
     for page in doc:
         lines = list(_styled_lines(page))
         pages.append((page.number + 1, lines))
+        if not lines:
+            textless.append(page.number + 1)
         for text, size, _ in lines:
             chars_by_size[size] += len(text)
         pages_with_line.update({text for text, _, _ in lines})

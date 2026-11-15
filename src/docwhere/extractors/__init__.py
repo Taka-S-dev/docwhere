@@ -25,10 +25,13 @@ from docwhere.model import Chunk
 
 # Bump on every extractor change: files that could not be read are tried again, since the
 # change may let them be read.
-EXTRACTOR_VERSION = 8
+EXTRACTOR_VERSION = 9
 # The oldest version whose output is still current. Set it to EXTRACTOR_VERSION when the
 # output changes, so that every file is re-extracted.
 OUTPUT_VERSION = 5
+# The same for one format, when only its output changed: those files alone are read again.
+# 9: a PDF's pages that are pictures without text are noted (``note``)
+OUTPUT_VERSION_BY_EXT = {".pdf": 9}
 
 # Office Open XML files are zip archives that the parsers inflate in memory. A small file can
 # declare gigabytes of content, so the declared total is checked before any parser touches it.
@@ -98,8 +101,23 @@ def is_serial(path: Path) -> bool:
     return path.suffix.lower() in _SERIAL
 
 
+_notes: list[str] = []
+
+
+def note(text: str) -> None:
+    """Say something of the file being read that its sections do not show (part of it could not
+    be read, say); kept with the file in the index."""
+    _notes.append(text)
+
+
+def notes() -> list[str]:
+    """What ``note`` was told while the last file was read."""
+    return list(_notes)
+
+
 def extract(path: Path) -> list[Chunk]:
     _load()
+    _notes.clear()
     if path.suffix.lower() in _ZIP_BASED:
         _check_unzipped_size(path)
     return _REGISTRY[path.suffix.lower()](path)

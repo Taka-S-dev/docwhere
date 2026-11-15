@@ -176,3 +176,17 @@ def test_a_query_typed_in_a_box_keeps_phrases_and_leaves_out_minus_words():
     from docwhere.search import parse_query
 
     assert parse_query('接続 "応答 タイムアウト" -旧版 -"検討 資料" -') == (["接続", "応答 タイムアウト", "-"], ["旧版", "検討 資料"])
+
+
+def test_a_partly_scanned_pdf_is_listed_and_old_reads_are_redone(docs, index):
+    from test_extractors import _partly_scanned
+
+    _partly_scanned(docs / "mixed.pdf")
+    index.sync(docs)
+    [(path, note)] = index.partly_read([docs])
+    assert path.endswith("mixed.pdf") and "(p.2)" in note
+    assert next(r for r in index.roots() if r["path"] == str(docs))["partly"] == 1
+    assert index.sync(docs).updated == 0
+    # PDFs read before pages without text were noted are read again; other formats are not
+    index.db.execute("UPDATE files SET version = version - 1")
+    assert [Path(t[1]).suffix for t in index.scan(docs).todo] == [".pdf", ".pdf"]

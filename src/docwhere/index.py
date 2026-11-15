@@ -21,9 +21,11 @@ from docwhere.excludes import Matcher, normalize
 from docwhere.extractors import (
     EXTRACTOR_VERSION,
     OUTPUT_VERSION,
+    OUTPUT_VERSION_BY_EXT,
     NeedsApplication,
     extract,
     is_serial,
+    notes,
     supported_extensions,
 )
 from docwhere.model import Chunk
@@ -159,6 +161,8 @@ class Index:
             db.execute("ALTER TABLE files ADD COLUMN read_ms INTEGER")  # how long reading the file took
         if "sha256" not in {r["name"] for r in db.execute("PRAGMA table_info(files)")}:
             db.execute("ALTER TABLE files ADD COLUMN sha256 TEXT")  # of the content that was read
+        if "note" not in {r["name"] for r in db.execute("PRAGMA table_info(files)")}:
+            db.execute("ALTER TABLE files ADD COLUMN note TEXT")  # read, but part of it could not be
         if "reading" not in {r["name"] for r in db.execute("PRAGMA table_info(reader)")}:
             db.execute("ALTER TABLE reader ADD COLUMN reading TEXT")  # files being read now, as JSON
         if "seconds_left" not in {r["name"] for r in db.execute("PRAGMA table_info(reader)")}:
@@ -249,13 +253,13 @@ class Index:
 
         outcomes = _extract_all(todo, workers, timeout, tick)
         try:
-            for key, path, mtime, size, chunks, error, timed_out, seconds, digest in outcomes:
+            for key, path, mtime, size, chunks, error, timed_out, seconds, digest, note in outcomes:
                 estimate.done(path, seconds)
                 if chunks is None:  # the same content as before: keep what was read
                     self._touch(key, path, mtime, seconds)
                     stats.unchanged += 1
                 else:
-                    self._store(key, path, mtime, size, chunks, error, seconds, digest)
+                    self._store(key, path, mtime, size, chunks, error, seconds, digest, note)
                 done += 1
                 stats.updated += 1
                 stats.failed += error is not None
@@ -444,6 +448,7 @@ class Index:
         error: str | None,
         seconds: float = 0.0,
         digest: str | None = None,
+        note: str | None = None,
     ) -> None:
         row = self.db.execute("SELECT id FROM files WHERE key = ?", (key,)).fetchone()
         read_ms = round(seconds * 1000)
@@ -451,15 +456,15 @@ class Index:
             file_id = row["id"]
             self.db.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))
             self.db.execute(
-                "UPDATE files SET path = ?, mtime_ns = ?, size = ?, version = ?, error = ?, read_ms = ?, sha256 = ?"
-                " WHERE id = ?",
-                (str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, digest, file_id),
+                "UPDATE files SET path = ?, mtime_ns = ?, size = ?, version = ?, error = ?, read_ms = ?, sha256 = ?,"
+                " note = ? WHERE id = ?",
+                (str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, digest, note, file_id),
             )
         else:
             file_id = self.db.execute(
-                "INSERT INTO files(key, path, mtime_ns, size, version, error, read_ms, sha256)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (key, str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, digest),
+                "INSERT INTO files(key, path, mtime_ns, size, version, error, read_ms, sha256, note)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (key, str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, digest, note),
             ).lastrowid
         self.db.executemany(
             "INSERT INTO chunks(file_id, title, crumb, body, anchors) VALUES (?, ?, ?, ?, ?)",
@@ -492,8 +497,8 @@ class Index:
         out = []
         for r in self.db.execute("SELECT key, path, synced_at, excludes, exclude_hits, once_until FROM roots ORDER BY path"):
             prefix = prefix_of(r["key"])
-            files, errors, chunks = self.db.execute(
-                "SELECT count(*), count(f.error),"
+            files, errors, partly, chunks = self.db.execute(
+                "SELECT count(*), count(f.error), coalesce(sum(f.note IS NOT NULL AND f.error IS NULL), 0),"
                 " (SELECT count(*) FROM chunks c JOIN files g ON g.id = c.file_id WHERE substr(g.key, 1, ?) = ?)"
                 " FROM files f WHERE substr(f.key, 1, ?) = ?",
                 (len(prefix), prefix, len(prefix), prefix),
@@ -502,6 +507,7 @@ class Index:
             excludes = [{"pattern": p, "matched": hits.get(p)} for p in json.loads(r["excludes"])]
             out.append({
                 "path": r["path"], "synced_at": r["synced_at"], "files": files, "chunks": chunks, "errors": errors,
+                "partly": partly,  # read, but with pages that could not be (see partly_read)
                 "excludes": excludes, "once_until": r["once_until"],
             })
         return out
@@ -588,6 +594,15 @@ class Index:
             rows.sort(key=lambda r: r["path"])
         return [(r["path"], r["error"]) for r in rows]
 
+    def partly_read(self, roots: list[Path]) -> list[tuple[str, str]]:
+        """(path, note) of the files under ``roots`` read but with a part that could not be (a
+        PDF's scanned pages): searches do not reach that part."""
+        rows = []
+        for root in roots:
+            rows += [r for r in self._files_under(path_key(Path(root).resolve()), "path, error, note")
+                     if r["note"] and not r["error"]]
+        return sorted(((r["path"], r["note"]) for r in rows), key=lambda x: x[0])
+
     def files_in(self, roots: list[Path]) -> list[sqlite3.Row]:
         """path and mtime of every indexed file under ``roots``."""
         rows: list[sqlite3.Row] = []
@@ -619,7 +634,8 @@ def _current(row: sqlite3.Row | None, mtime: int, size: int) -> bool:
         return False
     if row["error"] is not None:
         return row["version"] == EXTRACTOR_VERSION
-    return OUTPUT_VERSION <= row["version"] <= EXTRACTOR_VERSION
+    floor = max(OUTPUT_VERSION, OUTPUT_VERSION_BY_EXT.get(os.path.splitext(row["key"])[1].lower(), 0))
+    return floor <= row["version"] <= EXTRACTOR_VERSION
 
 
 def _walk(root: Path, matcher: Matcher, hits: dict) -> Iterator[tuple[Path, os.stat_result]]:
@@ -651,21 +667,23 @@ def _walk(root: Path, matcher: Matcher, hits: dict) -> Iterator[tuple[Path, os.s
                 yield path, st
 
 
-def _extract_job(path: str, previous: str | None = None) -> tuple[list[Chunk] | None, str | None, str | None]:
-    """(sections, error, sha256 of the content). Sections are None when the content hashes to
-    ``previous``: a checkout or a copy that only changed the file's date is not read again."""
+def _extract_job(path: str, previous: str | None = None) -> tuple[list[Chunk] | None, str | None, str | None, str | None]:
+    """(sections, error, sha256 of the content, note). Sections are None when the content hashes
+    to ``previous``: a checkout or a copy that only changed the file's date is not read again.
+    The note says what of the file could not be read (``extractors.note``)."""
     try:
         digest = _sha256(Path(path))
     except OSError as e:
-        return [], f"{type(e).__name__}: {e}", None
+        return [], f"{type(e).__name__}: {e}", None, None
     if previous is not None and digest == previous:
-        return None, None, digest
+        return None, None, digest, None
     try:
-        return extract(Path(path)), None, digest
+        chunks = extract(Path(path))
+        return chunks, None, digest, "; ".join(notes()) or None
     except NeedsApplication:
         raise  # the worker hands the file on to the application's worker
     except Exception as e:  # one unreadable file must not stop the sync
-        return [], f"{type(e).__name__}: {e}", digest
+        return [], f"{type(e).__name__}: {e}", digest, None
 
 
 def _sha256(path: Path) -> str:
@@ -691,8 +709,8 @@ def _pool_size(todo: list[tuple], workers: int | None) -> int:
 
 
 def _extract_all(todo: list[tuple], workers: int | None, timeout: float, tick) -> Iterator[tuple]:
-    """(key, path, mtime, size, chunks, error, timed_out, seconds, sha256) for every file in
-    ``todo``; chunks is None when the content is what was read before."""
+    """(key, path, mtime, size, chunks, error, timed_out, seconds, sha256, note) for every file
+    in ``todo``; chunks is None when the content is what was read before."""
     job = _extract_job  # looked up here so a test can put a slow reader in its place
     tasks = [
         worker_pool.Task(str(item[1]), is_serial(item[1]), item, () if item[4] is None else (item[4],)) for item in todo
@@ -700,7 +718,7 @@ def _extract_all(todo: list[tuple], workers: int | None, timeout: float, tick) -
     for out in worker_pool.run(tasks, job, _pool_size(todo, workers), timeout, tick):
         key, path, mtime, size, _ = out.task.data
         if out.failure:
-            yield key, path, mtime, size, [], out.failure, out.timed_out, out.seconds, None
+            yield key, path, mtime, size, [], out.failure, out.timed_out, out.seconds, None, None
         else:
-            chunks, error, digest = out.result
-            yield key, path, mtime, size, chunks, error, False, out.seconds, digest
+            chunks, error, digest, *rest = out.result  # a reader put in place by a test may give no note
+            yield key, path, mtime, size, chunks, error, False, out.seconds, digest, rest[0] if rest else None

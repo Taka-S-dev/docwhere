@@ -262,6 +262,8 @@ def cmd_search(args) -> int:
     # Every unreadable file in scope, not only the ones that failed during this sync: a file
     # that failed last week is just as invisible to this search.
     unreadable = index.errors(roots)
+    # Read, but with pages no search reaches (a PDF's scanned pages)
+    partly = index.partly_read(roots)
     # What the exclusion patterns kept out of this search, so a miss caused by one is noticed.
     excludes = _left_out(index, roots, updates)
     kept = {t[0] for t in changed} if args.keep_changed else set()
@@ -299,6 +301,8 @@ def cmd_search(args) -> int:
             ],
             "unreadable": [{"path": p, "error": e} for p, e in unreadable[:MAX_UNREADABLE_LISTED]],
             "unreadable_count": len(unreadable),
+            "partly_unreadable": [{"path": p, "note": n} for p, n in partly[:MAX_UNREADABLE_LISTED]],
+            "partly_unreadable_count": len(partly),
             # wikis added on this PC: a session that did not add them learns here that they exist
             "wikis": _wiki_names(index.path),
             "next": HINT,
@@ -326,6 +330,8 @@ def cmd_search(args) -> int:
               " add a term with --all, --not or a narrower --in", file=sys.stderr)
     if unreadable:
         print(f"\n{len(unreadable)} file(s) here could not be searched; see: docwhere status --errors", file=sys.stderr)
+    for p, n in partly[:MAX_UNREADABLE_LISTED]:
+        print(f"partly searched: {p}: {n}", file=sys.stderr)
     if any(e["left_out"] for e in excludes):
         listed = ", ".join(f"{e['pattern']} ({e['left_out']})" for e in excludes if e["left_out"])
         print(f"left out by exclusions, not searched: {listed}; see: docwhere status", file=sys.stderr)
@@ -658,7 +664,9 @@ def cmd_status(args) -> int:
             stale.append(r["path"])
         elif r["once_until"]:
             note = f"  (searched with --once: dropped after {_when(r['once_until'])})"
-        print(f"  {r['path']}  {r['files']} files / {r['chunks']} sections / {r['errors']} unreadable  (synced {when}){note}")
+        partly = f" / {r['partly']} with pages not searchable" if r["partly"] else ""
+        print(f"  {r['path']}  {r['files']} files / {r['chunks']} sections / {r['errors']} unreadable{partly}"
+              f"  (synced {when}){note}")
         if r["excludes"]:
             print("    excluding: " + ", ".join(_described(e) for e in r["excludes"]))
     for path, error in errors:

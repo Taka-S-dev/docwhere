@@ -178,3 +178,36 @@ def test_word_merged_cell_cannot_outgrow_the_budget_while_a_table_is_built(tmp_p
     with pytest.raises(ValueError, match="limit"):
         extract(tmp_path / "t.docx")
     assert built == []  # refused while the rows were being read, before the table was assembled
+
+
+def _partly_scanned(path):
+    import pymupdf
+
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "Chapter one text")
+    picture = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 8, 8))
+    picture.clear_with(200)
+    doc.new_page().insert_image(pymupdf.Rect(72, 72, 300, 300), pixmap=picture)  # a scanned page
+    doc.new_page()  # a page left blank on purpose: nothing missed there
+    doc.save(path)
+
+
+def test_scanned_pages_of_a_pdf_with_text_are_noted(tmp_path):
+    from docwhere.extractors import notes
+
+    path = tmp_path / "mixed.pdf"
+    _partly_scanned(path)
+    chunks = extract(path)
+    assert [c.lines for c in chunks] == [["Chapter one text"]]
+    assert notes() == ["1 of 3 pages are pictures without text and cannot be searched (p.2); OCR the file to search them"]
+    extract(_plain(tmp_path))
+    assert notes() == []  # what was said of one file is not carried to the next
+
+
+def _plain(tmp_path):
+    import pymupdf
+
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "Only text")
+    doc.save(tmp_path / "plain.pdf")
+    return tmp_path / "plain.pdf"

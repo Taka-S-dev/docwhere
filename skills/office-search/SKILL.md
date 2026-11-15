@@ -186,6 +186,9 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    files, files given up after taking too long) — not only new failures. When `unreadable_count` is above zero, end the answer with
    one line naming them (or the count, if many), because the answer could be in one of them.
    Never say that every file was searched when this list is not empty.
+   `partly_unreadable` lists files that were read but have pages no search reaches (scanned
+   pages in a PDF that has text elsewhere; `note` names the pages). Treat them the same way:
+   when the answer is not found, or the user asks whether everything was searched, name them.
    Likewise `excludes`: the patterns that applied to the searched folders, each with
    `left_out`, the folders and files it kept out of this search (see `references/exclude.md`).
    When any `left_out` is above zero, end the answer with one line saying so —
@@ -287,7 +290,8 @@ searching, showing a page, errors).
 
 ## Limits
 
-- Scanned PDFs are not OCR'd; they appear in `unreadable`.
+- Scanned PDFs are not OCR'd; they appear in `unreadable`, and a PDF with only some pages
+  scanned appears in `partly_unreadable`.
 - Word has no page numbers in the file; the section heading is the location. Auto-numbered
   headings get a best-effort `3.2.1` prefix that may not match custom numbering like 第3章.
 - PDFs without bookmarks get headings guessed from font size and boldness; in unusually

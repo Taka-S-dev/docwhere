@@ -285,8 +285,11 @@ class ManageApi:
     def unreadable(self, path: str) -> dict:
         index = self._index()
         try:
-            errors = index.errors([self._root(index, path)])
-            return {"count": len(errors), "files": [{"path": p, "error": e} for p, e in errors[:MAX_UNREADABLE]]}
+            root = self._root(index, path)
+            errors = index.errors([root])
+            partly = index.partly_read([root])
+            return {"count": len(errors), "files": [{"path": p, "error": e} for p, e in errors[:MAX_UNREADABLE]],
+                    "partly": [{"path": p, "note": n} for p, n in partly[:MAX_UNREADABLE]], "partly_count": len(partly)}
         finally:
             index.close()
 
@@ -1665,6 +1668,13 @@ MANAGE_JS = r"""(() => {
         h("div", { class: "add-row" }, input, h("button", { type: "button", class: "btn", text: "追加", onclick: () => addExclude(root, input) })),
         h("p", { class: "hint", text: "名前はどの深さのフォルダやファイルにも当たります。/ を含めると、このフォルダからのパスになります。大文字小文字は区別しません。" })),
       h("section", {}, h("h3", { text: `読めないファイル${root.errors ? `（${fmt(root.errors)} 件）` : ""}` }), errorList),
+      // read, but with pages no search reaches: scanned pages in a PDF that has text elsewhere
+      root.partly ? h("section", {}, h("h3", { text: `一部のページを探せないファイル（${fmt(root.partly)} 件）` }),
+        !errors ? h("p", { class: "none", text: "取得しています…" })
+        : h("ul", { class: "errors" }, errors.partly.map((f) => h("li", {},
+            h("button", { type: "button", text: base(f.path), title: `${f.path}\nエクスプローラーで表示`, onclick: () => reveal(f.path) }),
+            h("span", { text: f.note }))),
+            errors.partly_count > errors.partly.length ? h("li", {}, h("span", { text: `ほか ${fmt(errors.partly_count - errors.partly.length)} 件` })) : null)) : null,
       costSection,
       h("section", {}, h("h3", { text: "場所" }), h("p", { class: "place", text: root.path })),
       h("section", {}, h("h3", { text: "操作" }), h("div", { class: "ops" },
@@ -1686,7 +1696,7 @@ MANAGE_JS = r"""(() => {
     if (open) {
       parts.sig = "";
       fillRow(root, parts);
-      if (root.errors && !loaded.get(key)) {
+      if ((root.errors || root.partly) && !loaded.get(key)) {
         api.unreadable(root.path).then((r) => { loaded.set(key, r); parts.sig = ""; fillRow(parts.root, parts); })
           .catch(failed("読めないファイルを表示できませんでした"));
       }
@@ -1746,6 +1756,8 @@ MANAGE_JS = r"""(() => {
     put(parts.facts,
       h("span", { text: `${fmt(root.files)} ファイル` }),
       root.errors ? h("span", { class: "bad", text: `読めない ${fmt(root.errors)} 件` }) : null,
+      root.partly ? h("span", { class: "bad", text: `一部読めない ${fmt(root.partly)} 件`,
+        title: "文字のない（スキャンした）ページがあり、そのページは検索で見つかりません" }) : null,
       h("span", { text: `最終更新 ${ago(root.synced_at, data.now)}` }),
       root.excludes.length ? h("span", { text: `除外 ${root.excludes.length} 件` }) : null,
       root.once_until ? h("span", { class: "once" }, h("span", { text: `一時: ${clock(root.once_until)} にインデックスから外れます`,
@@ -1778,12 +1790,12 @@ MANAGE_JS = r"""(() => {
     // the scroll of the unreadable list and the caret in the pattern field
     if (!expanded.has(keyOf(root.path))) return;
     const errors = loaded.get(keyOf(root.path));
-    if (errors && errors.count !== root.errors) {
+    if (errors && (errors.count !== root.errors || errors.partly_count !== root.partly)) {
       loaded.delete(keyOf(root.path));
       api.unreadable(root.path).then((r) => { loaded.set(keyOf(root.path), r); parts.sig = ""; fillRow(parts.root, parts); })
         .catch(failed("読めないファイルを表示できませんでした"));
     }
-    const sig = JSON.stringify([root.excludes, root.errors, Boolean(loaded.get(keyOf(root.path))), costs.get(keyOf(root.path)) || null]);
+    const sig = JSON.stringify([root.excludes, root.errors, root.partly, Boolean(loaded.get(keyOf(root.path))), costs.get(keyOf(root.path)) || null]);
     if (sig !== parts.sig) { parts.sig = sig; detailsOf(root, parts); }
   };
 
