@@ -197,3 +197,12 @@ def test_every_match_is_counted_before_a_few_of_each_file_are_kept(docs, index):
     found: dict = {}
     hits = search(index, [docs], ["config"], per_file=1, limit=2, found=found)
     assert len(hits) == 2 and found["files"] == 4 and found["sections"] > 4
+
+
+def test_a_later_page_of_a_section_does_not_take_its_heading_again():
+    from docwhere.search import W_TITLE, score_row
+
+    first = {"title": "操作ログの使い方", "crumb": "", "body": "操作ログ", "path": "a.pdf", "continued": 0}
+    later = {**first, "continued": 1}  # the next page, under the same bookmark
+    assert score_row(first, ["操作ログ"])[0] - score_row(later, ["操作ログ"])[0] == W_TITLE
+    assert score_row({k: v for k, v in first.items() if k != "continued"}, ["操作ログ"]) == score_row(first, ["操作ログ"])  # a wiki row

@@ -373,7 +373,8 @@ def _fetch(index: Index, ids: set[int]):
     for i in range(0, len(ids), 900):
         batch = ids[i : i + 900]
         yield from index.db.execute(
-            "SELECT c.id, c.title, c.crumb, c.body, c.anchors, f.path, f.mtime_ns"
+            "SELECT c.id, c.title, c.crumb, c.body, c.anchors, f.path, f.mtime_ns,"
+            " (SELECT p.title FROM chunks p WHERE p.id = c.id - 1 AND p.file_id = c.file_id) = c.title AS continued"
             " FROM chunks c JOIN files f ON f.id = c.file_id"
             f" WHERE c.id IN ({','.join('?' * len(batch))})",
             batch,
@@ -384,12 +385,14 @@ def score_row(row, folded: list[str]) -> tuple[float, list[int]]:
     title, crumb, body = row["title"].lower(), row["crumb"].lower(), row["body"].lower()
     filename = norm(os.path.basename(row["path"])).lower()
     score, matched = 0.0, []
+    # a later page of the section above it; keys(), as "in" looks through an sqlite3.Row's values
+    continued = "continued" in row.keys() and bool(row["continued"])  # noqa: SIM118
     for i, term in enumerate(folded):
         in_title, in_crumb, count = term in title, term in crumb, body.count(term)
         if not (in_title or in_crumb or count):
             continue
         matched.append(i)
-        score += W_TITLE * in_title + W_CRUMB * in_crumb + math.log1p(count) + W_FILENAME * (term in filename)
+        score += W_TITLE * (in_title and not continued) + W_CRUMB * in_crumb + math.log1p(count) + W_FILENAME * (term in filename)
     if matched:
         score += W_EXTRA_TERM * (len(matched) - 1)
     return score, matched
