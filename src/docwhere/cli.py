@@ -44,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         return args.func(args)
-    except (FileNotFoundError, NotADirectoryError, LookupError) as e:
+    except (FileNotFoundError, NotADirectoryError, LookupError, PermissionError) as e:
         print(f"docwhere: {e}", file=sys.stderr)
         return 2
 

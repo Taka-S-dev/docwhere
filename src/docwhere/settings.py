@@ -9,7 +9,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
+
+SAVE_WAIT = 5.0  # seconds a save waits for another window's save to finish
 
 
 def settings_path(db: Path) -> Path:
@@ -28,10 +33,86 @@ def load_settings(db: Path) -> dict:
 
 
 def save_settings(db: Path, **changes) -> None:
-    settings = {**load_settings(db), **changes}
+    """Add ``changes`` to the saved settings, keeping the rest.
+
+    The index window and the reading window both save here, the reading window whenever it is
+    moved or resized. Each save reads, adds and writes under a lock, so two at once do not drop
+    each other's changes, and writes a whole new file in place of the old, so no one reads a file
+    half written. A file that cannot be read is not written over with the change alone: that
+    dropped every other setting (the PDF app, the title) the user had chosen.
+
+    Nothing is saved in an index folder others can write to: settings are not read from there
+    (see load_settings), and a file they put there in place of the lock or the new file would
+    be written through.
+    """
     path = settings_path(db)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, ensure_ascii=False, indent=1), encoding="utf-8")
+    if not private(path.parent):
+        raise PermissionError(f"ほかの人も書き込めるインデックスのフォルダなので、設定は保存しません（{path.parent}）")
+    with _locked(path.with_name("settings.lock")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            current = {}
+        else:
+            try:
+                current = json.loads(text)
+            except ValueError as e:
+                raise ValueError(f"設定ファイルが読めないため、保存しませんでした（{path}: {e}）") from None
+            if not isinstance(current, dict):
+                raise TypeError(f"設定ファイルの形が違うため、保存しませんでした（{path}）")
+        # a new file of its own, under a name no one can foresee, then put in the settings' place
+        fd, tmp = tempfile.mkstemp(prefix="settings.", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps({**current, **changes}, ensure_ascii=False, indent=1))
+            deadline = time.monotonic() + SAVE_WAIT
+            while True:
+                try:
+                    os.replace(tmp, path)
+                    return
+                except PermissionError:  # Windows: someone is reading it right now; a moment later it is free
+                    if time.monotonic() > deadline:
+                        raise
+                    time.sleep(0.02)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+
+@contextmanager
+def _locked(lock: Path):
+    """Hold ``lock`` (a file beside the settings) for one save, across processes and threads."""
+    deadline = time.monotonic() + SAVE_WAIT
+    with open(lock, "a+b") as f:
+        while True:
+            try:
+                f.seek(0)
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("設定を保存できませんでした（ほかの窓が保存を続けています）") from None
+                time.sleep(0.02)
+        try:
+            yield
+        finally:
+            f.seek(0)
+            if sys.platform == "win32":
+                import msvcrt
+
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(f, fcntl.LOCK_UN)
 
 
 # How much of a file's place a source names, as set in the settings dialog: the file's name,
