@@ -11,6 +11,9 @@
 !/skills/
 /skills/*
 !/skills/office-search/
+# eval output holds words from the documents it was run on; only the shipped prompts are kept
+/skills/office-search/evals/*.json
+!/skills/office-search/evals/evals.json
 
 # Never commit these, wherever they appear inside allowed paths.
 __pycache__/
