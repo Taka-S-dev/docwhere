@@ -42,7 +42,7 @@ SEARCH_LIMIT = 30  # hits opened together at most
 FIRST_PER_FILE = 3  # sections of one file in the first hits shown, so one long file does not fill the list
 COLLECTED_NAME = "collected.json"  # hits collected in the search tab, beside the index
 MAX_COLLECTED = 50  # hits one reading page shows together
-SEARCH_POOL = 300  # hits counted by kind, format and folder, so a narrowing button tells what it keeps
+SEARCH_POOL = 1000  # hits the search tab can list ("show more"), counted by kind, format and folder
 SLOW_SHORT = 1.0  # seconds a search with a two-letter term may take before the tab says why
 SYNONYMS_NAME = "synonyms.csv"
 PREVIEW_DPI = 110  # a page drawn in the search tab's pane: about the pane's width, small enough to send at once
@@ -442,7 +442,8 @@ class ManageApi:
                 "hits": kept, "first": sum(1 for h in kept if h.get("first")),
                 "total": len(kept) if narrowed else counted.get("sections", len(kept)),
                 "files": len({h["path"] for h in kept}) if narrowed else counted.get("files", len({h["path"] for h in kept})),
-                "pooled": not narrowed and counted.get("sections", 0) > len(pool),
+                # the count is a lower bound: a term was in more sections than were looked at
+                "pooled": not narrowed and counted.get("at_least", False),
                 "terms": terms, "variants": variants, "exclude": exclude, "roots": [str(r) for r in roots],
                 "missing": missing, "ms": round((time.monotonic() - started) * 1000), "limit": SEARCH_LIMIT,
                 "facets": facets["counts"], "facet": chosen, "hints": hints,
@@ -2709,7 +2710,9 @@ MANAGE_JS = r"""(() => {
     $("#view-all").hidden = together < 2;
     $("#view-all").textContent = `${together} 件の該当箇所をまとめて見る`;
     $("#more-hits").hidden = !left;
-    $("#more-hits").textContent = `もっと見る（残り ${fmt(left)} ${unit}）`;
+    // the list holds the first SEARCH_POOL matches: past them, the count says more than can be shown
+    const beyond = results.total > results.hits.length ? `。上位 ${fmt(results.hits.length)} ${unit}まで` : "";
+    $("#more-hits").textContent = `もっと見る（残り ${fmt(left)} ${unit}${beyond}）`;
     $("#search-more").hidden = together < 2 && !left;
     fitPanes();
     if (!keepPane) renderPreview();

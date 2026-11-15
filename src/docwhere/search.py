@@ -86,7 +86,8 @@ def search(
     Each term brings at most CANDIDATES_PER_TERM sections to be ranked (REGEX_CANDIDATES for a
     pattern); the terms that reached it are added to ``capped``, as sections past it were never
     looked at and a better one may be among them. ``found`` is given how many sections matched
-    and in how many files, before ``limit`` and ``per_file`` keep the first of them."""
+    and in how many files, before ``limit`` and ``per_file`` keep the first of them; with
+    ``at_least`` set when a term reached its limit, so more may match than were counted."""
     if regex:
         return _search_regex(index, roots, terms, require_all, exts, limit, per_file, exclude, capped, found)
     terms = list(dict.fromkeys(t for t in map(norm, terms) if t))
@@ -112,8 +113,11 @@ def search(
             )
             args = [like, like, like]
         ids = [r[0] for r in index.db.execute(sql, [*args, *scope_args, CANDIDATES_PER_TERM])]
-        if len(ids) >= CANDIDATES_PER_TERM and capped is not None:
-            capped.append(term)
+        if len(ids) >= CANDIDATES_PER_TERM:
+            if capped is not None:
+                capped.append(term)
+            if found is not None:
+                found["at_least"] = True
         candidates.update(ids)
     if not candidates:
         return []
@@ -137,6 +141,7 @@ def _count(scored: list[tuple], found: dict | None) -> None:
     if found is not None:
         found["sections"] = len(scored)
         found["files"] = len({s[1]["path"] for s in scored})
+        found.setdefault("at_least", False)
 
 
 def _hits(scored: list[tuple], newer: dict, limit: int, per_file: int, found: dict | None = None) -> list[Hit]:
@@ -264,8 +269,11 @@ def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, ex
             sql = f"SELECT c.id FROM chunks c JOIN files f ON f.id = c.file_id WHERE {scope_sql}"
             args = scope_args
         ids = [r[0] for r in index.db.execute(sql, args)]
-        if len(literal) >= 3 and len(ids) >= REGEX_CANDIDATES and capped is not None:
-            capped.append(pattern.pattern)
+        if len(literal) >= 3 and len(ids) >= REGEX_CANDIDATES:
+            if capped is not None:
+                capped.append(pattern.pattern)
+            if found is not None:
+                found["at_least"] = True
         candidates.update(ids)
     if not candidates:
         return []

@@ -52,8 +52,10 @@ def test_a_term_past_the_candidate_limit_is_reported(docs, index, monkeypatch):
     search(index, [docs], ["config", "退避"], capped=capped)
     assert capped == []  # a few sections each: all of them ranked
     monkeypatch.setattr(search_module, "CANDIDATES_PER_TERM", 1)
-    search(index, [docs], ["config", "退避"], capped=capped)  # indexed and short (LIKE) terms alike
+    found: dict = {}
+    search(index, [docs], ["config", "退避"], capped=capped, found=found)  # indexed and short (LIKE) terms alike
     assert capped == ["config", "退避"]
+    assert found["at_least"] is True  # the count is then only how many were looked at
 
 
 def test_scope_by_folder_and_extension(docs, index):
@@ -99,6 +101,8 @@ def test_cli_search_json_then_show(docs, tmp_path, capsys, monkeypatch):
     out = json.loads(capsys.readouterr().out)
     assert out["index"]["updated"] == 5
     assert out["hits"][0]["crumb"] == "コマンド > config コマンド"
+    # one a file was listed; every match is counted, so the agent can tell there is more to read
+    assert out["matched"]["files"] == len(out["hits"]) and out["matched"]["sections"] > len(out["hits"])
 
     assert main(["show", "1"]) == 0
     shown = capsys.readouterr().out

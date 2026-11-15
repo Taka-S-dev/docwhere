@@ -248,12 +248,13 @@ def cmd_search(args) -> int:
         reading = _reading(index, updates, _wait_for_reader(index, waiting, None if args.wait_all else args.wait))
     exts = [e.strip() for e in args.ext.split(",")] if args.ext else None
     capped: list[str] = []  # terms matching more sections than are looked at
+    matched: dict = {}  # every matching section and file, before -n and --per-file keep the first
     if args.name:
         hits = search_names(index, roots, args.terms, exts=exts, limit=args.limit, exclude=args.exclude,
                             regex=args.regex, unread=unread)
     else:
         hits = search(index, roots, args.terms, require_all=args.all, exts=exts, limit=args.limit,
-                      per_file=args.per_file, exclude=args.exclude, regex=args.regex, capped=capped)
+                      per_file=args.per_file, exclude=args.exclude, regex=args.regex, capped=capped, found=matched)
     _last_path(index).write_text(
         json.dumps({"terms": args.terms, "hits": [h.to_dict() for h in hits], "reading": reading}, ensure_ascii=False),
         encoding="utf-8",
@@ -279,6 +280,9 @@ def cmd_search(args) -> int:
             # terms matching so many sections that only the likeliest were ranked: a better
             # section may have been passed over, so narrow the search before concluding
             "capped": capped,
+            # how many sections and files matched in all: more than the hits listed means more
+            # to read past them (-n, or --per-file for one file's)
+            "matched": matched or None,
             "roots": [str(Path(r).resolve()) for r in roots],
             "reading": reading,
             # None: not checked (--no-update). kept: searched as last read (--keep-changed)
@@ -325,6 +329,10 @@ def cmd_search(args) -> int:
             print(f"    ! maybe a newer version: {Path(h.newer_version).name}")
         if path_key(h.path) in kept:
             print("    ! modified since it was read; this is the earlier content")
+    if matched and matched["sections"] > len(hits):
+        more = " or more" if matched.get("at_least") else ""
+        print(f"\n{matched['sections']}{more} section(s) in {matched['files']} file(s) matched; {len(hits)} shown"
+              f" (at most {args.per_file} a file): -n or --per-file for more", file=sys.stderr)
     if capped:
         print(f"\n{', '.join(capped)}: found in too many sections to rank them all, so a better one may be missing;"
               " add a term with --all, --not or a narrower --in", file=sys.stderr)

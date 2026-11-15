@@ -151,6 +151,10 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    - `capped` — terms found in so many sections that only the likeliest were ranked. A better
      section may have been passed over: before saying something is not there, search again
      narrower (another term with `--all`, `--not`, or a subfolder with `--in`).
+   - `matched` — how many sections and files matched in all (with `at_least`, more did: a term
+     was in too many sections to count them all). The hits are only the first of them: ten at
+     most, three of a file. More matched than listed means there is more to read
+     past them (see "Reading on" below).
 
    A hit whose `title`/`crumb` names the subject is usually the specification; a hit that only
    mentions it in body text usually is not. When the top hits are ambiguous, read the section:
@@ -163,6 +167,13 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    Prefer `--id` over the hit number (`docwhere show 2`): the number refers to whichever
    search ran last, which may be another agent's. If nothing fits, search again with different
    wording before concluding the information is absent.
+
+   **Reading on.** When none of the hits answers and `matched` says more sections matched than
+   were listed, read past them before searching otherwise:
+   - more of every file: the same search with `-n 30`
+   - more of one file that looks right (the right manual, not the right page): the same search
+     with `--in` its folder and `--per-file 20 -n 20`; three a file is all the default shows
+   - a long section around a hit: `docwhere show --id N -C 2`
 
    When a PDF hit's answer sits in a table, figure or boxed note whose extracted text reads
    jumbled, look at the page itself: `docwhere snap --id 412 --term タイムアウト` saves the page
