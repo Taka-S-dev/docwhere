@@ -2,6 +2,10 @@
 
 Word stores no page numbers (they only exist once Word lays the document out), so hits are
 located by section and reopened by searching for the hit text in Word itself.
+
+Text is read wherever the file keeps it: in a tracked insertion (a document under review), in
+a content control (a form or template), and in a text box, which follows its paragraph as a
+line marked 〔テキストボックス〕. Text struck out by a tracked deletion is not read.
 """
 
 from __future__ import annotations
@@ -17,6 +21,12 @@ _HEADING_STYLE = re.compile(r"(?:heading|見出し)\s*(\d)", re.IGNORECASE)
 MAX_CELL_CHARS = 2000  # text kept from one table cell
 MAX_TABLE_DEPTH = 3  # tables nested deeper than this are not read
 MAX_DOCUMENT_CHARS = 50_000_000  # past this the file is treated as unreadable, like a zip bomb
+TEXT_BOX = "〔テキストボックス〕"
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+# not the paragraph's own text: a text box anchored in it (read as a line of its own), the older
+# drawing kept beside a newer one for programs that cannot show it, and text moved away
+_NOT_OWN = {f"{_W}txbxContent", _FALLBACK, f"{_W}moveFrom"}
 
 
 @register(".docx", ".docm")
@@ -27,16 +37,73 @@ def extract(path: Path) -> list[Chunk]:
     numberer = _HeadingNumberer()
     budget = _Budget(MAX_DOCUMENT_CHARS)
     for block in _blocks(Document(str(path)), budget):
-        if isinstance(block, str):  # a table row, already counted against the budget
+        if isinstance(block, str):  # a table row or a text box, already counted against the budget
             builder.add(block, {})
             continue
-        budget.spend(len(block.text))
+        text = _text(block)
+        budget.spend(len(text))
         level = _heading_level(block)
-        if level and block.text.strip():
-            builder.heading(level, numberer.label(block, level) + block.text, {})
+        if level and text.strip():
+            builder.heading(level, numberer.label(block, level) + text, {})
         else:
-            builder.add(block.text, {})
+            builder.add(text, {})
     return builder.finish()
+
+
+def _text(p) -> str:
+    """The paragraph's text wherever it is kept: in plain runs, in a tracked insertion, in a
+    content control or a hyperlink. python-docx's ``text`` reads the plain runs and hyperlinks
+    only, so a sentence added under review, or a form's filled-in field, was not found."""
+    own = p._p
+    parts = []
+    for el in own.iter(f"{_W}t", f"{_W}tab", f"{_W}br", f"{_W}cr"):
+        if any(a.tag in _NOT_OWN for a in _between(el, own)):
+            continue
+        parts.append(el.text or "" if el.tag == f"{_W}t" else "\t" if el.tag == f"{_W}tab" else "\n")
+    return "".join(parts)
+
+
+def _between(el, top) -> Iterator:
+    for ancestor in el.iterancestors():
+        if ancestor is top:
+            return
+        yield ancestor
+
+
+def _text_boxes(p) -> list[str]:
+    """The text of each text box anchored in the paragraph, once (a box is stored twice, as a
+    drawing and as its older form)."""
+    texts = []
+    for box in p._p.iter(f"{_W}txbxContent"):
+        if any(a.tag == _FALLBACK for a in _between(box, p._p)):
+            continue
+        text = " ".join("".join(t.text or "" for t in para.iter(f"{_W}t")) for para in box.iter(f"{_W}p")).strip()
+        if text and text not in texts:
+            texts.append(text)
+    return texts
+
+
+def _children(container) -> Iterator:
+    """Paragraphs and tables of the document or cell in order, those inside a content control
+    (a block-level w:sdt) included: python-docx passes those over."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    body = getattr(getattr(container, "element", None), "body", None)
+    top = body if body is not None else container._element
+
+    def walk(parent) -> Iterator:
+        for child in parent:
+            if child.tag == f"{_W}p":
+                yield Paragraph(child, container)
+            elif child.tag == f"{_W}tbl":
+                yield Table(child, container)
+            elif child.tag == f"{_W}sdt":
+                content = child.find(f"{_W}sdtContent")
+                if content is not None:
+                    yield from walk(content)
+
+    yield from walk(top)
 
 
 class _Budget:
@@ -57,9 +124,12 @@ def _blocks(container, budget: _Budget, depth: int = 0) -> Iterator:
     """Paragraphs in reading order, with each table read in place as one line per row."""
     from docx.table import Table
 
-    for block in container.iter_inner_content():
+    for block in _children(container):
         if not isinstance(block, Table):
             yield block
+            for text in _text_boxes(block):
+                budget.spend(len(text))
+                yield f"{TEXT_BOX} {text}"
         elif depth < MAX_TABLE_DEPTH:
             # a vertically merged cell is the same element on every row it spans: read it once
             texts: dict = {}
@@ -89,7 +159,7 @@ def _cell_text(cell, depth: int, texts: dict, budget: _Budget) -> str:
         return texts[cell._tc]
     parts, size = [], 0
     for block in _blocks(cell, budget, depth + 1):
-        text = block if isinstance(block, str) else block.text
+        text = block if isinstance(block, str) else _text(block)
         parts.append(text)
         size += len(text)
         if size >= MAX_CELL_CHARS:

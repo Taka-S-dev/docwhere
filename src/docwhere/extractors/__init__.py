@@ -25,7 +25,7 @@ from docwhere.model import Chunk
 
 # Bump on every extractor change: files that could not be read are tried again, since the
 # change may let them be read.
-EXTRACTOR_VERSION = 13
+EXTRACTOR_VERSION = 14
 # The oldest version whose output is still current. Set it to EXTRACTOR_VERSION when the
 # output changes, so that every file is re-extracted.
 # 11: dashes and the wave dash are folded to one form each (model.norm), in every format
@@ -34,9 +34,10 @@ OUTPUT_VERSION = 12
 # The same for one format, when only its output changed: those files alone are read again.
 # 9: a PDF's pages that are pictures without text are noted (``note``)
 # 10: a bookmarked PDF's running headers and footers are left out of each page's text
-# 13: a bookmarked PDF's table rows and wrapped sentences are one line each, its symbol font's
+# 14: a bookmarked PDF's table rows and wrapped sentences are one line each, its symbol font's
 #     marks are the marks they show, and the page number and chapter tab are left out
-OUTPUT_VERSION_BY_EXT = {".pdf": 13}
+# .docx 13: text in tracked insertions, content controls and text boxes is read
+OUTPUT_VERSION_BY_EXT = {".pdf": 14, ".docx": 13, ".docm": 13}
 
 # Office Open XML files are zip archives that the parsers inflate in memory. A small file can
 # declare gigabytes of content, so the declared total is checked before any parser touches it.

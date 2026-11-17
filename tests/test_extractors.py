@@ -341,3 +341,34 @@ def test_utf16_text_is_read_and_a_csv_row_carries_its_header(tmp_path):
     assert chunk.anchors == [{"line": 2}, {"line": 3}]
     (tmp_path / "plain.csv").write_text("a,b\n", encoding="utf-8")  # one row: nothing to label
     assert extract(tmp_path / "plain.csv")[0].lines == ["a / b"]
+
+
+def test_word_text_under_review_in_a_form_field_and_in_a_text_box_is_read(tmp_path):
+    from docx import Document
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    w = nsdecls("w")
+    doc = Document()
+    doc.add_heading("仕様", 1)
+    p = doc.add_paragraph("再送回数は")
+    # a tracked insertion, a tracked deletion and an inline content control in one paragraph
+    p._p.append(parse_xml(f'<w:ins {w} w:id="1" w:author="a"><w:r><w:t>最大5回</w:t></w:r></w:ins>'))
+    p._p.append(parse_xml(f'<w:del {w} w:id="2" w:author="a"><w:r><w:delText>最大3回</w:delText></w:r></w:del>'))
+    p._p.append(parse_xml(f'<w:sdt {w}><w:sdtContent><w:r><w:t>とする。</w:t></w:r></w:sdtContent></w:sdt>'))
+    # a block-level content control holding a paragraph of its own
+    doc.element.body.insert(2, parse_xml(
+        f'<w:sdt {w}><w:sdtContent><w:p><w:r><w:t>承認者: 山田</w:t></w:r></w:p></w:sdtContent></w:sdt>'))
+    # a text box anchored in a paragraph, stored as a drawing and again as its older form
+    box = '<w:txbxContent><w:p><w:r><w:t>注意: 電源を切らない</w:t></w:r></w:p></w:txbxContent>'
+    mc = 'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"'
+    host = doc.add_paragraph("図の説明")
+    host._p.append(parse_xml(
+        f'<w:r {w} {mc}><mc:AlternateContent><mc:Choice Requires="wps">{box}</mc:Choice>'
+        f'<mc:Fallback>{box}</mc:Fallback></mc:AlternateContent></w:r>'))
+    doc.save(tmp_path / "review.docx")
+
+    lines = [line for chunk in extract(tmp_path / "review.docx") for line in chunk.lines]
+    assert "承認者: 山田" in lines
+    assert "再送回数は最大5回とする。" in lines  # the insertion and the field, not the deleted text
+    assert lines.count("〔テキストボックス〕 注意: 電源を切らない") == 1 and "図の説明" in lines
