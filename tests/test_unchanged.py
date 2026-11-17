@@ -71,3 +71,24 @@ def test_an_index_from_before_hashes_reads_a_re_dated_file_once_then_hashes_it(t
     assert index.sync(root).unchanged == 0  # nothing to compare with yet: read
     _redate(root / "a.md")
     assert index.sync(root).unchanged == 1
+
+
+def test_an_index_being_written_can_still_be_opened_and_read(tmp_path):
+    import sqlite3
+    import time
+
+    from docwhere.index import Index
+
+    path = tmp_path / "index" / "index.db"
+    Index(path).close()
+    writer = sqlite3.connect(path)
+    writer.execute("BEGIN IMMEDIATE")  # another docwhere in the middle of a file
+    try:
+        started = time.monotonic()
+        reader = Index(path)
+        assert reader.roots() == []
+        reader.close()
+        assert time.monotonic() - started < 5  # waiting for the write lock takes 30 seconds, then fails
+    finally:
+        writer.rollback()
+        writer.close()

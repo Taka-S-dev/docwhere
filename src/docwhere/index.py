@@ -185,13 +185,19 @@ class Index:
             db.execute("ALTER TABLE files ADD COLUMN family TEXT")
             db.executemany("UPDATE files SET family = ? WHERE id = ?",
                            [(family(r["path"])[0], r["id"]) for r in db.execute("SELECT id, path FROM files")])
-        db.execute("CREATE INDEX IF NOT EXISTS files_family ON files(family)")
+        # asked first: even with IF NOT EXISTS, creating an index waits for the write lock
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'files_family'").fetchone():
+            db.execute("CREATE INDEX IF NOT EXISTS files_family ON files(family)")
         if "reading" not in {r["name"] for r in db.execute("PRAGMA table_info(reader)")}:
             db.execute("ALTER TABLE reader ADD COLUMN reading TEXT")  # files being read now, as JSON
         if "seconds_left" not in {r["name"] for r in db.execute("PRAGMA table_info(reader)")}:
             db.execute("ALTER TABLE reader ADD COLUMN seconds_left REAL")  # the reader's own estimate
             db.execute("ALTER TABLE reader ADD COLUMN estimated_at REAL")  # and when it was made
-        db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        if version != SCHEMA_VERSION:
+            # only a new index: written on every open, it made show and view wait for, and then
+            # fail on, whichever docwhere was writing the index at that moment
+            db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        db.commit()  # what was added above stays, even if this index is only read and closed
         return db
 
     def close(self) -> None:

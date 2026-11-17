@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import sqlite3
 import subprocess
 import sys
 import time
@@ -47,6 +48,12 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except (FileNotFoundError, NotADirectoryError, LookupError, PermissionError, LowDisk) as e:
         print(f"docwhere: {e}", file=sys.stderr)
+        return 2
+    except sqlite3.OperationalError as e:
+        if "locked" not in str(e) and "busy" not in str(e):
+            raise
+        print("docwhere: the index is being updated by another docwhere and stayed busy; try again in a moment",
+              file=sys.stderr)
         return 2
 
 
