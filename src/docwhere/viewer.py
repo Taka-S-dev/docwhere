@@ -437,27 +437,14 @@ def prune(folder: Path, pattern: str, min_keep: int, max_keep: int, max_age: flo
     return freed
 
 
-_OFFSETS: dict[tuple[str, int], int | None] = {}
-
-
 def _page_text(hit: dict, page: int) -> str:
     """"p.120（印刷 118）" when the PDF's printed numbers differ from its page index."""
-    from docwhere.folio import printed, printed_offset
+    from docwhere.folio import offset_of, page_label, printed
 
     pdf = hit.get("pdf")
     if not pdf or hit.get("rendered_from"):
         return f"p.{page}"
-    try:
-        key = (pdf, Path(pdf).stat().st_mtime_ns)
-        if key not in _OFFSETS:
-            import pymupdf
-
-            with pymupdf.open(pdf) as doc:
-                _OFFSETS[key] = printed_offset(doc)
-        number = printed(_OFFSETS[key], page)
-    except Exception:
-        number = None
-    return f"p.{page}（印刷 {number}）" if number else f"p.{page}"
+    return page_label(page, printed(offset_of(pdf), page))
 
 
 def _page_id(hit: dict, page: int) -> str:

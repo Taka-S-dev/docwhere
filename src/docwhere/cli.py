@@ -197,6 +197,7 @@ def _view_options(p: argparse.ArgumentParser, prefix: str = "") -> None:
 
 
 def cmd_search(args) -> int:
+    from docwhere.folio import page_label
     from docwhere.search import PatternError, compile_patterns, search, search_names
 
     roots = args.roots or [Path(".")]
@@ -259,6 +260,8 @@ def cmd_search(args) -> int:
     else:
         hits = search(index, roots, args.terms, require_all=args.all, exts=exts, limit=args.limit,
                       per_file=args.per_file, exclude=args.exclude, regex=args.regex, capped=capped, found=matched)
+    for h in hits:
+        h.printed_page = _printed_page(index, h.path, h.anchor)
     _last_path(index).write_text(
         json.dumps({"terms": args.terms, "hits": [h.to_dict() for h in hits], "reading": reading}, ensure_ascii=False),
         encoding="utf-8",
@@ -325,7 +328,8 @@ def cmd_search(args) -> int:
         print("no hits")
     for h in hits:
         heading = h.crumb or (h.title if h.title != Path(h.path).name else "")  # a --name hit is the file itself
-        where = h.location + (f" (the heading runs over {h.heading_pages})" if h.heading_pages else "")
+        where = (page_label(h.anchor["page"], h.printed_page) if h.printed_page else h.location) + (
+            f" (the heading runs over {h.heading_pages})" if h.heading_pages else "")
         line = "  ".join(x for x in (Path(h.path).name, heading, where, f"({h.modified})") if x)
         print(f"{h.n:>2}. {line}")
         print(f"    {highlight(h.snippet, h.terms)}")
@@ -455,6 +459,7 @@ def _left_out(index: Index, roots: list[Path], updates: list[SyncStats]) -> list
 
 
 def cmd_show(args) -> int:
+    from docwhere.folio import page_label
     from docwhere.search import CELL_SEP, location_label
 
     index = Index(args.db)
@@ -468,18 +473,23 @@ def cmd_show(args) -> int:
     if not rows:
         raise LookupError("the index changed since that search; search again")
     print(f"# {Path(rows[0]['path']).name}\n# {rows[0]['path']}")
+
+    def label_of(anchor: dict) -> str:
+        number = _printed_page(index, rows[0]["path"], anchor)
+        return page_label(anchor["page"], number) if number else location_label(anchor)
+
     for row in rows:
         anchors = json.loads(row["anchors"])
         print(f"\n## {row['crumb'] or row['title'] or '(no heading)'}" + (" ◀ hit" if row["id"] == chunk_id else ""))
         lines = [line.replace(CELL_SEP, " | ") for line in row["body"].split("\n")]
         if len(anchors) == 1:
-            if label := location_label(anchors[0]):
+            if label := label_of(anchors[0]):
                 print(f"[{label}]")
             print("\n".join(lines))
         else:
             previous = None
             for line, anchor in zip(lines, anchors):
-                label = location_label(anchor)
+                label = label_of(anchor)
                 print(f"[{label}] {line}" if label and label != previous else line)
                 previous = label
     return 0
@@ -768,6 +778,15 @@ def cmd_forget(args) -> int:
 
 
 # ---- helpers ---------------------------------------------------------------------------
+
+
+def _printed_page(index: Index, path: str, anchor: dict) -> int | None:
+    """The number printed on a PDF hit's page, when it is not the page index (see folio)."""
+    if "page" not in anchor or not path.lower().endswith(".pdf"):
+        return None
+    from docwhere.folio import offset_of, printed
+
+    return printed(offset_of(path, index.path.with_name("folios.json")), anchor["page"])
 
 
 def _last_path(index: Index) -> Path:

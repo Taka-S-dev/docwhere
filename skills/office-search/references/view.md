@@ -60,6 +60,7 @@ Read this before running `docwhere view` or `search --view`, or `wiki view`.
   `snap -P 1` saves the neighbouring pages for you to read in the same situations.
 - The `p.` number is the PDF's page index, which can differ from the number printed on
   the page (front matter shifts it). The viewer shows both ("p.120（印刷 118）") when the
-  pages carry printed numbers; when you cite a page to the user, give both the same way.
+  pages carry printed numbers, and so do `show` and the search's hits (`printed_page`); when
+  you cite a page to the user, give both the same way.
   The user can also type a printed page number into the viewer to go there, open the PDF's
   contents, and click the section path above each page.

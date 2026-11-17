@@ -9,8 +9,11 @@ the document vote for an offset, and one that a clear majority agrees on is take
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from collections import Counter
+from pathlib import Path
 
 SAMPLES = 24
 MARGIN = 0.1  # share of the page height counted as header or footer
@@ -71,3 +74,62 @@ def printed(offset: int | None, page: int) -> int | None:
     if not offset or page - offset < 1:
         return None
     return page - offset
+
+
+_OFFSETS: dict[tuple[str, int, int], int | None] = {}  # per file as it is now: path, mtime, size
+
+
+def offset_of(pdf: Path | str, cache: Path | None = None) -> int | None:
+    """``printed_offset`` of the PDF at ``pdf``, or None when it cannot be opened.
+
+    Reading it off a manual of thousands of pages takes about half a second, as long as the
+    search itself, so the answer is kept: in this process, and in ``cache`` (a JSON file) when
+    one is given, for the next command. The file's time and size are part of what is kept, so
+    a replaced PDF is read again. The cache is a convenience: one that cannot be read or
+    written is passed over.
+    """
+    try:
+        stat = os.stat(pdf)
+    except OSError:
+        return None
+    name = os.path.normcase(os.path.abspath(pdf))
+    key = (name, stat.st_mtime_ns, stat.st_size)
+    if key in _OFFSETS:
+        return _OFFSETS[key]
+    saved = _saved(cache)
+    if (entry := saved.get(name)) and entry[:2] == [stat.st_mtime_ns, stat.st_size]:
+        _OFFSETS[key] = entry[2]
+        return entry[2]
+    try:
+        import pymupdf
+
+        with pymupdf.open(pdf) as doc:
+            offset = printed_offset(doc)
+    except Exception:
+        return None  # not kept: the file may only be open elsewhere for now
+    _OFFSETS[key] = offset
+    if cache is not None:
+        # read again just before writing: another search may have added a file meanwhile
+        saved = _saved(cache) | {name: [stat.st_mtime_ns, stat.st_size, offset]}
+        try:
+            temporary = cache.with_name(f"{cache.name}.{os.getpid()}.tmp")
+            temporary.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+            os.replace(temporary, cache)  # whole file or nothing, for a search reading it now
+        except OSError:
+            pass
+    return offset
+
+
+def _saved(cache: Path | None) -> dict:
+    if cache is None:
+        return {}
+    try:
+        saved = json.loads(cache.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return saved if isinstance(saved, dict) else {}
+
+
+def page_label(page: int, number: int | None) -> str:
+    """"p.120（印刷 118）" when the page prints another number than its index, else "p.120"."""
+    return f"p.{page}（印刷 {number}）" if number else f"p.{page}"

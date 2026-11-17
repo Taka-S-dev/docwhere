@@ -149,6 +149,10 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
      (`旧資料\仕様書_v1.4.pdf` → `仕様書\仕様書_v2.3.docx`). Such hits are ranked lower; treat
      their content as possibly outdated and check the newer file, which is a guess from the
      names, not a certainty.
+   - `printed_page` — set on a PDF hit when the page prints another number than its index in
+     `location` (front matter shifts it): `location` `p.42` with `printed_page` 40 is the
+     page the manual itself calls 40, and its "40ページ参照" means that page. Cite both,
+     「p.42（印刷 40）」, as `show` and the viewer do. `heading_pages` counts as `location` does.
    - `heading_pages` — set (`p.12-18`) when the hit is one page of a PDF heading that runs
      over several pages, each page its own section: the table or step that answers may be on
      a page next to the hit's, which the three-a-file limit can keep out of the hits. Read

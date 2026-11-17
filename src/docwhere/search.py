@@ -63,6 +63,9 @@ class Hit:
     # "p.12-18" when the hit is one page of a PDF section that runs over several pages, each
     # its own section with the same heading: the answer may be on a page next to this one
     heading_pages: str | None = None
+    # the number printed on the hit's PDF page when it differs from the page index in
+    # ``location`` (front matter shifts it); set by the command line, which cites pages
+    printed_page: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
