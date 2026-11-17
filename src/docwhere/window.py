@@ -805,6 +805,8 @@ def bring_to_front(pinned: bool) -> None:
     being topmost for a moment at least puts the window on top of the others, where it stays
     after ``pinned`` is restored.
     """
+    import ctypes
+
     import win32con
     import win32gui
     import win32process
@@ -812,7 +814,8 @@ def bring_to_front(pinned: bool) -> None:
     if (hwnd := own_window()) is None:
         return
     if win32gui.IsIconic(hwnd):
-        win32gui.ShowWindowAsync(hwnd, win32con.SW_RESTORE)
+        # posted, not sent, so it is safe from this thread; pywin32 does not wrap this one
+        ctypes.windll.user32.ShowWindowAsync(hwnd, win32con.SW_RESTORE)
     _set_topmost(True)
     time.sleep(0.2)
     _set_topmost(pinned)

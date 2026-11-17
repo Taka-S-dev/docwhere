@@ -357,3 +357,21 @@ def test_the_source_under_a_picture_takes_the_headings_and_page_as_chosen(api):
     saved = api.save_copy_options({"copy_caption": False, "cite_heading": "last", "cite_page": "print", "cite_path": "bogus"})
     assert saved == {"copy_caption": False, "cite_path": "root", "cite_heading": "last", "cite_page": "print"}
     assert window.title(db) == "手順書" and window.load_settings(db)["pdf_app"] == {"command": ["x.exe", "{file}"]}
+
+
+def test_a_minimized_window_is_restored_before_it_is_raised(monkeypatch):
+    import ctypes
+
+    import win32con
+    import win32gui
+
+    from docwhere import window
+
+    shown = []
+    monkeypatch.setattr(window, "own_window", lambda: 4242)
+    monkeypatch.setattr(window, "_set_topmost", lambda on: None)
+    monkeypatch.setattr(win32gui, "IsIconic", lambda hwnd: True)
+    monkeypatch.setattr(win32gui, "GetForegroundWindow", lambda: 4242)  # already in front: nothing more to do
+    monkeypatch.setattr(ctypes.windll.user32, "ShowWindowAsync", lambda hwnd, how: shown.append((hwnd, how)))
+    window.bring_to_front(False)
+    assert shown == [(4242, win32con.SW_RESTORE)]
