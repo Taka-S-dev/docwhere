@@ -376,3 +376,24 @@ def test_the_same_question_shown_again_is_listed_once(docs, tmp_path, capsys, mo
     _view(capsys, "1", "--title", "config とは？", "--answer", "別の答え")
     history = json.loads((tmp_path / "cli" / "views" / "history.json").read_text(encoding="utf-8"))
     assert [h["answer"] for h in history] == ["別の答え", "設定を検証する"]
+
+
+def test_page_images_go_to_the_evidence_before_the_neighbours_of_earlier_hits(tmp_path, capsys, monkeypatch):
+    import pymupdf
+
+    from docwhere import viewer
+
+    folder = tmp_path / "manual"
+    folder.mkdir()
+    for name in ("a.pdf", "b.pdf"):
+        doc = pymupdf.open()
+        for i in range(1, 8):
+            doc.new_page().insert_text((72, 72), f"timeout page {i} of {name}" if i == 4 else f"page {i} body")
+        doc[6].insert_text((72, 120), f"the limit in {name} is 5")
+        doc.save(folder / name)
+    monkeypatch.setattr(viewer, "MAX_PAGE_IMAGES", 4)
+    _search(folder, tmp_path, capsys, monkeypatch, "timeout")
+    html = _view(capsys, "-P", "1", "--quote", "the limit in b.pdf is 5")
+    # hit 1 with its neighbours would take 3 of the 4 pictures; the evidence in hit 2 comes first
+    assert 'id="hit2-p7"' in html and 'id="hit1-p4"' in html and 'id="hit2-p4"' in html
+    assert "残りの 3 ページは文字だけで表示しています" in html

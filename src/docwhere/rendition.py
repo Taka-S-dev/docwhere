@@ -23,6 +23,7 @@ SLIDE_EXTS = {".pptx", ".pptm", ".ppt"}
 RENDITION_RETENTION = {"min_keep": 5, "max_keep": 100, "max_age": 30 * 24 * 3600, "max_bytes": 500 * 1024 * 1024}
 EXCERPT_RETENTION = {"min_keep": 10, "max_keep": 200, "max_age": 7 * 24 * 3600, "max_bytes": 300 * 1024 * 1024}
 EXPORT_PATTERN = "[0-9a-f]*.pdf"  # exports are named by a hex digest; excerpts live in excerpts/
+EXPORT_VERSION = 2  # 2: Word exports carry their headings as bookmarks
 EXPORT_TIMEOUT = 120  # seconds Office may take over one export before it is stopped with its process
 
 
@@ -45,7 +46,8 @@ def as_pdf(path: str, cache: Path, export: bool = True) -> Path | None:
         st = src.stat()
     except OSError:
         return None
-    key = hashlib.sha1(f"{src.resolve()}|{st.st_size}|{st.st_mtime_ns}".encode()).hexdigest()[:20]
+    # EXPORT_VERSION: an export made before the export itself changed is not reused
+    key = hashlib.sha1(f"{src.resolve()}|{st.st_size}|{st.st_mtime_ns}|{EXPORT_VERSION}".encode()).hexdigest()[:20]
     out = cache / f"{key}.pdf"
     if out.exists():
         return _touch(out)
@@ -92,7 +94,9 @@ def _export(src: Path, out: Path, ext: str) -> None:
     if ext in WORD_EXTS:
         doc = open_word_document(src)
         try:
-            doc.ExportAsFixedFormat(str(out), 17)  # wdExportFormatPDF
+            # 17: wdExportFormatPDF. 1: wdExportCreateHeadingBookmarks, so the export has an outline
+            # for the reading window's contents and for the headings named under a copied picture
+            doc.ExportAsFixedFormat(str(out), 17, CreateBookmarks=1)
         finally:
             doc.Close(SaveChanges=0)
     else:

@@ -319,6 +319,17 @@ def build_html(
         if ev["hit"] is not None and ev["row"]:
             evidence_rows.setdefault(ev["hit"]["n"], set()).add(ev["row"])
 
+    # Only MAX_PAGE_IMAGES pages are drawn. They go to the pages holding the evidence first, then
+    # to each hit's own page, and what is left to the pages either side: taken in the order of
+    # the hits, the neighbours of the first hits used them up and a later hit's evidence had none.
+    paged = [h for h in hits if h["anchor"].get("page") and h.get("pdf")]
+    for hit in paged:
+        for p in sorted(evidence_pages.get(hit["n"], ())):
+            page_image(hit["pdf"], p, hit["terms"])
+    for hit in paged:
+        page_image(hit["pdf"], hit["anchor"]["page"], hit["terms"])
+    undrawn = 0
+
     targets: dict[int, str] = {}  # hit number -> id of its hit page (or row) in this document
     shown: dict[int, set] = {}
     cards = []
@@ -328,6 +339,7 @@ def build_html(
         if page and hit.get("pdf"):
             wanted = set(page_range(page, pages)) | evidence_pages.get(n, set())
         page_images = [(p, src) for p in sorted(wanted) if (src := page_image(hit["pdf"], p, hit["terms"]))]
+        undrawn += sum(1 for p in wanted if (hit["pdf"], p) not in rendered)
         shown[n] = {p for p, _ in page_images}
         targets[n] = _page_id(hit, page) if page in shown[n] else f"hit{n}"
         sheet = ""
@@ -358,7 +370,7 @@ def build_html(
         rail=rail,
         title=esc(shown_title),
         query=f'<span>検索語 {esc(" ".join(terms))}</span><span>{esc(time.strftime("%Y-%m-%d %H:%M"))}</span>',
-        answer=_reading_html(reading) + answer_html,
+        answer=_reading_html(reading) + _undrawn_html(undrawn) + answer_html,
         cards=(f'<h2 class="region">資料 {len(hits)} 件</h2>' + "".join(cards)) if cards
         else '<p class="empty">一致する箇所はありませんでした。言い方を変えて検索し直してください。</p>',
     )
@@ -785,6 +797,15 @@ def _anchor_of_line(row, quote: str) -> dict:
     return {}
 
 
+def _undrawn_html(pages: int) -> str:
+    """A band saying that some pages are shown as text only, so their missing pictures are not
+    taken for pages without any."""
+    if not pages:
+        return ""
+    return (f'<p class="partial" role="note">ページの画像は {MAX_PAGE_IMAGES} 枚までです。残りの {pages} ページは文字だけで表示しています。'
+            '画像で見るには、見たい資料の番号だけを指定して開き直してください。</p>')
+
+
 def _reading_html(reading: dict | None) -> str:
     """A band saying the search ran before every file was read, so the user does not take a
     missing answer for an absent one."""
@@ -1051,7 +1072,7 @@ def _citation(hit: dict, ev: dict, mode: str = "name", roots: list[str] = ()) ->
     if ev["section"]:
         where.append(ev["section"])
     if ev["page"]:
-        where.append(f"p.{ev['page']}")
+        where.append(_page_text(hit, ev["page"]))  # with the printed number, as the page is labelled
     if ev["row"]:
         where.append(f"{ev['row'][0]} {ev['row'][1]}行目")
     return f"「{ev['quote']}」（{'、'.join(where)}）"
