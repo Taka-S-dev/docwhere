@@ -306,12 +306,14 @@ def build_html(
         ev["note"] = note
         evidence.append(ev)
         if found is not None:
-            found.append((kind, text, ev["hit"] is not None))
+            found.append((kind, text, "missing" if ev["hit"] is None else "partly" if ev["match"] == "partial" else "found"))
         if ev.get("rect") and ev["hit"] is not None:
             circles.setdefault((ev["hit"]["pdf"], ev["page"]), []).append(ev["rect"])
     evidence_pages: dict[int, set[int]] = {}
     evidence_rows: dict[int, set[tuple[str, int]]] = {}
     for ev in evidence:
+        if ev["match"] == "partial":
+            continue  # its page is linked to, but is not marked as evidence
         if ev["hit"] is not None and ev["page"]:
             evidence_pages.setdefault(ev["hit"]["n"], set()).add(ev["page"])
         if ev["hit"] is not None and ev["row"]:
@@ -387,6 +389,10 @@ def save_view(folder: Path, page: str, title: str, answer: str, sign=None) -> Pa
         history = json.loads(log.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         history = []
+    # The same question shown again (a quote reworded, a page added) takes the place of its last
+    # showing: listed one after another, they push the other questions out of the history.
+    if history and (history[0].get("title"), history[0].get("answer")) == (title, answer):
+        history.pop(0)
     history.insert(0, {"file": out.name, "title": title, "answer": answer, "when": time.strftime("%Y-%m-%d %H:%M")})
     history = [h for h in history if (folder / Path(h["file"]).name).exists()]
     log.write_text(json.dumps(history, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -536,7 +542,11 @@ def _locate(index: Index, quote: str, hits: list[dict], cards_by_path: dict[str,
         for p in (page, page + 1, page - 1):
             if image := _closeup(hit, p, quote):
                 return _evidence(quote, cards_by_path[hit["path"]], p, _section_on(hits, hit, p), image)
-    for row in _sections_containing(index, quote, list(cards_by_path)):
+    # Sections are found by the start of the quote, so each is then held against the whole of it:
+    # a quote that starts as the document does and goes on otherwise is not what the document says.
+    rows = _sections_containing(index, quote, list(cards_by_path))
+    whole = [row for row in rows if quote_in(quote, row["body"])]
+    for row in (whole or rows)[:1]:
         card = cards_by_path[row["path"]]
         crumb = row["crumb"] or row["title"]
         anchor = _anchor_of_line(row, quote)
@@ -544,15 +554,27 @@ def _locate(index: Index, quote: str, hits: list[dict], cards_by_path: dict[str,
             where = (anchor["sheet"], anchor["row"])
             ev = _evidence(quote, card, None, crumb, "", where)
             ev["table"] = _sheet_table(card, {where}, _header_rows(json.loads(row["anchors"])), [quote], context=0, ids=False)
-            return ev
+            return ev if whole else _partly(ev, row, quote)
         page = anchor.get("page")
         if page is None and card.get("rendered_from"):
             from docwhere.rendition import page_with
 
             page = page_with(Path(card["pdf"]), _plain(quote))
-        image = _closeup(card, page, quote) if page and card.get("pdf") else ""
-        return _evidence(quote, card, page, crumb, image)
+        image = _closeup(card, page, quote) if page and card.get("pdf") and whole else ""
+        ev = _evidence(quote, card, page, crumb, image)
+        return ev if whole else _partly(ev, row, quote)
     return _evidence(quote, None, None, "", "")
+
+
+def _partly(ev: dict, row, quote: str) -> dict:
+    """``ev`` as a quote only the start of which is in the document: shown beside the
+    document's own line, and not as evidence."""
+    probe = fold_marks(quote_probe(quote).lower())
+    lines = row["body"].split("\n")
+    at = next((i for i, line in enumerate(lines) if probe in fold_marks(line.lower())), None)
+    ev["match"] = "partial"
+    ev["actual"] = "" if at is None else " ".join(" ".join(lines[at:at + 3]).split())[:PARTIAL_SHOWN_CHARS]
+    return ev
 
 
 def _section_on(hits: list[dict], hit: dict, page: int) -> str:
@@ -565,7 +587,9 @@ def _section_on(hits: list[dict], hit: dict, page: int) -> str:
 def _evidence(quote: str, hit: dict | None, page: int | None, crumb: str, image: str, row: tuple | None = None) -> dict:
     # the section's own heading is enough here; the card below carries the full path
     return {"quote": quote, "hit": hit, "page": page, "row": row, "section": crumb.split(" > ")[-1],
-            "image": image, "table": "", "target": "", "kind": "quote", "rect": None, "note": ""}
+            "image": image, "table": "", "target": "", "kind": "quote", "rect": None, "note": "",
+            # "partial": only the start of the quote is in the document (see _partly)
+            "match": "exact", "actual": ""}
 
 
 def _locate_figure(spec: str, hits: list[dict], cards_by_path: dict[str, dict]) -> dict:
@@ -711,6 +735,7 @@ def _closeup(hit: dict, page: int, quote: str) -> str:
     return ""
 
 
+PARTIAL_SHOWN_CHARS = 240  # of the document's own text, beside a quote that departs from it
 QUOTE_PROBE_CHARS = 24  # enough of a quote to find its section; the rest may wrap onto the next line
 
 
@@ -720,6 +745,22 @@ def quote_probe(quote: str) -> str:
     if " / " in quote and ": " in quote.split(" / ", 1)[0]:
         return quote.split(" / ", 1)[0].split(": ", 1)[1][:QUOTE_PROBE_CHARS]
     return quote[:QUOTE_PROBE_CHARS]
+
+
+def _folded(text: str) -> str:
+    """``text`` as quotes are compared: NFKC, lower case, look-alike marks as one, no white space
+    (a sentence wraps differently in the document than in the quote)."""
+    return "".join(fold_marks(unicodedata.normalize("NFKC", text).lower()).split())
+
+
+def quote_in(quote: str, body: str) -> bool:
+    """Whether ``body`` holds the whole quote, not only the start a section is found by. A table
+    row quoted as "コード: E2041 / 対処: ..." is held when each of its cells is."""
+    hay = _folded(body)
+    if " / " in quote and ": " in quote.split(" / ", 1)[0]:
+        cells = [part.split(": ", 1)[-1] for part in quote.split(" / ")]
+        return all(_folded(cell) in hay for cell in cells)
+    return _folded(quote) in hay
 
 
 def _sections_containing(index: Index, quote: str, paths: list[str]) -> list:
@@ -771,7 +812,8 @@ def _answer_html(answer: str, evidence: list[dict], excerpts=None, cite: tuple =
         if hit is None:
             what = "図" if ev.get("kind") == "figure" else "位置"
             items.append(
-                f'<div class="evidence"><p class="missing">資料の中で{what}を特定できませんでした。</p>'
+                f'<div class="evidence"><p class="missing">資料の中で{what}を特定できませんでした。'
+                f'{"" if what == "図" else "引用が原文と違っている可能性があります。"}</p>'
                 f'<div>{lead}<blockquote>{esc(ev["quote"])}</blockquote></div></div>'
             )
             continue
@@ -784,6 +826,15 @@ def _answer_html(answer: str, evidence: list[dict], excerpts=None, cite: tuple =
         if ev["row"]:
             parts.append(f'<a href="#{ev["target"]}">{esc(ev["row"][0])} {ev["row"][1]}行目</a>')
         source = f'<p class="source">{"".join(parts)}{_open_link(at_page, excerpts)}</p>'
+        if ev["match"] == "partial":
+            actual = (f'<p class="compare">資料の文</p><a class="quote" href="#{ev["target"]}"><blockquote>{esc(ev["actual"])}</blockquote></a>'
+                      if ev["actual"] else "")
+            items.append(
+                f'<div class="evidence">{source}<div>{lead}<p class="missing">書き出しは資料にありますが、続きが資料の文と一致しません。'
+                '引用が原文と違っている可能性があります。</p>'
+                f'<p class="compare">回答の引用</p><blockquote>{esc(ev["quote"])}</blockquote>{actual}</div></div>'
+            )
+            continue
         if ev["image"]:
             what = "根拠の図（丸で囲んだもの）" if ev.get("kind") == "figure" else "根拠の箇所"
             shown = (
@@ -817,9 +868,13 @@ def answer_section(text: str, evidence: list[dict], items: list[str], therefore:
     else:
         head = f'<h2 class="evidence-head">根拠 {len(evidence)} 件</h2>' if len(evidence) > 1 else ""
     end = f'<p class="therefore"><span class="so">つまり</span><span>{esc(text)}</span></p>' if therefore else ""
+    # said right under the answer: it reads as settled otherwise, however little of it was found
+    unsure = sum(1 for ev in evidence if ev["hit"] is None or ev.get("match") == "partial")
+    warn = (f'<p class="missing unverified" role="note">根拠 {len(evidence)} 件のうち {unsure} 件は、資料の中で確認できていません。</p>'
+            if unsure else "")
     return (
         f'<section class="answer" id="answer" aria-label="回答"><p class="answer-text"><span>{esc(text)}</span></p>'
-        f'{head}{"".join(items)}{end}</section>'
+        f'{warn}{head}{"".join(items)}{end}</section>'
     )
 
 
@@ -846,7 +901,9 @@ def _rail_html(has_answer: bool, evidence: list[dict], hits: list[dict], targets
             if ev["hit"] is None:
                 items.append(f'<li><span class="item unplaced"><span class="pg">位置不明</span><span class="q">{esc(quote)}</span></span></li>')
                 continue
-            if ev["page"]:
+            if ev.get("match") == "partial":
+                where = "原文と不一致"
+            elif ev["page"]:
                 where = _page_text(ev["hit"], ev["page"])
             elif ev["row"]:
                 where = f"{ev['row'][0]} {ev['row'][1]}行目"
@@ -1221,6 +1278,8 @@ a.closeup:hover img { border-left-color: var(--blue); }
 a.quote { color: inherit; text-decoration: none; }
 a.quote:hover blockquote { border-left-color: var(--blue); }
 .missing { margin: 6px 0 0; color: var(--warn); font-size: 13px; }
+.unverified { margin: 10px 0 0; font-size: 14px; font-weight: 600; }
+.compare { margin: 10px 0 2px; color: var(--muted); font-size: 12px; }
 
 .extract { margin-top: 14px; }
 .extract .own { margin-top: 10px; }
@@ -1380,7 +1439,8 @@ APP_JS = r"""(() => {
     }
     throw new Error("bridge unavailable");
   };
-  const failed = (what) => (e) => toast(`${what}できませんでした: ${(e && e.message) || e}`);
+  // what: the whole sentence, e.g. "ファイルを開けませんでした"
+  const failed = (what) => (e) => toast(`${what}: ${(e && e.message) || e}`);
   const PAGE_TIMEOUT = 20000;
   const withTimeout = (promise, ms) => Promise.race([
     promise,
@@ -1404,20 +1464,20 @@ APP_JS = r"""(() => {
     const wiki = event.target.closest("[data-open-url]");
     if (wiki) {
       event.preventDefault();
-      try { toast(await (await bridge()).open_url(wiki.dataset.openUrl)); } catch (e) { failed("開けま")(e); }
+      try { toast(await (await bridge()).open_url(wiki.dataset.openUrl)); } catch (e) { failed("ページを開けませんでした")(e); }
       return;
     }
     const open = event.target.closest("[data-open]");
     if (open) {
       event.preventDefault();
       toast("開いています…");
-      try { toast(await (await bridge()).open(open.dataset.open)); } catch (e) { failed("開けま")(e); }
+      try { toast(await (await bridge()).open(open.dataset.open)); } catch (e) { failed("ファイルを開けませんでした")(e); }
       return;
     }
     const cite = event.target.closest("[data-cite]");
     if (cite) {
       event.preventDefault();
-      try { await (await bridge()).copy(cite.dataset.cite); toast("引用をコピーしました"); } catch (e) { failed("コピー")(e); }
+      try { await (await bridge()).copy(cite.dataset.cite); toast("引用をコピーしました"); } catch (e) { failed("引用をコピーできませんでした")(e); }
       return;
     }
     const pin = event.target.closest("[data-pin]");
@@ -1525,7 +1585,7 @@ APP_JS = r"""(() => {
       } catch (e) {
         if (mine !== request) return;
         wanted = page;
-        failed(`p.${target} を表示`)(e);
+        failed(`p.${target} を表示できませんでした`)(e);
       } finally {
         if (mine === request) {
           frame.classList.remove("loading");
@@ -1569,7 +1629,7 @@ APP_JS = r"""(() => {
         const printed = offset && page - offset >= 1 ? page - offset : null;
         await (await bridge()).copy_page(pdf, page, terms, quotes, region, figure.dataset.source || pdf, crumbs, printed);
         toast("画像をコピーしました。Excel などに貼り付けられます");
-      } catch (e) { failed("コピーでき")(e); }
+      } catch (e) { failed("画像をコピーできませんでした")(e); }
     };
     const copyRegion = () => {
       if (frame.querySelector(".select-layer")) return;
@@ -1686,7 +1746,7 @@ APP_JS = r"""(() => {
         entries = await withTimeout((await bridge()).toc(reader.pdf), PAGE_TIMEOUT);
         outlines.set(reader.pdf, entries);
       }
-    } catch (e) { failed("目次を開け")(e); return; }
+    } catch (e) { failed("目次を開けませんでした")(e); return; }
     if (!entries.length) { toast("この PDF には目次（しおり）がありません"); return; }
     let dialog = document.getElementById("toc");
     if (!dialog) {
@@ -1829,7 +1889,7 @@ APP_JS = r"""(() => {
   async function openCopyMenu(button) {
     if (copyMenu && !copyMenu.hidden && copyMenuButton === button) { closeCopyMenu(); return; }
     let api;
-    try { api = await bridge(); } catch (e) { failed("出典の設定を開け")(e); return; }
+    try { api = await bridge(); } catch (e) { failed("出典の設定を開けませんでした")(e); return; }
     if (!copyMenu) {
       const holder = document.createElement("div");
       holder.innerHTML = COPY_MENU;
@@ -1844,7 +1904,7 @@ APP_JS = r"""(() => {
         try {
           await (await bridge()).save_copy_options({ copy_caption: caption().checked, cite_path: value("cite_path"),
             cite_heading: value("cite_heading"), cite_page: value("cite_page") });
-        } catch (e) { failed("出典の設定を保存でき")(e); }
+        } catch (e) { failed("出典の設定を保存できませんでした")(e); }
       });
       copyMenu.addEventListener("submit", (event) => event.preventDefault());
       document.addEventListener("pointerdown", (event) => {
@@ -1862,7 +1922,7 @@ APP_JS = r"""(() => {
         parts();
       };
     }
-    try { copyMenu.fill(await api.copy_options()); } catch (e) { failed("出典の設定を読め")(e); return; }
+    try { copyMenu.fill(await api.copy_options()); } catch (e) { failed("出典の設定を読めませんでした")(e); return; }
     if (copyMenuButton) copyMenuButton.setAttribute("aria-expanded", "false");
     copyMenuButton = button;
     button.setAttribute("aria-expanded", "true");
@@ -1907,7 +1967,7 @@ APP_JS = r"""(() => {
 
   async function openSettings() {
     let api;
-    try { api = await bridge(); } catch (e) { failed("設定を開け")(e); return; }
+    try { api = await bridge(); } catch (e) { failed("設定を開けませんでした")(e); return; }
     const current = await api.settings();
     let dialog = document.getElementById("settings");
     if (!dialog) {

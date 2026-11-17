@@ -21,6 +21,10 @@ Read this before running `docwhere view` or `search --view`, or `wiki view`.
   that cannot be found is shown as such — fix its wording rather than leave it. The command
   says so too: stdout is the page's path, and stderr reads "quotes found: 2/2", or lists each
   quote it could not find under "not found:"; there is no need to search the HTML.
+  A quote is held against the whole sentence in the document: one that starts as the document
+  does and then differs is listed under "partly found", shown to the user beside the
+  document's own sentence with a warning, and not counted. Copy the sentence again from
+  `show` and run the view again; do not hand the user a page with a quote that was not found.
 - When the answer takes more than one place to reach — a value on one page and its
   condition on another, a table that refers to a figure, two documents read together —
   show how they connect: follow each `--quote` (or `--figure`) with `--note "<what this

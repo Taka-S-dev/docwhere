@@ -340,3 +340,39 @@ def test_window_pages_cut_no_excerpts(docs, tmp_path, capsys, monkeypatch):
     page = build_html(index, ["config"], hits, cut_excerpts=False)
     assert "/x-" not in page and ".pdf#page=" in page  # the whole PDF, its file name percent-encoded
     assert not (tmp_path / "cli" / "renditions" / "excerpts").exists()
+
+
+def test_a_quote_that_departs_from_the_document_is_not_shown_as_found(tmp_path, capsys, monkeypatch):
+    import pymupdf
+
+    folder = tmp_path / "manual"
+    folder.mkdir()
+    doc = pymupdf.open()
+    for i in range(1, 7):
+        doc.new_page().insert_text((72, 72), "timeout overview" if i == 1 else f"page {i} body")
+    doc[4].insert_text((72, 120), "the retry count for a failed upload is at most 5 times")
+    doc.save(folder / "m.pdf")
+    _search(folder, tmp_path, capsys, monkeypatch, "timeout")
+    # starts as the document does, then says what it does not
+    invented = "the retry count for a failed upload is unlimited by design"
+    assert main(["view", "--no-open", "1", "--answer", "unlimited", "--quote", invented]) == 0
+    out = capsys.readouterr()
+    assert "quotes found: 0/1" in out.err and f"partly found (differs from the document after its start): {invented}" in out.err
+    html = Path(out.out.strip()).read_text(encoding="utf-8")
+    hero = html[html.index('<section class="answer"') : html.index("</section>")]
+    assert "根拠 1 件のうち 1 件は、資料の中で確認できていません。" in hero
+    assert "at most 5 times" in hero  # the document's own sentence, to compare with
+    assert "引用をコピー" not in hero and 'has-evidence"' not in html  # nothing to cite, no page marked as evidence
+    rail = html[html.index('<nav class="rail"') : html.index("</nav>")]
+    assert "原文と不一致" in rail
+
+
+def test_the_same_question_shown_again_is_listed_once(docs, tmp_path, capsys, monkeypatch):
+    import json
+
+    _search(docs, tmp_path, capsys, monkeypatch, "config")
+    for _ in range(3):
+        _view(capsys, "1", "--title", "config とは？", "--answer", "設定を検証する")
+    _view(capsys, "1", "--title", "config とは？", "--answer", "別の答え")
+    history = json.loads((tmp_path / "cli" / "views" / "history.json").read_text(encoding="utf-8"))
+    assert [h["answer"] for h in history] == ["別の答え", "設定を検証する"]

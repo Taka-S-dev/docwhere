@@ -833,10 +833,12 @@ def _write_view(
     )
     # on stderr, so stdout stays the page's path alone
     for kind in ("quote", "figure"):
-        given = [(text, ok) for k, text, ok in found if k == kind]
+        given = [(text, state) for k, text, state in found if k == kind]
         if given:
-            missing = "".join(f"\n  not found: {text}" for text, ok in given if not ok)
-            print(f"{kind}s found: {sum(ok for _, ok in given)}/{len(given)}{missing}", file=sys.stderr)
+            # partly found: a section starts as the quote does, but does not go on as quoted
+            labels = {"missing": "not found", "partly": "partly found (differs from the document after its start)"}
+            missing = "".join(f"\n  {labels[state]}: {text}" for text, state in given if state != "found")
+            print(f"{kind}s found: {sum(state == 'found' for _, state in given)}/{len(given)}{missing}", file=sys.stderr)
     return out
 
 
