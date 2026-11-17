@@ -22,7 +22,7 @@
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-`install.ps1` は、`uv tool install -e . --force` で `docwhere` コマンドを入れ（入れ直し）、`skills\<名前>\` の `SKILL.md` と `references\`（スキルが必要なときだけ読む手順）を `%USERPROFILE%\.copilot\skills\<名前>\` にコピーし、最後に `docwhere doctor --no-office` でコピーした SKILL.md が読み込める形か、`references\` がそろっていて古くないかを確かめる。中身の違う SKILL.md がすでにあれば `SKILL.md.bak` に残してから上書きする。エージェントが別のフォルダからスキルを読むときは `-SkillsDir <フォルダ>`、スキルだけ更新するときは `-SkipTool`、何をするかだけ見るときは `-WhatIf`。`uv` は先に入れておく。
+`install.ps1` は、`uv tool install -e . --force` で `docwhere` コマンドを入れ（入れ直し）、`skills\<名前>\` の `SKILL.md` と `references\`（スキルが必要なときだけ読む手順）を、`%USERPROFILE%\.copilot\skills\<名前>\` にコピーし（ほかのエージェントの `%USERPROFILE%\.<エージェント>\skills\` に同じ名前のスキルがすでにあれば、そこも更新する）、リポジトリからなくなった `references\` のファイルは入れ先からも消し、最後に `docwhere doctor --no-office` でコピーした SKILL.md が読み込める形か、`references\` がそろっていて古くないかを確かめる。中身の違う SKILL.md がすでにあれば `SKILL.md.bak` に残してから上書きする。エージェントが別のフォルダからスキルを読むときは `-SkillsDir <フォルダ>`、スキルだけ更新するときは `-SkipTool`、何をするかだけ見るときは `-WhatIf`。`uv` は先に入れておく。
 
 人が窓で探すときは `docwhere manage --search` で開く。デスクトップなどから開きたいときは、`@start "" /min cmd /c docwhere manage --search` の 1 行を書いた .bat を好きな名前で置く（`docwhere` は PATH に入っているので、置き場所はどこでもよい）。
 
