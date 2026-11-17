@@ -261,3 +261,70 @@ def test_a_side_tab_cut_a_character_a_line_is_shown_as_one_line():
     lines = ["野菜の下ごしらえ", "料", "理", "編", "1.", "本文の続き"]
     assert display_lines(lines) == [(0, "野菜の下ごしらえ"), (1, "料理編"), (4, "1."), (5, "本文の続き")]
     assert display_lines(["1.", "手順", "2.", "手順"]) == [(0, "1."), (1, "手順"), (2, "2."), (3, "手順")]  # short, but apart
+
+
+def _table_manual(path, pages=8, front=1):
+    """A bookmarked manual as they are laid out: a chapter tab in the margin, the page number
+    in the footer, a table of marks drawn with a private glyph, and a sentence wrapped at the
+    right edge."""
+    import pymupdf
+
+    doc = pymupdf.open()
+    for i in range(1, pages + 1):
+        page = doc.new_page()
+        for k, letter in enumerate("参考欄"):
+            page.insert_text((570, 300 + 20 * k), letter, fontsize=14, fontname="japan")  # chapter tab
+        page.insert_text((60, 100), "項目", fontsize=8, fontname="japan")
+        page.insert_text((300, 100), "内容", fontsize=8, fontname="japan")
+        page.insert_text((60, 115), "登録できるグループ数", fontsize=8, fontname="japan")
+        page.insert_text((300, 115), str(500 + i), fontsize=8, fontname="japan")
+        wide = "あ" * 52  # reaches the right edge of the text, so it was wrapped there
+        page.insert_text((60, 200), f"大鍋の野菜をゆっくり煮込んで{wide}"[:54], fontsize=9, fontname="japan")
+        page.insert_text((60, 212), "す。", fontsize=9, fontname="japan")
+        page.insert_text((60, 240), "短い行", fontsize=9, fontname="japan")
+        page.insert_text((60, 252), "次の行", fontsize=9, fontname="japan")
+        if i in (1, 4, 7):
+            page.insert_text((60, 60), "下ごしらえと保存のしかた", fontsize=9, fontname="japan")  # a heading, pages apart
+        page.insert_text((40, 815), str(i - front) if i > front else "", fontsize=14, fontname="japan")
+        page.insert_text((80, 815), "3 設定の仕様", fontsize=8, fontname="japan")  # running footer
+    doc.set_toc([[1, "3 設定の仕様", 1]])
+    doc.save(path)
+
+
+def test_a_bookmarked_pdf_reads_rows_wrapped_sentences_and_no_page_furniture(tmp_path):
+    _table_manual(tmp_path / "t.pdf")
+    chunks = extract(tmp_path / "t.pdf")
+    lines = chunks[3].lines
+    assert "項目 | 内容" in lines and "登録できるグループ数 | 504" in lines  # a row is one line, value beside its name
+    assert any(line.startswith("大鍋の野菜をゆっくり煮込んで") and line.endswith("す。") for line in lines)  # the wrap is undone
+    assert "短い行" in lines and "次の行" in lines  # short lines are lines of their own
+    assert "下ごしらえと保存のしかた" in lines  # opens three pages far apart: a heading, not a running header
+    text = "\n".join(lines)
+    assert "3 設定の仕様" not in text and "第" not in text  # the footer and the chapter tab are left out
+    assert "3" not in lines  # ...and so is the page's printed number
+
+
+def test_a_glyph_is_read_as_the_mark_it_draws():
+    from docwhere.extractors.pdf import _mark_drawn
+
+    def drawn(rows):
+        size = len(rows)
+        return _mark_drawn(bytes(0 if c == "#" else 255 for row in rows for c in row), size, size, size)
+
+    n = 20
+    ring = ["".join("#" if 7.5 <= ((x - 9.5) ** 2 + (y - 9.5) ** 2) ** 0.5 <= 9.9 else "." for x in range(n)) for y in range(n)]
+    disc = ["".join("#" if ((x - 9.5) ** 2 + (y - 9.5) ** 2) ** 0.5 <= 9.9 else "." for x in range(n)) for y in range(n)]
+    cross = ["".join("#" if abs(x - y) <= 1 or abs(x + y - (n - 1)) <= 1 else "." for x in range(n)) for y in range(n)]
+    bar = ["".join("#" if 9 <= y <= 10 else "." for x in range(n)) for y in range(n)]
+    triangle = ["".join("#" if y == n - 1 or abs(abs(x - 9.5) - y / 2) <= 0.8 else "." for x in range(n)) for y in range(n)]
+    hand = ["".join("#" if (x * 7 + y * 3) % 11 == 0 else "." for x in range(n)) for y in range(n)]
+    assert [drawn(g) for g in (ring, disc, cross, bar, triangle)] == ["○", "●", "×", "―", "△"]
+    assert drawn(hand) == ""  # anything else is not guessed at
+
+
+def test_dashes_and_the_wave_dash_are_one_form_each():
+    from docwhere.model import norm
+
+    assert norm("400〜499") == norm("400~499") == norm("400～499")
+    assert norm("Wi‐Fi") == norm("Wi–Fi") == "Wi-Fi"
+    assert norm("サーバー") == "サーバー"  # the long vowel mark is a letter

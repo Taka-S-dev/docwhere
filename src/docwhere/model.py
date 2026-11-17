@@ -14,16 +14,22 @@ MAX_HEADER_CHARS = 30  # longer first-row cells are content, not column labels
 # page breaks); invisible format characters are dropped so they do not split words.
 _CONTROLS = re.compile(r"[\x00-\x08\x0e-\x1b\x7f-\x9f]")
 _INVISIBLE = re.compile(r"[­​-‏‪-‮⁠-⁩﻿]")
+# Signs typed one way and printed another: "400〜499" in a document is "400~499" from a keyboard,
+# "Wi‐Fi" is "Wi-Fi". NFKC leaves these apart, so each family is folded to its plain form.
+# The long vowel mark of katakana (ー) is a letter and stays.
+_LOOKALIKES = str.maketrans({"\u301c": "~", "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-",
+                             "\u2014": "-", "\u2015": "-", "\u2212": "-"})
 
 
 def norm(text: str) -> str:
-    """NFKC-fold (full-width ASCII to half-width, half-width katakana to full-width), strip
-    control characters and collapse every run of whitespace to one space.
+    """NFKC-fold (full-width ASCII to half-width, half-width katakana to full-width), fold
+    dashes and the wave dash to their plain forms, strip control characters and collapse
+    every run of whitespace to one space.
 
     Applied to both indexed text and query terms, so width and line-break differences
     never decide whether something matches.
     """
-    text = _INVISIBLE.sub("", _CONTROLS.sub(" ", unicodedata.normalize("NFKC", text)))
+    text = _INVISIBLE.sub("", _CONTROLS.sub(" ", unicodedata.normalize("NFKC", text))).translate(_LOOKALIKES)
     return " ".join(text.split())
 
 

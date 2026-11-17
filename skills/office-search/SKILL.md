@@ -187,12 +187,18 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
      with `--in` its folder and `--per-file 20 -n 20`; three a file is all the default shows
    - a long section around a hit: `docwhere show --id N -C 2`
 
-   When a PDF hit's answer sits in a table, figure or boxed note whose extracted text reads
-   jumbled, look at the page itself: `docwhere snap --id 412 --term タイムアウト` saves the page
-   as a PNG with the term highlighted and prints its path; read that image. Do the same when a
-   table's cells come out empty where marks belong (○, ×, ✓ of a permission or support
-   table): such marks are often drawn as shapes, not letters, so the text has nothing there
-   and reads as if the cell were blank.
+   A PDF table comes out one row a line, its cells joined by ` | `
+   (`E-17 | 予熱が終わっていません。 | 温度が上がるまで待ってください。 | -`), without the header's
+   labels: read the header row above it in the section for what each cell is. The marks of a
+   support or permission table are read as they are drawn (○ × △ ● ■, and `-` for ―). A mark
+   docwhere cannot name comes out as a token such as `〔f0b2〕`; the page's own legend
+   (`〔f0b2〕: 対応`) says what it stands for, and so does the page image.
+
+   When a PDF hit's answer sits in a figure or boxed note, or a table whose rows still read
+   jumbled (cells merged across rows, a table inside a table), look at the page itself:
+   `docwhere snap --id 412 --term タイムアウト` saves the page as a PNG with the term
+   highlighted and prints its path; read that image. Do the same before answering from a
+   token you could not resolve.
 
 4. **Answer.**
    - A value question: the value first, then where it is written — "30秒です（通信仕様_v2.docx
@@ -322,7 +328,8 @@ searching, showing a page, errors).
   headings get a best-effort `3.2.1` prefix that may not match custom numbering like 第3章.
 - PDFs without bookmarks get headings guessed from font size and boldness; in unusually
   formatted PDFs the crumb may be missing or approximate, so read the section when it matters.
-  PDF tables are read as laid-out text, so a row may not come out labelled by its headers.
+  PDF table rows are put together from the page's layout: a row is one line, but is not
+  labelled by its headers, and a table with merged cells may come out with cells out of place.
 - Wiki hits depend on the wiki's own search; docwhere ranks sections only within the pages it
   returns. Attachments on wiki pages and content filled in by macros are not read.
 - `--no-update` skips the change scan when searching the same folder repeatedly in one task;
