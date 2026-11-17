@@ -46,7 +46,7 @@ COLLECTED_NAME = "collected.json"  # hits collected in the search tab, beside th
 MAX_COLLECTED = 50  # hits one reading page shows together
 SEARCH_POOL = 1000  # hits the search tab can list ("show more"), counted by kind, format and folder
 SLOW_SHORT = 1.0  # seconds a search with a two-letter term may take before the tab says why
-SYNONYMS_NAME = "synonyms.csv"
+from docwhere.search import SYNONYMS_NAME  # noqa: E402  (kept importable from here)
 PREVIEW_DPI = 110  # a page drawn in the search tab's pane: about the pane's width, small enough to send at once
 PREVIEW_MODES = ("text", "page")  # the search tab's pane: the section's text, or its page as a picture
 PREVIEW_MAX_SIDE = 2000  # pixels: a drawing sheet (A0) is drawn smaller, not at 3600 x 5100
@@ -426,11 +426,12 @@ class ManageApi:
                 roots = [r for r in indexed if index.enclosing(path_key(r)) is None]
             started = time.monotonic()
             regex, name, every = bool(query.get("regex")), bool(query.get("name")), bool(query.get("all"))
-            # other wordings of the terms (サーバ / サーバー, ログイン / ログオン), searched alongside them;
-            # not with "every term", where a variant would count as one more term to require
+            # other wordings of the terms (サーバ / サーバー, ログイン / ログオン), searched alongside them.
+            # A wording counts as the term it stands for, so with "every term" either of them will do.
+            groups = load_variant_groups(self._db.with_name(SYNONYMS_NAME))
             variants = []
-            if query.get("variants") and not (regex or name or every):
-                variants = expand_variants(terms, load_variant_groups(self._db.with_name(SYNONYMS_NAME)))
+            if query.get("variants") and not (regex or name):
+                variants = expand_variants(terms, groups)
 
             def run(words: list[str], leave_out: list[str], require_all: bool, limit: int, capped=None,
                     per_file: int = FIRST_PER_FILE, counted: dict | None = None) -> list[dict]:
@@ -441,7 +442,7 @@ class ManageApi:
                         hits = search_names(index, roots, words, limit=limit, exclude=leave_out, regex=regex)
                     else:
                         hits = search(index, roots, words, require_all=require_all, limit=limit, per_file=per_file,
-                                      exclude=leave_out, regex=regex, capped=capped, found=counted)
+                                      exclude=leave_out, regex=regex, capped=capped, found=counted, groups=groups)
                 except PatternError as e:
                     raise ValueError(f"正規表現として読めません: {e}") from None
                 return [h.to_dict() for h in hits]

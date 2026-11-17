@@ -40,7 +40,17 @@ ROW_SNIPPET_CHARS = 240
 W_TITLE = 3.0  # term in the section's own heading
 W_CRUMB = 1.0  # term in a parent heading
 W_FILENAME = 1.0
-W_EXTRA_TERM = 2.0  # each additional distinct term found in the section
+W_EXTRA_TERM = 2.0  # each additional distinct term found in the section (wordings of one thing count once)
+W_SAME_LINE = 1.5  # two of the things asked for stand close together in one line: a setting beside its value
+NEAR_CHARS = 30  # ...this close
+RARITY = 1.0  # a term found in few sections weighs up to this much more than the commonest one...
+RARITY_SPAN = 50  # ...reached when it is found in this many times fewer sections
+W_IN_HEADING = 0.25  # in choosing the snippet line: a term the heading already shows says little
+LINE_CHARS = 600  # of the hit line given whole in the JSON, for quoting
+SYNONYMS_NAME = "synonyms.csv"  # the user's own wordings, beside the index (see load_variant_groups)
+_POINTS_ELSEWHERE = ("を参照してください。", "を参照。", "参照してください。")
+SUGGEST_PROBES = 150  # parts of a term tried, at most, when the term itself is found nowhere
+_XREF = re.compile(r"^(?:〔[0-9a-f]{4}〕)?\s*\d+ページ(?:\s|$)")  # "6042ページ 材料の数": points elsewhere
 SUPERSEDED_FACTOR = 0.8  # an older version still shows, below the current one
 
 CELL_SEP = "\t"  # see extractors.excel
@@ -88,11 +98,18 @@ def search(
     regex: bool = False,
     capped: list[str] | None = None,
     found: dict | None = None,
+    must: list[str] = (),
+    groups: list[tuple[str, ...]] = (),
 ) -> list[Hit]:
     """Sections under ``roots`` matching ``terms`` (any of them, or all with ``require_all``),
     best first. A term is matched as written, spaces included, so a quoted phrase stays one.
     Sections or paths containing an ``exclude`` word are left out. With ``regex`` the terms
     are regular expressions (case ignored) and a hit's ``terms`` are the strings they matched.
+
+    ``must`` terms are searched like the others and have to be there: the subject, beside
+    wordings of which any will do. Terms that are wordings of one thing (a built-in group, one
+    of ``groups``, サーバ / サーバー) count as one: any of them satisfies ``must`` or
+    ``require_all``, and finding two of them is not finding two things.
 
     Each term brings at most CANDIDATES_PER_TERM sections to be ranked (REGEX_CANDIDATES for a
     pattern); the terms that reached it are added to ``capped``, as sections past it were never
@@ -101,13 +118,17 @@ def search(
     ``at_least`` set when a term reached its limit, so more may match than were counted."""
     if regex:
         return _with_heading_pages(index, _search_regex(index, roots, terms, require_all, exts, limit, per_file, exclude, capped, found))
-    terms = list(dict.fromkeys(t for t in map(norm, terms) if t))
+    needed = list(dict.fromkeys(t for t in map(norm, must) if t))
+    terms = list(dict.fromkeys(t for t in map(norm, [*terms, *needed]) if t))
     if not terms:
         return []
     scope_sql, scope_args = _scope(roots, exts)
     unwanted = _folded(exclude)
+    group_of = term_groups(terms, groups)
+    required = set(group_of) if require_all else {group_of[terms.index(t)] for t in needed}
 
     candidates: set[int] = set()
+    sections_with: list[int] = []  # how many sections each term is in: a rare term says more
     deadline = time.monotonic() + SCAN_SECONDS
     for term in terms:
         if len(term) >= 3:
@@ -131,8 +152,11 @@ def search(
             if found is not None:
                 found["at_least"] = True
         candidates.update(ids)
+        sections_with.append(len(ids))
     if not candidates:
         return []
+    commonest = max(sections_with)
+    weights = [1.0 + RARITY * min(1.0, math.log(commonest / n) / math.log(RARITY_SPAN)) if n else 1.0 for n in sections_with]
 
     rows = list(_fetch(index, candidates))
     newer = index.newer_among({r["family"] for r in rows if r["family"]}, roots)  # the versions of these files only
@@ -141,8 +165,8 @@ def search(
     for row in rows:
         if _excluded(row, unwanted):
             continue
-        score, matched = score_row(row, folded)
-        if matched and (not require_all or len(matched) == len(terms)):
+        score, matched = score_row(row, folded, weights, group_of)
+        if matched and required <= {group_of[i] for i in matched}:
             if row["path"] in newer:
                 score *= SUPERSEDED_FACTOR
             scored.append((score, row, [terms[i] for i in matched]))
@@ -428,6 +452,42 @@ def search_names(
     return hits
 
 
+def suggest_parts(index: Index, roots: list[Path], terms: list[str], exts: list[str] | None = None) -> list[dict]:
+    """For terms found nowhere, their parts that are found: "何個まで登録できる" is in no
+    document as written, "登録できる" is in many. The longest part from each letter on is taken,
+    so the parts do not overlap. [{term, part, sections}], sections counted up to 1000."""
+    scope_sql, scope_args = _scope(roots, exts)
+
+    def sections(part: str) -> int:
+        row = index.db.execute(
+            "SELECT count(*) FROM (SELECT 1 FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid"
+            f" JOIN files f ON f.id = c.file_id WHERE chunks_fts MATCH ? AND {scope_sql} LIMIT 1000)",
+            ['"' + part.replace('"', '""') + '"', *scope_args],
+        ).fetchone()
+        return row[0]
+
+    out: list[dict] = []
+    probes = 0
+    for term in dict.fromkeys(t for t in map(norm, terms) if len(t) > 3):
+        if sections(term):
+            continue
+        i = 0
+        while i <= len(term) - 3 and probes < SUGGEST_PROBES:
+            for j in range(len(term), i + 2, -1):
+                part = term[i:j].strip()
+                if len(part) < 3 or part == term:
+                    continue
+                probes += 1
+                if n := sections(part):
+                    out.append({"term": term, "part": part, "sections": n})
+                    i = j - 1
+                    break
+                if probes >= SUGGEST_PROBES:
+                    break
+            i += 1
+    return out
+
+
 def _scope(roots: list[Path], exts: list[str] | None) -> tuple[str, list]:
     parts, args = [], []
     for root in roots:
@@ -470,43 +530,113 @@ def _fetch(index: Index, ids: set[int]):
         )
 
 
-def score_row(row, folded: list[str]) -> tuple[float, list[int]]:
+def term_groups(terms: list[str], groups: list[tuple[str, ...]] = ()) -> list[int]:
+    """For each term the number of its group: terms that are wordings of one thing share one.
+    A group is a line of VARIANT_GROUPS or of ``groups``, or a katakana word with and without
+    its closing long vowel."""
+    keys: list[tuple] = []
+    for term in terms:
+        low = term.lower()
+        key: tuple = ("term", low)
+        for n, group in enumerate([*VARIANT_GROUPS, *groups]):
+            if low in (w.lower() for w in group):
+                key = ("group", n)
+                break
+        else:
+            stem = term.rstrip("ー")
+            if len(stem) >= 3 and _KATAKANA_TAIL.match(stem):
+                key = ("term", stem.lower())
+        keys.append(key)
+    numbers = {key: n for n, key in enumerate(dict.fromkeys(keys))}
+    return [numbers[key] for key in keys]
+
+
+def score_row(row, folded: list[str], weights: list[float] | None = None,
+              group_of: list[int] | None = None) -> tuple[float, list[int]]:
+    """The section's score for the terms, and which of them it holds. ``weights`` scales each
+    term's share (see RARITY); ``group_of`` says which terms are wordings of one thing."""
     title, crumb, body = row["title"].lower(), row["crumb"].lower(), row["body"].lower()
     filename = norm(os.path.basename(row["path"])).lower()
     score, matched = 0.0, []
     # a later page of the section above it; keys(), as "in" looks through an sqlite3.Row's values
     continued = "continued" in row.keys() and bool(row["continued"])  # noqa: SIM118
+    # Wordings of one thing are scored as that one thing: where it is (heading, parent heading,
+    # file name), how often its commonest wording is in the text, and how rare it is. Scored a
+    # term each, a section repeating 既定値 and 初期値 outranked the one about the subject asked for.
+    things: dict[int, list] = {}
     for i, term in enumerate(folded):
         in_title, in_crumb, count = term in title, term in crumb, body.count(term)
         if not (in_title or in_crumb or count):
             continue
         matched.append(i)
-        score += W_TITLE * (in_title and not continued) + W_CRUMB * in_crumb + math.log1p(count) + W_FILENAME * (term in filename)
+        thing = things.setdefault(group_of[i] if group_of else i, [False, False, 0, False, math.inf])
+        thing[0] |= in_title
+        thing[1] |= in_crumb
+        thing[2] = max(thing[2], count)
+        thing[3] |= term in filename
+        thing[4] = min(thing[4], weights[i] if weights else 1.0)
+    for in_title, in_crumb, count, in_name, weight in things.values():
+        score += weight * (W_TITLE * (in_title and not continued) + W_CRUMB * in_crumb + math.log1p(count)
+                           + W_FILENAME * in_name)
     if matched:
-        score += W_EXTRA_TERM * (len(matched) - 1)
+        score += W_EXTRA_TERM * (len(things) - 1)
+        if len(things) > 1:
+            score += _nearness(body, [(folded[i], group_of[i] if group_of else i) for i in matched])
     return score, matched
 
 
+def _nearness(body: str, terms: list[tuple[str, int]]) -> float:
+    """What the section gains for holding two of the things asked for close together: W_SAME_LINE
+    within NEAR_CHARS of each other in one line ("トマトは16個まで"), a third of it anywhere in
+    one line (a table row is a long line: its cells belong together, less tightly)."""
+    best = 0.0
+    for line in body.split("\n"):
+        at = [(pos, group) for term, group in terms for pos in _positions(line, term)]
+        if len({group for _, group in at}) < 2:
+            continue
+        at.sort()
+        if any(b[1] != a[1] and b[0] - a[0] <= NEAR_CHARS for a, b in zip(at, at[1:])):
+            return W_SAME_LINE
+        best = W_SAME_LINE / 3
+    return best
+
+
+def _positions(line: str, term: str, limit: int = 10) -> list[int]:
+    out, start = [], 0
+    while len(out) < limit and (i := line.find(term, start)) >= 0:
+        out.append(i)
+        start = i + 1
+    return out
+
+
 def locate_snippet(row, terms: list[str]) -> tuple[str, dict]:
-    """Snippet from the line matching the most terms, and that line's anchor."""
+    """Snippet from the line that says the most, and that line's anchor: the line holding the
+    most terms, where a term the section's heading already shows counts for little (the subject
+    is in the heading; the line wanted is the one with what is said about it), and a line that
+    only points to another page ("6042ページ 材料の数") is passed over when another line matches."""
     lines = row["body"].split("\n")
     anchors = json.loads(row["anchors"])
     anchor_of = (lambda i: anchors[i]) if len(anchors) > 1 else (lambda i: anchors[0] if anchors else {})
     folded = [t.lower() for t in terms]
-    best, best_count = 0, -1
+    heading = f"{row['title']} {row['crumb']}".lower()
+    worth = [W_IN_HEADING if t in heading else 1.0 for t in folded]
+    best, best_count = 0, -1.0
     for i, line in enumerate(lines):
         if anchor_of(i).get("header"):
             continue  # a header row matches every query about its column names
         if line == row["title"] and len(lines) > 1:
             continue  # the heading is already shown as the crumb; prefer body text that says more
-        count = sum(t in line.lower() for t in folded)
+        low = line.lower()
+        count = sum(w for t, w in zip(folded, worth) if t in low)
+        if count and (_XREF.match(line) or line.endswith(_POINTS_ELSEWHERE)):
+            count *= 0.5 if count > 1 else 0.1  # the place it points to is worth showing, not the pointer
         if count > best_count:
             best, best_count = i, count
-            if count == len(folded):
-                break
     line = lines[best]
     low = line.lower()
-    term, pos = min(((t, low.find(t)) for t in folded if t in low), key=lambda tp: tp[1], default=(folded[0], 0))
+    # shown around the term that says most: the one the heading does not already show
+    here = [(t, low.find(t), w) for t, w in zip(folded, worth) if t in low]
+    term, pos, _ = min(here, key=lambda tpw: (-tpw[2], tpw[1]), default=(folded[0], 0, 0))
 
     anchor = dict(anchor_of(best))
     anchor["term"] = terms[folded.index(term)]

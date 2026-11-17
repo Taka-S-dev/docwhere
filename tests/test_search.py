@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from docwhere.cli import main
-from docwhere.search import search
+from docwhere.search import search, term_groups
 
 
 def test_sync_skips_lock_files_and_is_incremental(docs, index):
@@ -259,3 +259,70 @@ def test_a_hit_says_which_pages_its_heading_runs_over(tmp_path, capsys, monkeypa
 
     assert main(["search", "ドレッシング", "--in", str(folder)]) == 0
     assert "p.4 (the heading runs over p.2-5)" in capsys.readouterr().out
+
+
+def _notes(tmp_path, files: dict) -> Path:
+    folder = tmp_path / "notes"
+    folder.mkdir()
+    for name, text in files.items():
+        (folder / name).write_text(text, encoding="utf-8")
+    return folder
+
+
+def test_wordings_of_one_thing_count_as_one_and_the_subject_decides(tmp_path, index):
+    folder = _notes(tmp_path, {
+        # says both wordings of "default" again and again, nothing on the subject asked for
+        "reset.md": "# 設定の初期化\n" + "既定値をやめて初期値にする。\n" * 8,
+        "oven.md": "# 画面\nオーブンの温度を決める。\n初期値は 180。\n",
+    })
+    index.sync(folder)
+    hits = search(index, [folder], ["初期値", "既定値", "デフォルト", "オーブン"])
+    assert Path(hits[0].path).name == "oven.md"
+    assert term_groups(["初期値", "既定値", "サーバ", "サーバー", "オーブン"]) == [0, 0, 1, 1, 2]
+
+
+def test_a_must_term_is_required_and_any_of_its_wordings_will_do(tmp_path, index):
+    folder = _notes(tmp_path, {
+        "a.md": "# 火力\n火加減のデフォルトは 180。\n",
+        "b.md": "# 音量\n音量の既定値は 5。\n",
+        "c.md": "# サーバー\nサーバーの既定値は 8080。\n",
+    })
+    index.sync(folder)
+    assert [Path(h.path).name for h in search(index, [folder], ["既定値", "デフォルト"], must=["火加減"])] == ["a.md"]
+    # サーバ is required; the document writes サーバー, which is the same thing
+    assert [Path(h.path).name for h in search(index, [folder], ["既定値", "サーバー"], must=["サーバ"])] == ["c.md"]
+    assert search(index, [folder], ["既定値"], must=["どこにもない語"]) == []
+
+
+def test_the_snippet_is_the_line_that_says_something_about_the_subject(tmp_path, index):
+    folder = _notes(tmp_path, {
+        "a.md": "# 火加減\n火加減\n6042ページ 火加減のデフォルト\n火加減モードを選ぶ。\nデフォルト: 180\n",
+    })
+    index.sync(folder)
+    [hit] = search(index, [folder], ["火加減", "デフォルト"])
+    assert hit.snippet == "デフォルト: 180"  # not the heading repeated, nor the line pointing to another page
+
+
+def test_two_things_close_together_outrank_the_same_two_far_apart(tmp_path, index):
+    folder = _notes(tmp_path, {
+        "near.md": "# 野菜\nトマトは16個まで並べられます。\n",
+        "far.md": "# 盛り付け\nトマトの切り方を選びます。" + "ほかの説明が続きます。" * 6 + "1皿に30個まで盛り付けできます。\n",
+    })
+    index.sync(folder)
+    assert [Path(h.path).name for h in search(index, [folder], ["トマト", "個まで"], require_all=True)] == ["near.md", "far.md"]
+
+
+def test_search_looks_for_other_wordings_and_says_which_parts_of_a_term_exist(tmp_path, capsys, monkeypatch):
+    folder = _notes(tmp_path, {"a.md": "# 接続\nサーバのアドレスを登録できる。\n"})
+    monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "db" / "index.db"))
+    assert main(["search", "サーバー", "--in", str(folder), "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["also_searched"] == ["サーバ"] and len(out["hits"]) == 1
+    assert out["hits"][0]["line"] == "サーバのアドレスを登録できる。"  # the hit line whole, to quote from
+    assert main(["search", "サーバー", "--exact", "--in", str(folder), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["hits"] == []
+    assert main(["search", "何個まで登録できる", "--in", str(folder), "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["hits"] == [] and [s["part"] for s in out["suggest"]] == ["登録できる"]
+    assert main(["search", "アドレス", "--must", "サーバー", "--in", str(folder), "--json"]) == 0
+    assert len(json.loads(capsys.readouterr().out)["hits"]) == 1

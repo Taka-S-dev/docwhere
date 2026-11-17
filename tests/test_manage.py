@@ -450,3 +450,13 @@ def test_enter_in_the_settings_saves_and_enter_on_stale_hits_searches_again():
     assert '<button type="submit" class="btn primary" id="settings-save">' in MANAGE_BODY
     assert '<button type="button" class="btn" id="settings-cancel">' in MANAGE_BODY
     assert "queryKey() !== shownFor" in MANAGE_JS
+
+
+def test_other_wordings_are_searched_with_every_term_required_too(api, folder, tmp_path):
+    (folder / "srv.md").write_text("# 接続\nサーバのアドレスと timeout を決める。\n", encoding="utf-8")
+    index = Index(tmp_path / "db" / "index.db")
+    index.sync(folder)
+    index.close()
+    out = api.search({"text": "サーバー timeout", "all": True, "variants": True})
+    assert [Path(h["path"]).name for h in out["hits"]] == ["srv.md"]  # the document writes サーバ
+    assert api.search({"text": "サーバー timeout", "all": True, "variants": False})["hits"] == []

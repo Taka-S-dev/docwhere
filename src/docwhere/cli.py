@@ -78,6 +78,12 @@ def _parser() -> argparse.ArgumentParser:
                         "a hit's terms are the strings matched")
     p.add_argument("--in", dest="roots", type=Path, action="append", help="folder to search, repeatable (default: .)")
     p.add_argument("--all", action="store_true", help="only sections containing every term")
+    p.add_argument("--must", action="append", default=[], metavar="TERM",
+                   help="a term every hit has to contain, beside the others of which any will do "
+                        "(the subject, then the ways the answer may be worded); repeatable")
+    p.add_argument("--exact", action="store_true",
+                   help="search the terms as written only: no other wordings (サーバ / サーバー, ログイン / ログオン, "
+                        "the lines of synonyms.csv beside the index)")
     p.add_argument("--ext", help="restrict to extensions, e.g. pdf,docx")
     p.add_argument("-n", "--limit", type=int, default=10)
     p.add_argument("--per-file", type=int, default=3, help="max hits per file (default 3)")
@@ -205,7 +211,17 @@ def _view_options(p: argparse.ArgumentParser, prefix: str = "") -> None:
 
 def cmd_search(args) -> int:
     from docwhere.folio import page_label
-    from docwhere.search import PatternError, compile_patterns, search, search_names
+    from docwhere.search import (
+        LINE_CHARS,
+        SYNONYMS_NAME,
+        PatternError,
+        compile_patterns,
+        expand_variants,
+        load_variant_groups,
+        search,
+        search_names,
+        suggest_parts,
+    )
 
     roots = args.roots or [Path(".")]
     if args.regex:
@@ -261,16 +277,27 @@ def cmd_search(args) -> int:
     exts = [e.strip() for e in args.ext.split(",")] if args.ext else None
     capped: list[str] = []  # terms matching more sections than are looked at
     matched: dict = {}  # every matching section and file, before -n and --per-file keep the first
+    # Other wordings of the terms are searched with them, as the search window does: a document
+    # says サーバ where the question says サーバー. They count as the term they stand for.
+    groups = load_variant_groups(index.path.with_name(SYNONYMS_NAME))
+    also = [] if args.exact or args.regex or args.name else expand_variants([*args.terms, *args.must], groups)
     if args.name:
-        hits = search_names(index, roots, args.terms, exts=exts, limit=args.limit, exclude=args.exclude,
+        hits = search_names(index, roots, [*args.terms, *args.must], exts=exts, limit=args.limit, exclude=args.exclude,
                             regex=args.regex, unread=unread)
+    elif args.regex:
+        hits = search(index, roots, [*args.terms, *args.must], require_all=args.all or bool(args.must), exts=exts,
+                      limit=args.limit, per_file=args.per_file, exclude=args.exclude, regex=True, capped=capped, found=matched)
     else:
-        hits = search(index, roots, args.terms, require_all=args.all, exts=exts, limit=args.limit,
-                      per_file=args.per_file, exclude=args.exclude, regex=args.regex, capped=capped, found=matched)
+        hits = search(index, roots, [*args.terms, *also], require_all=args.all, exts=exts, limit=args.limit,
+                      per_file=args.per_file, exclude=args.exclude, capped=capped, found=matched,
+                      must=args.must, groups=groups)
+    # nothing found: the parts of the terms that are in the documents, to search again with
+    suggest = [] if hits or args.regex or args.name else suggest_parts(index, roots, [*args.terms, *args.must], exts)
     for h in hits:
         h.printed_page = _printed_page(index, h.path, h.anchor)
     _last_path(index).write_text(
-        json.dumps({"terms": args.terms, "hits": [h.to_dict() for h in hits], "reading": reading}, ensure_ascii=False),
+        json.dumps({"terms": [*args.terms, *args.must, *also], "hits": [h.to_dict() for h in hits], "reading": reading},
+                   ensure_ascii=False),
         encoding="utf-8",
     )
 
@@ -291,6 +318,11 @@ def cmd_search(args) -> int:
             # what the terms were matched against and how, and the words that left sections out
             "mode": ("name" if args.name else "text") + (" regex" if args.regex else ""),
             "not": args.exclude,
+            "must": args.must,
+            # other wordings searched with the terms (--exact turns them off)
+            "also_searched": also,
+            # when nothing was found: parts of the terms that are in the documents
+            "suggest": suggest,
             # terms matching so many sections that only the likeliest were ranked: a better
             # section may have been passed over, so narrow the search before concluding
             "capped": capped,
@@ -314,6 +346,8 @@ def cmd_search(args) -> int:
             ],
             "hits": [
                 {"id" if k == "chunk_id" else k: v for k, v in h.to_dict().items() if k != "anchor"}
+                # the hit line whole (the snippet is cut around the term): what to quote from
+                | ({"line": h.anchor["text"][:LINE_CHARS]} if h.anchor.get("text") else {})
                 | ({"changed_since_read": True} if path_key(h.path) in kept else {})
                 for h in hits
             ],
@@ -333,6 +367,9 @@ def cmd_search(args) -> int:
 
     if not hits:
         print("no hits")
+        if suggest:
+            parts = ", ".join(f"{s['part']} ({s['sections']})" for s in suggest)
+            print(f"not found as written; these parts of it are in the documents: {parts}", file=sys.stderr)
     for h in hits:
         heading = h.crumb or (h.title if h.title != Path(h.path).name else "")  # a --name hit is the file itself
         where = (page_label(h.anchor["page"], h.printed_page) if h.printed_page else h.location) + (

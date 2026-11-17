@@ -57,10 +57,16 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    a document might actually use:
    - the exact identifier (`config`, `set-timeout`, `E1234`)
    - Japanese and English wordings (`設定コマンド`, `configuration`)
-   - spelling variants (`ログイン` / `ログオン`, `サーバ` / `サーバー`)
    - when the user describes a symptom rather than naming the thing, the likely causes too
      ("タイムアウトする" → `タイムアウト`, `timeout`, `プロキシ`, `proxy`)
-   - for a value question, how documents label a default: `既定値`, `デフォルト`, `default`, `初期値`
+   - for a value question, how documents label a default: `既定値` (docwhere adds `デフォルト`,
+     `初期値`, `default` itself)
+
+   Common other wordings are searched without being given: `サーバ` / `サーバー`, `ログイン` /
+   `ログオン`, `既定値` / `デフォルト` / `初期値`, and the lines of the user's `synonyms.csv`. The
+   JSON's `also_searched` lists what was added; wordings of one thing count as one term. Give
+   the wordings docwhere cannot know (the product's own names, English for Japanese). `--exact`
+   searches the terms as written only.
 
    Search is literal, so word the terms the way a document **states the answer**, not the way
    the question asks it. Documents rarely write "最大登録数は N"; they write "N 件まで登録できる":
@@ -74,9 +80,10 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
 
    Do not pass a bare short word that appears everywhere (`まで`, `最大`, `設定`): it matches
    nearly every section and buries the answer. Attach it to the subject or a counter instead.
-   When the first search returns only sections whose heading names the subject but no snippet
-   with the answer, search again with `--all` on the subject plus one answer phrase
-   (`docwhere search リモート 件まで --all`).
+   For a question about one subject, name it with `--must` and give the ways the answer may
+   be worded as the terms: every hit then has the subject, and any of the wordings will do —
+   `docwhere search 件まで 上限 登録できる --must リモート`. Use it from the first search of a value
+   question; `--all` needs every term, which no document has when the terms are alternatives.
 
    Full-width/half-width differences are already normalised; do not add those variants.
 
@@ -163,6 +170,8 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
      in a row) longer than a few seconds, cut short there. A better
      section may have been passed over: before saying something is not there, search again
      narrower (another term with `--all`, `--not`, or a subfolder with `--in`).
+   - `line` — the hit line whole (the snippet is cut around the term): copy a `--quote` from
+     here or from `show`, never from the cut snippet.
    - `matched` — how many sections and files matched in all (with `at_least`, more did: a term
      was in too many sections to count them all). The hits are only the first of them: ten at
      most, three of a file. More matched than listed means there is more to read
@@ -178,7 +187,9 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
 
    Prefer `--id` over the hit number (`docwhere show 2`): the number refers to whichever
    search ran last, which may be another agent's. If nothing fits, search again with different
-   wording before concluding the information is absent.
+   wording before concluding the information is absent. When there are no hits at all, the
+   JSON's `suggest` lists the parts of your terms that are in the documents (`何個まで登録できる`
+   is in none as written; its part `登録できる` is in many sections): search again with those.
 
    **Reading on.** When none of the hits answers and `matched` says more sections matched than
    were listed, read past them before searching otherwise:
