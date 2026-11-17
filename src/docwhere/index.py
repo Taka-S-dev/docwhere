@@ -220,7 +220,7 @@ class Index:
         to read. Nothing is extracted, so this takes seconds even for a large folder."""
         root = Path(root).resolve()
         if not root.is_dir():
-            raise NotADirectoryError(str(root))
+            raise NotADirectoryError(f"not a folder: {root}")
         root_key = path_key(root)
 
         stats = SyncStats()
@@ -433,7 +433,7 @@ class Index:
         at once, without a sync. Returns the patterns that were new and the number of files dropped."""
         root = Path(root).resolve()
         if not root.is_dir():
-            raise NotADirectoryError(str(root))
+            raise NotADirectoryError(f"not a folder: {root}")
         key = path_key(root)
         current = self._excludes(key)
         added: list[str] = []
@@ -689,6 +689,18 @@ class Index:
         for root in roots:
             rows += self._files_under(path_key(Path(root).resolve()), "path, mtime_ns")
         return rows
+
+    def chunk_on_page(self, chunk_id: int, page: int) -> int | None:
+        """The id of the section on ``page`` of the file that section ``chunk_id`` is in, for a
+        PDF read a page a section; None when the file has no such section."""
+        row = self.db.execute("SELECT file_id FROM chunks WHERE id = ?", (chunk_id,)).fetchone()
+        if row is None:
+            return None
+        found = self.db.execute(
+            "SELECT id FROM chunks WHERE file_id = ? AND (anchors LIKE ? OR anchors LIKE ?) ORDER BY id LIMIT 1",
+            (row["file_id"], f'%"page":{int(page)}}}%', f'%"page":{int(page)},%'),
+        ).fetchone()
+        return found["id"] if found else None
 
     def chunk_with_neighbors(self, chunk_id: int, context: int = 0) -> list[sqlite3.Row]:
         """The chunk plus up to ``context`` chunks before and after it from the same file."""

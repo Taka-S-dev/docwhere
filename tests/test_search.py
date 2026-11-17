@@ -326,3 +326,54 @@ def test_search_looks_for_other_wordings_and_says_which_parts_of_a_term_exist(tm
     assert out["hits"] == [] and [s["part"] for s in out["suggest"]] == ["登録できる"]
     assert main(["search", "アドレス", "--must", "サーバー", "--in", str(folder), "--json"]) == 0
     assert len(json.loads(capsys.readouterr().out)["hits"]) == 1
+
+
+def test_search_without_a_folder_searches_the_index_and_never_the_working_folder(docs, tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "cli" / "index.db"))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "x.md").write_text("# x\nconfig\n", encoding="utf-8")
+    monkeypatch.chdir(elsewhere)
+    assert main(["search", "config"]) == 2  # nothing indexed: asks for --in rather than index this folder
+    assert "--in DIR" in capsys.readouterr().err
+    assert main(["search", "config", "--in", str(docs), "--json"]) == 0
+    capsys.readouterr()
+    assert main(["search", "config", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["roots"] == [str(docs)] and out["hits"]
+    assert all(not h["path"].startswith(str(elsewhere)) for h in out["hits"])
+
+
+def test_show_reads_a_page_by_its_printed_number_and_only_the_lines_asked_for(tmp_path, capsys, monkeypatch):
+    from test_folio import _manual
+
+    monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "cli" / "index.db"))
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    _manual(folder / "m.pdf").close()  # printed numbers are two lower than the page index
+    assert main(["search", "Install", "--in", str(folder), "--json"]) == 0
+    hit = json.loads(capsys.readouterr().out)["hits"][0]
+    assert main(["show", "--id", str(hit["id"]), "--page", "23"]) == 0
+    assert "[p.25（印刷 23）]" in capsys.readouterr().out
+    assert main(["show", "--id", str(hit["id"]), "--page", "p25"]) == 0
+    assert "page reference 25" in capsys.readouterr().out
+    assert main(["show", "--id", str(hit["id"]), "--page", "900"]) == 2
+    assert main(["show", "--id", str(hit["id"]), "-C", "2", "--grep", "reference 13"]) == 0
+    out = capsys.readouterr().out
+    assert "page reference 13" in out and "page reference 12" not in out and "(no line here has it)" in out
+    assert main(["show", "--id", "999999"]) == 2
+    assert "no section with id 999999" in capsys.readouterr().err
+
+
+def test_open_takes_a_section_id(docs, tmp_path, capsys, monkeypatch):
+    from docwhere import opener
+
+    monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "cli" / "index.db"))
+    assert main(["search", "config", "--in", str(docs), "--ext", "pdf", "--json"]) == 0
+    hit = json.loads(capsys.readouterr().out)["hits"][0]
+    opened = []
+    monkeypatch.setattr(opener, "open_at", lambda path, anchor, app: opened.append((path, anchor.get("page"))) or "opened")
+    assert main(["search", "deploy", "--in", str(docs), "--json"]) == 0  # another search ran since
+    assert main(["open", "--id", str(hit["id"]), "--term", "config"]) == 0
+    assert opened == [(hit["path"], int(hit["location"][2:]))]
+    assert main(["open"]) == 2

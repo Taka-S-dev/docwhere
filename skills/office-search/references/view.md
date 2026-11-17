@@ -3,8 +3,8 @@
 Read this before running `docwhere view` or `search --view`, or `wiki view`.
 
 - To look over the candidates ("見せて", "並べて", "パパっと確認したい", "抜粋見たい"): run the
-  same search again with `--view`. It opens one local HTML page in the browser with every
-  hit's section (terms marked, the hit line flagged, neighbouring sections collapsed), PDF
+  same search again with `--view`. It opens one local page, in docwhere's own window unless
+  the user chose the browser, with every hit's section (terms marked, the hit line flagged, neighbouring sections collapsed), PDF
   pages as images, and a link to the original. The page stays on this machine; it has no
   scripts and loads nothing from the network. `docwhere view 1 3` shows only some hits of
   the last search; `docwhere view --id 412 --id 415 --term タイムアウト` shows sections by
@@ -50,10 +50,10 @@ Read this before running `docwhere view` or `search --view`, or `wiki view`.
   in Acrobat/Word/Excel at the spot, copy a citation and keep the window on top. One window
   serves every question: a later view replaces the page and raises the window. If the
   user prefers the browser, `docwhere viewer browser` (or `--browser` once).
-- Always pass the user's question as `--title "..."`. Each view is a new file that opens
-  in a new browser tab, so earlier answers stay open while the user asks the next
-  question; the title is what tells those tabs apart. Every page links to a history page
-  listing the recent questions and answers. Old pages and snapshots are pruned
+- Always pass the user's question as `--title "..."`. Each view is a new file, listed under
+  its title in the history page every page links to, so the user can go back to an earlier
+  answer after the window moved on to the next one (in the browser, each opens in its own tab
+  and the title is what tells the tabs apart). Old pages and snapshots are pruned
   automatically; run `docwhere clean` only when the user asks to clear them.
 - Add `-P 1` (or `-P 2`) for the PDF pages either side of each hit page when the user asks
   for them ("前後のページも"), or when the hit runs on: a table or procedure that continues

@@ -44,9 +44,11 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    search it with `docwhere wiki search … --wiki NAME [--space SPACE]` alongside or instead of
    the local folders (read `references/wiki.md` first).
 
-   If the user named a folder, use it. If there is no notes file or no row fits, look at
-   `docwhere status` first: when it lists one indexed folder only, search that. Otherwise ask
-   once and offer to draft the map (below); do not search the whole drive.
+   If the user named a folder, use it. If there is no notes file or no row fits, search
+   without `--in`: every folder already in the index is searched, and the JSON's `roots` says
+   which. Say which folders that was when the answer comes from there. When nothing is indexed
+   (the command says so), ask once for the folder and offer to draft the map (below); do not
+   search the whole drive.
 
    Also look at the file rows: one whose `note` or `section` fits the question is the first
    place to check: search with `--in` set to its folder and confirm the hit from that file
@@ -183,7 +185,14 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    ```
    docwhere show --id 412        # whole section, by the hit's "id" from the JSON
    docwhere show --id 412 -C 1   # plus the sections before and after
+   docwhere show --id 412 -C 3 --grep 台まで --grep 上限   # only the lines with a word, and 2 around each
+   docwhere show --id 412 --page 5021   # the page the manual calls 5021 ("5021ページ参照")
    ```
+
+   A manual points onward by its printed page numbers ("☞ 5021ページ 下ごしらえ"): follow one with
+   `--page`, which reads that page of the hit's PDF (`p5023` for the page counted from the start
+   of the file). Over a heading that runs for many pages, `-C` with `--grep` reads the lines
+   that matter instead of every page.
 
    Prefer `--id` over the hit number (`docwhere show 2`): the number refers to whichever
    search ran last, which may be another agent's. If nothing fits, search again with different
@@ -249,10 +258,10 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
      to mark the answer on the page, or to show reasoning across pages or a figure: first read
      `references/view.md` (next to this file), then run `docwhere view` or `search --view` as
      it says.
-   - To jump into one document ("開いて", "そこ開いて"): `docwhere open N` opens hit N of the
-     *last* search at its spot — Acrobat at the page, Word with the paragraph selected, Excel
-     with the cell selected, PowerPoint at the slide, VS Code at the line.
-   If you ran another search since, search again first so the numbers match.
+   - To jump into one document ("開いて", "そこ開いて"): `docwhere open --id 412` opens that
+     section at its spot — Acrobat at the page, Word with the paragraph selected, Excel with the
+     cell selected, PowerPoint at the slide, VS Code at the line. Add `--term 語` for the word to
+     land on. (`docwhere open N` opens hit N of the *last* search, whoever ran it.)
 
 ## When something does not work on this PC
 

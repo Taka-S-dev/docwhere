@@ -12,7 +12,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from docwhere import background, doctor
+from docwhere import __version__, background, doctor
 from docwhere.extractors import is_serial
 from docwhere.index import (
     FILE_TIMEOUT,
@@ -23,6 +23,7 @@ from docwhere.index import (
     default_db_path,
     path_key,
 )
+from docwhere.model import norm
 from docwhere.present import EvidenceStep, highlight, show_page
 from docwhere.progress import duration
 from docwhere.wiki import cli as wiki_cli
@@ -63,6 +64,7 @@ def _parser() -> argparse.ArgumentParser:
         description="Search PDF, Word, Excel, PowerPoint and text files section by section, then open the hit.",
     )
     parser.add_argument("--db", type=Path, default=None, help=f"index file (default: {default_db_path()})")
+    parser.add_argument("--version", action="version", version=f"docwhere {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("search", help="search (updates the index for the folders first)")
@@ -76,7 +78,9 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--regex", action="store_true",
                    help="the terms are regular expressions, case ignored (E\\d{4}, TIMEOUT_[A-Z]+); "
                         "a hit's terms are the strings matched")
-    p.add_argument("--in", dest="roots", type=Path, action="append", help="folder to search, repeatable (default: .)")
+    p.add_argument("--in", dest="roots", type=Path, action="append",
+                   help="folder to search, repeatable (default: every folder of the index; give it to search and "
+                        "index a new one)")
     p.add_argument("--all", action="store_true", help="only sections containing every term")
     p.add_argument("--must", action="append", default=[], metavar="TERM",
                    help="a term every hit has to contain, beside the others of which any will do "
@@ -106,10 +110,18 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("n", type=int, nargs="?")
     p.add_argument("--id", type=int, help="section id from search --json (safe when several searches run at once)")
     p.add_argument("-C", "--context", type=int, default=0, help="also print this many neighbouring chunks")
+    p.add_argument("--page", metavar="P",
+                   help="show page P of the hit's PDF instead of the hit: the number printed on the page, as the "
+                        "manual's own \"see page 5021\" means it (p5023 for the page counted from the file's start)")
+    p.add_argument("--grep", action="append", default=[], metavar="WORD",
+                   help="print only the lines containing WORD (repeatable), with -L lines around each")
+    p.add_argument("-L", "--lines", type=int, default=2, help="with --grep: lines printed either side of a match (default 2)")
     p.set_defaults(func=cmd_show)
 
     p = sub.add_parser("open", help="open hit N from the last search at its location")
-    p.add_argument("n", type=int)
+    p.add_argument("n", type=int, nargs="?")
+    p.add_argument("--id", type=int, help="section id from search --json, instead of the hit number")
+    p.add_argument("--term", action="append", default=[], help="with --id: the word to land on in the section")
     p.set_defaults(func=cmd_open)
 
     p = sub.add_parser("view", help="open the last search's hits as one HTML page: excerpts, and PDF pages as images")
@@ -223,7 +235,6 @@ def cmd_search(args) -> int:
         suggest_parts,
     )
 
-    roots = args.roots or [Path(".")]
     if args.regex:
         try:
             compile_patterns(args.terms)  # a mistyped pattern fails before any reading
@@ -231,6 +242,12 @@ def cmd_search(args) -> int:
             print(f"docwhere: {e}", file=sys.stderr)
             return 2
     index = Index(args.db)
+    # Without --in the folders already in the index are searched, not the folder the command is
+    # typed in: that one would be read and kept in the index for good, whatever it is.
+    roots = args.roots or [Path(p) for p in index.root_paths()
+                           if index.enclosing(path_key(p)) is None and Path(p).is_dir()]
+    if not roots:
+        raise LookupError("no folder to search: nothing is indexed yet, so name one with --in DIR")
     expired = background.expire(index)
     if expired:
         print(f"dropped from the index (searched with --once a day ago): {', '.join(expired)}", file=sys.stderr)
@@ -295,11 +312,8 @@ def cmd_search(args) -> int:
     suggest = [] if hits or args.regex or args.name else suggest_parts(index, roots, [*args.terms, *args.must], exts)
     for h in hits:
         h.printed_page = _printed_page(index, h.path, h.anchor)
-    _last_path(index).write_text(
-        json.dumps({"terms": [*args.terms, *args.must, *also], "hits": [h.to_dict() for h in hits], "reading": reading},
-                   ensure_ascii=False),
-        encoding="utf-8",
-    )
+    _write_whole(_last_path(index), json.dumps(
+        {"terms": [*args.terms, *args.must, *also], "hits": [h.to_dict() for h in hits], "reading": reading}, ensure_ascii=False))
 
     # Every unreadable file in scope, not only the ones that failed during this sync: a file
     # that failed last week is just as invisible to this search.
@@ -513,9 +527,13 @@ def cmd_show(args) -> int:
         chunk_id = _last_hit(index, args.n)["chunk_id"]
     else:
         raise LookupError("give a hit number N or --id")
+    if args.page:
+        chunk_id = _section_on_page(index, chunk_id, args.page)
     rows = index.chunk_with_neighbors(chunk_id, args.context)
     if not rows:
-        raise LookupError("the index changed since that search; search again")
+        raise LookupError(f"no section with id {chunk_id}; search again" if args.id is not None
+                          else "the index changed since that search; search again")
+    wanted = [norm(w).lower() for w in args.grep if norm(w)]
     print(f"# {Path(rows[0]['path']).name}\n# {rows[0]['path']}")
 
     def label_of(anchor: dict) -> str:
@@ -526,25 +544,71 @@ def cmd_show(args) -> int:
         anchors = json.loads(row["anchors"])
         print(f"\n## {row['crumb'] or row['title'] or '(no heading)'}" + (" ◀ hit" if row["id"] == chunk_id else ""))
         lines = [line.replace(CELL_SEP, " | ") for line in row["body"].split("\n")]
+        keep = _around(lines, wanted, args.lines) if wanted else range(len(lines))
+        if wanted and not keep:
+            print("(no line here has it)")
+            continue
         if len(anchors) == 1:
             if label := label_of(anchors[0]):
                 print(f"[{label}]")
-            print("\n".join(lines))
-        else:
-            previous = None
-            for line, anchor in zip(lines, anchors):
-                label = label_of(anchor)
-                print(f"[{label}] {line}" if label and label != previous else line)
-                previous = label
+        previous, last = None, -1
+        for n in keep:
+            if wanted and n != last + 1:
+                print("  …")
+            last = n
+            label = label_of(anchors[n]) if len(anchors) > 1 and n < len(anchors) else None
+            print(f"[{label}] {lines[n]}" if label and label != previous else lines[n])
+            previous = label or previous
     return 0
+
+
+def _around(lines: list[str], wanted: list[str], around: int) -> list[int]:
+    """The numbers of the lines holding one of ``wanted`` and of ``around`` lines either side."""
+    keep: set[int] = set()
+    for n, line in enumerate(lines):
+        if any(w in line.lower() for w in wanted):
+            keep.update(range(max(0, n - around), min(len(lines), n + around + 1)))
+    return sorted(keep)
+
+
+def _section_on_page(index: Index, chunk_id: int, page: str) -> int:
+    """The section on page ``page`` of the PDF section ``chunk_id`` is in. ``page`` is the number
+    printed on the page ("5021"), or the page counted from the start of the file ("p5023")."""
+    from docwhere.folio import offset_of
+
+    rows = index.chunk_with_neighbors(chunk_id)
+    if not rows or not rows[0]["path"].lower().endswith(".pdf"):
+        raise LookupError("--page reads a page of a PDF hit; this hit is not in a PDF")
+    text = page.strip().lower()
+    counted = text.startswith("p")
+    try:
+        number = int(text.lstrip("p."))
+    except ValueError:
+        raise LookupError(f"--page takes a page number such as 5021, or p5023: {page}") from None
+    if not counted:
+        number += offset_of(rows[0]["path"], index.path.with_name("folios.json")) or 0
+    found = index.chunk_on_page(chunk_id, number)
+    if found is None:
+        raise LookupError(f"{Path(rows[0]['path']).name} has no text on p.{number}")
+    return found
 
 
 def cmd_open(args) -> int:
     from docwhere.opener import open_at
     from docwhere.window import pdf_app
 
+    from docwhere.search import section_hit
+
     index = Index(args.db)
-    hit = _last_hit(index, args.n)
+    if args.id is not None:
+        rows = index.chunk_with_neighbors(args.id)
+        if not rows:
+            raise LookupError(f"no section with id {args.id}; search again")
+        hit = section_hit(rows[0], args.term, 1).to_dict()
+    elif args.n is not None:
+        hit = _last_hit(index, args.n)
+    else:
+        raise LookupError("give a hit number N or --id")
     print(f"{Path(hit['path']).name}: {open_at(hit['path'], hit['anchor'], pdf_app(index.path))}")
     return 0
 
@@ -831,6 +895,16 @@ def _printed_page(index: Index, path: str, anchor: dict) -> int | None:
     from docwhere.folio import offset_of, printed
 
     return printed(offset_of(path, index.path.with_name("folios.json")), anchor["page"])
+
+
+def _write_whole(path: Path, text: str) -> None:
+    """Write ``path`` in one step, so a command reading it at that moment (show N while another
+    search ends) gets the old file or the new one, never half of one."""
+    import os
+
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(text, encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def _last_path(index: Index) -> Path:
