@@ -431,3 +431,22 @@ def test_overview_says_when_the_index_drive_is_too_full_to_go_on_reading(api, mo
     monkeypatch.setattr(index_module, "free_bytes", lambda path: 1024**3)
     out = api.overview()
     assert out["disk_low"] == 1024**3 and out["disk_min"] == index_module.MIN_FREE_BYTES and out["disk"]
+
+
+def test_a_search_that_finishes_late_does_not_replace_the_hits_being_shown(api, folder):
+    newest = api.search({"text": "timeout", "seq": 2})
+    assert newest["hits"]
+    api.search({"text": "d.md", "name": True, "seq": 1})  # typed earlier, answered later
+    # the buttons still act on the hits of the search the tab shows
+    assert api.preview(1)["path"] == newest["hits"][0]["path"]
+    api.search({"text": "d.md", "name": True, "seq": 3})
+    assert Path(api._results[1][0]["path"]).name == "d.md"
+
+
+def test_enter_in_the_settings_saves_and_enter_on_stale_hits_searches_again():
+    from docwhere.manage import BODY as MANAGE_BODY, MANAGE_JS
+
+    # the only submit button of the settings form is 保存: with any other first, Enter in a text field cancels
+    assert '<button type="submit" class="btn primary" id="settings-save">' in MANAGE_BODY
+    assert '<button type="button" class="btn" id="settings-cancel">' in MANAGE_BODY
+    assert "queryKey() !== shownFor" in MANAGE_JS

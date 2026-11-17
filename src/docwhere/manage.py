@@ -108,6 +108,10 @@ class ManageApi:
         self._trusted = False  # set while the signed manager page is showing
         self._results: tuple[list[str], list[dict]] = ([], [])  # the search tab's last hits, to open
         self._query = ""  # the words of that search, as typed: what a collected hit was found by
+        # Each bridge call runs on its own thread, so a slow search can finish after the one typed
+        # next. The page numbers its searches; only the newest one's hits are kept to open.
+        self._search_seq = 0
+        self._search_lock = threading.Lock()
         self._page_asked = 0  # page pictures asked for so far: one that waited behind a newer one is dropped
         self._roots_cache = None  # (what the index looked like, its folders with their counts, when counted)
         self._roots_lock = threading.Lock()
@@ -384,9 +388,21 @@ class ManageApi:
         )
 
         terms, exclude = parse_query(str(query.get("text") or "")[:500])
-        self._query = " ".join(str(query.get("text") or "").split())[:200]
+        typed = " ".join(str(query.get("text") or "").split())[:200]
+        try:
+            seq = int(query.get("seq") or 0)
+        except (TypeError, ValueError):
+            seq = 0
+        with self._search_lock:
+            self._search_seq = max(self._search_seq, seq)
+
+        def keep(words: list[str], hits: list[dict]) -> None:
+            with self._search_lock:
+                if seq >= self._search_seq:  # else a newer search is showing: its hits stay
+                    self._results, self._query = (words, hits), typed
+
         if not terms:
-            self._results = ([], [])
+            keep([], [])
             return {"hits": [], "terms": [], "exclude": exclude}
         scope = str(query.get("scope") or "")
         index = self._index()
@@ -444,7 +460,7 @@ class ManageApi:
             narrowed = any(chosen.values())  # by kind, format or folder: counted from the list
             for n, hit in enumerate(kept, 1):
                 hit["n"] = n  # numbered as shown, so the buttons name the hit they show
-            self._results = (terms + variants, kept)
+            keep(terms + variants, kept)
             hints = []
             if not pool and exclude and run(terms + variants, [], every, 1):
                 hints.append(f"除外（{'、'.join(exclude)}）を外すと見つかります")
@@ -1141,7 +1157,7 @@ BODY = """<div class="wrap" id="app">
     <label class="choice"><input type="radio" name="viewer" value="browser"> ブラウザ</label>
   </fieldset>
   <p class="error" id="settings-error" role="alert" hidden></p>
-  <div class="buttons"><button value="cancel" class="btn">キャンセル</button><button type="button" class="btn primary" id="settings-save">保存</button></div>
+  <div class="buttons"><button type="button" class="btn" id="settings-cancel">キャンセル</button><button type="submit" class="btn primary" id="settings-save">保存</button></div>
 </form></dialog>"""
 
 STYLE = """
@@ -1733,7 +1749,9 @@ MANAGE_JS = r"""(() => {
     api.try_pdf(field("program").value, field("args").value, hit.n)
       .then((r) => { $("#settings-tried").textContent = r; $("#settings-tried").hidden = false; }).catch(showSettingsError);
   });
-  $("#settings-save").addEventListener("click", () => {
+  $("#settings-cancel").addEventListener("click", () => settingsBox.close());
+  settingsForm.addEventListener("submit", (e) => {
+    e.preventDefault();  // the dialog closes once the settings are saved, not before
     const auto = $("input[name=pdfmode][value=auto]", settingsForm).checked;
     api.save_settings({
       pdf_program: auto ? "" : field("program").value,
@@ -2394,7 +2412,8 @@ MANAGE_JS = r"""(() => {
   };
   const loadMap = (force) => {
     if (!force && mapDirty()) return Promise.resolve();
-    return api.notes().then(applyMap).catch(failed("地図を読み込めませんでした"));
+    return api.notes().then((data) => { if (force || !mapDirty()) applyMap(data); })
+      .catch(failed("地図を読み込めませんでした"));
   };
   const saveMap = () => {
     if (!mapDirty()) return;
@@ -2441,6 +2460,10 @@ MANAGE_JS = r"""(() => {
   const switches = { all: $("#opt-all"), name: $("#opt-name"), regex: $("#opt-regex"), variants: $("#opt-variants") };
   let searchSeq = 0;
   let results = null;  // the last answer: {hits, terms, facets, ...} or {error}
+  let shownFor = "";   // the query the hits shown answer (see queryKey)
+  let searching = false;
+  const queryKey = () => JSON.stringify([q.value.trim(), scopeSel.value, switches.all.checked, switches.name.checked,
+    switches.regex.checked, switches.variants.checked]);
   let activeHit = 0;
   let searchTimer = 0;
   let facet = { kind: "", ext: "", folder: "" };  // narrowing chosen among the hits
@@ -2482,13 +2505,15 @@ MANAGE_JS = r"""(() => {
     if (!keepFacet) facet = { kind: "", ext: "", folder: "" };
     const text = q.value.trim();
     const mine = ++searchSeq;  // an answer to an older query is dropped
-    if (!text) { busy(false); results = null; renderResults(); return; }
+    const key = queryKey();
+    if (!text) { busy(false); searching = false; results = null; shownFor = key; renderResults(); return; }
     $("#search-meta").textContent = "探しています…";
     busy(true);
+    searching = true;
     api.search({ text, scope: scopeSel.value, all: switches.all.checked, name: switches.name.checked,
-      regex: switches.regex.checked, variants: switches.variants.checked, facet })
-      .then((r) => { if (mine === searchSeq) { busy(false); results = r; activeHit = 0; visible = firstShown(r); renderResults(); } })
-      .catch((e) => { if (mine === searchSeq) { busy(false); results = { error: reason(e), hits: [] }; renderResults(); } });
+      regex: switches.regex.checked, variants: switches.variants.checked, facet, seq: mine })
+      .then((r) => { if (mine === searchSeq) { busy(false); searching = false; results = r; shownFor = key; activeHit = 0; visible = firstShown(r); renderResults(); } })
+      .catch((e) => { if (mine === searchSeq) { busy(false); searching = false; results = { error: reason(e), hits: [] }; shownFor = key; renderResults(); } });
   };
   const viewHits = (numbers) => opening("読み取り画面を作っています…（Word・PowerPoint は数秒かかることがあります）",
     () => api.open_hits(numbers, q.value.trim())
@@ -2799,7 +2824,10 @@ MANAGE_JS = r"""(() => {
     const hits = results && results.hits ? results.hits.slice(0, visible) : [];
     if (e.key === "Enter") {
       e.preventDefault();
-      if (!results || results.error || !hits.length) { runSearch(false); return; }
+      // typed on since the hits came, or still searching: the hits shown are another query's,
+      // and Enter must not open one of them under the new words
+      const stale = searching || queryKey() !== shownFor;
+      if (stale || !results || results.error || !hits.length) { runSearch(false); return; }
       const hit = hits[activeHit];
       if (hit) (hit.chunk_id ? viewHits([hit.n]) : openFile(hit.n));
     } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && hits.length) {
