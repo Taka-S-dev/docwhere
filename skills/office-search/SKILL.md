@@ -241,6 +241,9 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    `partly_unreadable` lists files that were read but have pages no search reaches (scanned
    pages in a PDF that has text elsewhere; `note` names the pages). Treat them the same way:
    when the answer is not found, or the user asks whether everything was searched, name them.
+   `unlisted` names folders that could not be listed just now (no permission, a network share
+   that dropped): what was read of them before is still searched, new files in them are not.
+   Name them in the answer the same way.
    Likewise `excludes`: the patterns that applied to the searched folders, each with
    `left_out`, the folders and files it kept out of this search (see `references/exclude.md`).
    When any `left_out` is above zero, end the answer with one line saying so —

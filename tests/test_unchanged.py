@@ -92,3 +92,29 @@ def test_an_index_being_written_can_still_be_opened_and_read(tmp_path):
     finally:
         writer.rollback()
         writer.close()
+
+
+def test_a_folder_that_cannot_be_listed_keeps_its_files_in_the_index(tmp_path, monkeypatch):
+    import os
+
+    from docwhere.index import Index
+
+    root = tmp_path / "docs"
+    (root / "share").mkdir(parents=True)
+    (root / "a.md").write_text("# a\nalpha\n", encoding="utf-8")
+    (root / "share" / "b.md").write_text("# b\nbeta\n", encoding="utf-8")
+    index = Index(tmp_path / "index" / "index.db")
+    assert index.sync(root).files == 2
+    real = os.scandir
+
+    def scandir(path):
+        if os.path.basename(os.fspath(path)) == "share":
+            raise PermissionError(13, "denied", os.fspath(path))  # the share dropped
+        return real(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    stats = index.sync(root)
+    assert stats.removed == 0 and [os.path.basename(p) for p in stats.unlisted] == ["share"]
+    monkeypatch.setattr(os, "scandir", real)
+    assert index.sync(root).updated == 0  # nothing had to be read again
+    index.close()

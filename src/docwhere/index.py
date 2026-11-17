@@ -124,6 +124,9 @@ class SyncStats:
     # every pattern that applied, keyed (folder it is set on, pattern): the folders and files it
     # left out in this sync (a left-out folder counts once, its contents are not walked)
     left_out: dict[tuple[str, str], int] = field(default_factory=dict)
+    # folders that could not be listed (no permission, a share that dropped): what the index
+    # holds of them is kept, and nothing new in them was seen
+    unlisted: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -231,12 +234,15 @@ class Index:
             hits[rule] = 1
             on_disk = {}
         else:
-            on_disk = {path_key(p): (p, st.st_mtime_ns, st.st_size) for p, st in _walk(root, matcher, hits)}
+            on_disk = {path_key(p): (p, st.st_mtime_ns, st.st_size) for p, st in _walk(root, matcher, hits, stats.unlisted)}
         stats.left_out = {(self._root_path(k), p): hits.get((k, p), 0) for k, p in matcher.sources()}
         known = {r["key"]: r for r in self._files_under(root_key, "id, key, mtime_ns, size, version, error, sha256")}
         stats.files = len(on_disk)
 
-        gone = [r["id"] for k, r in known.items() if k not in on_disk]
+        # A folder that could not be listed (no permission, a share that dropped) says nothing
+        # about its files: they stay in the index, rather than be dropped now and read again later.
+        unseen = tuple(prefix_of(path_key(folder)) for folder in stats.unlisted)
+        gone = [r["id"] for k, r in known.items() if k not in on_disk and not k.startswith(unseen)]
         todo = [
             (k, p, mtime, size, _comparable_hash(known.get(k), size))
             for k, (p, mtime, size) in on_disk.items()
@@ -730,10 +736,11 @@ def _current(row: sqlite3.Row | None, mtime: int, size: int) -> bool:
     return floor <= row["version"] <= EXTRACTOR_VERSION
 
 
-def _walk(root: Path, matcher: Matcher, hits: dict) -> Iterator[tuple[Path, os.stat_result]]:
+def _walk(root: Path, matcher: Matcher, hits: dict, unlisted: list[str] | None = None) -> Iterator[tuple[Path, os.stat_result]]:
     """Files of a readable kind under ``root``, too large ones included: they are recorded as
     unreadable, not passed over unseen. ``hits`` counts, per (folder, pattern) rule, the folders
-    and files it left out; a left-out folder is not entered, so its contents are not counted."""
+    and files it left out; a left-out folder is not entered, so its contents are not counted.
+    ``unlisted`` is given the folders that could not be listed."""
     exts = supported_extensions()
 
     def left_out(path: str) -> bool:
@@ -742,7 +749,11 @@ def _walk(root: Path, matcher: Matcher, hits: dict) -> Iterator[tuple[Path, os.s
             hits[rule] = hits.get(rule, 0) + 1
         return rule is not None
 
-    for dirpath, dirnames, filenames in os.walk(root):
+    def failed(error: OSError) -> None:
+        if unlisted is not None and error.filename:
+            unlisted.append(str(error.filename))
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=failed):
         dirnames[:] = [
             d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS and not left_out(os.path.join(dirpath, d))
         ]

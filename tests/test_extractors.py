@@ -328,3 +328,16 @@ def test_dashes_and_the_wave_dash_are_one_form_each():
     assert norm("400〜499") == norm("400~499") == norm("400～499")
     assert norm("Wi‐Fi") == norm("Wi–Fi") == "Wi-Fi"
     assert norm("サーバー") == "サーバー"  # the long vowel mark is a letter
+
+
+def test_utf16_text_is_read_and_a_csv_row_carries_its_header(tmp_path):
+    (tmp_path / "bom.txt").write_bytes("設定\ntimeout = 30\n".encode("utf-16"))
+    (tmp_path / "nobom.log").write_bytes("connect timeout = 30\nretry = 5\n".encode("utf-16-le"))
+    assert extract(tmp_path / "bom.txt")[0].lines == ["設定", "timeout = 30"]
+    assert extract(tmp_path / "nobom.log")[0].lines == ["connect timeout = 30", "retry = 5"]
+    (tmp_path / "s.csv").write_text('項目,既定値\n接続タイムアウト,30秒\n"再送, 回数",5\n', encoding="utf-8-sig")
+    [chunk] = extract(tmp_path / "s.csv")
+    assert chunk.lines == ["項目: 接続タイムアウト / 既定値: 30秒", "項目: 再送, 回数 / 既定値: 5"]
+    assert chunk.anchors == [{"line": 2}, {"line": 3}]
+    (tmp_path / "plain.csv").write_text("a,b\n", encoding="utf-8")  # one row: nothing to label
+    assert extract(tmp_path / "plain.csv")[0].lines == ["a / b"]

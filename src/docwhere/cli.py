@@ -353,6 +353,8 @@ def cmd_search(args) -> int:
             },
             "index": {k: sum(getattr(u, k) for u in updates) for k in ("files", "updated", "removed")},
             "timed_out": [p for u in updates for p in u.timed_out],
+            # folders that could not be listed just now: not searched for new files, the answer may be there
+            "unlisted": [p for u in updates for p in u.unlisted],
             "excludes": excludes,
             "excluded_roots": [
                 {"root": str(Path(r).resolve()), "set_on": u.excluded_by[0], "pattern": u.excluded_by[1]}
@@ -405,6 +407,8 @@ def cmd_search(args) -> int:
               " add a term with --all, --not or a narrower --in", file=sys.stderr)
     if unreadable:
         print(f"\n{len(unreadable)} file(s) here could not be searched; see: docwhere status --errors", file=sys.stderr)
+    for folder in (p for u in updates for p in u.unlisted):
+        print(f"could not list {folder}: searched as last read, new files in it were not seen", file=sys.stderr)
     for p, n in partly[:MAX_UNREADABLE_LISTED]:
         print(f"partly searched: {p}: {n}", file=sys.stderr)
     if any(e["left_out"] for e in excludes):
