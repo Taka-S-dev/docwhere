@@ -460,3 +460,13 @@ def test_other_wordings_are_searched_with_every_term_required_too(api, folder, t
     out = api.search({"text": "サーバー timeout", "all": True, "variants": True})
     assert [Path(h["path"]).name for h in out["hits"]] == ["srv.md"]  # the document writes サーバ
     assert api.search({"text": "サーバー timeout", "all": True, "variants": False})["hits"] == []
+
+
+def test_the_window_asks_before_closing_over_unsaved_map_edits(api):
+    asked = []
+    assert manage.may_close(api, lambda: asked.append(1) or False)  # nothing unsaved: not asked
+    api.map_unsaved(True)
+    assert not manage.may_close(api, lambda: asked.append(1) or False)  # "no": the window stays
+    assert manage.may_close(api, lambda: True)  # "yes": the edits are given up
+    api.map_unsaved(False)
+    assert manage.may_close(api, lambda: False) and asked == [1]

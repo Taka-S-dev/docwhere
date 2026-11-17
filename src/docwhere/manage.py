@@ -112,6 +112,7 @@ class ManageApi:
         # next. The page numbers its searches; only the newest one's hits are kept to open.
         self._search_seq = 0
         self._search_lock = threading.Lock()
+        self._map_unsaved = False  # the page says so: the window asks before closing over it
         self._page_asked = 0  # page pictures asked for so far: one that waited behind a newer one is dropped
         self._roots_cache = None  # (what the index looked like, its folders with their counts, when counted)
         self._roots_lock = threading.Lock()
@@ -587,6 +588,11 @@ class ManageApi:
         return {"src": _data_uri(image), "page": page, "pages": pages, "exported": ext != ".pdf"}
 
     @bridge_method
+    def map_unsaved(self, unsaved: bool) -> None:
+        """Told by the page whenever the map gains or loses edits that are not saved."""
+        self._map_unsaved = bool(unsaved)
+
+    @bridge_method
     def preview_mode(self, mode: str | None = None) -> str:
         """How the search tab's pane shows a hit, "text" or "page"; with ``mode``, chosen from now on.
         Kept in the settings file: the window's own storage is wiped at every start."""
@@ -961,6 +967,15 @@ def run(db: Path, tab: str = "folders") -> None:
 
     closing = threading.Event()
 
+    def on_closing():
+        # one handler: every handler of the event runs even after one refuses, and the pipe must
+        # go on being served when the window stays open
+        if not may_close(api, lambda: ask_discard(viewer_window.own_window())):
+            return False
+        remember()
+        closing.set()
+        return None
+
     def serve() -> None:
         while not closing.is_set():
             try:
@@ -989,14 +1004,31 @@ def run(db: Path, tab: str = "folders") -> None:
     win.events.before_load += distrust
     win.events.loaded += inject
     win.events.shown += lambda: viewer_window.bring_to_front(False)
-    win.events.closing += remember
-    win.events.closing += closing.set
+    win.events.closing += on_closing
     threading.Thread(target=serve, daemon=True).start()
     try:
         webview.start(private_mode=True, gui="edgechromium", storage_path=str(viewer_window.fresh_storage(db, STORAGE)))
     finally:
         closing.set()
         listener.close()
+
+
+def may_close(api: ManageApi, ask) -> bool:
+    """Whether the window may close: always, unless the map has edits that are not saved and
+    ``ask()`` (does the user want them thrown away?) says no."""
+    return not api._map_unsaved or bool(ask())
+
+
+def ask_discard(hwnd: int | None) -> bool:
+    """A yes/no box over the window; "no" is the default, so Enter keeps the edits. The plain
+    Windows box: it may be shown from the thread the window is closing on."""
+    import ctypes
+
+    MB_YESNO, MB_ICONWARNING, MB_DEFBUTTON2, IDYES = 0x4, 0x30, 0x100, 6
+    answer = ctypes.windll.user32.MessageBoxW(
+        hwnd or 0, "地図に保存していない変更があります。\n保存せずに閉じますか？", "docwhere",
+        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2)
+    return answer == IDYES
 
 
 # ---- the page --------------------------------------------------------------------------------
@@ -2272,10 +2304,13 @@ MANAGE_JS = r"""(() => {
     return null;
   };
 
+  let toldUnsaved = false;
   const updateDirty = () => {
     const dirty = mapDirty();
     $("#map-unsaved").hidden = !dirty;
     $("#tab-map").classList.toggle("unsaved", dirty);
+    // the window asks before closing over unsaved edits, so it has to know of them
+    if (dirty !== toldUnsaved) { toldUnsaved = dirty; api.map_unsaved(dirty).catch(() => {}); }
   };
   const touched = (it, tr) => {
     tr.classList.toggle("edited", contentOf(it) !== savedById.get(it.id));
@@ -2762,7 +2797,7 @@ MANAGE_JS = r"""(() => {
         // the name is in bold above: the date first, so it is never the part cut off, then the folder
         h("span", { class: "r-path", text: `${hit.modified}　${nearDir(hit.path)}`, title: hit.path }),
         hit.newer_version ? h("span", { class: "r-flag", text: `新しい版かもしれません: ${base(hit.newer_version)}` }) : null);
-      item.addEventListener("click", () => selectHit(i, false));
+      item.addEventListener("click", () => { selectHit(i, false); q.focus({ preventScroll: true }); });
       item.addEventListener("dblclick", () => (hit.chunk_id ? viewHits([hit.n]) : openFile(hit.n)));
       return item;
     }));
