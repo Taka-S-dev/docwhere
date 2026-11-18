@@ -201,7 +201,11 @@ class _HeadingNumberer:
         self._counters = [0] * 9
 
     def label(self, p, level: int) -> str:
-        if not _is_numbered(p):
+        return self.label_for(_is_numbered(p), level)
+
+    def label_for(self, numbered: bool, level: int) -> str:
+        """The prefix of a heading at ``level``: "" unless it is numbered."""
+        if not numbered:
             return ""
         self._counters[level - 1] += 1
         self._counters[level:] = [0] * (9 - level)

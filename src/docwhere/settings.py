@@ -115,6 +115,12 @@ def _locked(lock: Path):
                 fcntl.flock(f, fcntl.LOCK_UN)
 
 
+def read_doc_without_word(db: Path) -> bool:
+    """Whether a .doc is read without Word (off unless turned on with ``docwhere doc-reader
+    fast``, after ``docwhere doc-check`` found it reads the documents of this PC as Word does)."""
+    return load_settings(db).get("doc_reader") == "fast"
+
+
 def count_pictures(db: Path) -> bool:
     """Whether a PDF's pictures are counted when it is read (on unless turned off): the count
     lets a search say that a page holds pictures whose words are not read, and makes reading a

@@ -129,14 +129,14 @@ def test_settings_round_trip_and_bad_entries_change_nothing(api, tmp_path, monke
     saved = api.save_settings({"pdf_program": str(exe), "pdf_args": api.preset(str(exe)), "title": "手順書", "viewer": "window"})
     assert saved == {"title": "手順書", "viewer": "window", "pdf_program": str(exe.resolve()),
                      "pdf_args": "-reuse-instance -page {page} {file}", "copy_caption": True,
-                     "cite_path": "root", "count_pictures": True}
+                     "cite_path": "root", "count_pictures": True, "doc_reader": "word"}
     with pytest.raises(FileNotFoundError):
         api.save_settings({"pdf_program": str(tmp_path / "gone.exe"), "pdf_args": "{file}", "title": "x", "viewer": "browser"})
     assert api.settings() == saved  # nothing was half-saved
 
     api.save_settings({"pdf_program": "", "pdf_args": "", "title": "", "viewer": "browser"})
     assert api.settings() == {"title": "Reference", "viewer": "browser", "pdf_program": "", "pdf_args": "",
-                              "copy_caption": True, "cite_path": "root", "count_pictures": True}
+                              "copy_caption": True, "cite_path": "root", "count_pictures": True, "doc_reader": "word"}
 
 
 def test_args_keep_windows_paths_and_quoted_parts():

@@ -22,6 +22,7 @@ from docwhere.eta import Estimate
 from docwhere.excludes import Matcher, normalize
 from docwhere.extractors import (
     COUNT_PICTURES_ENV,
+    DOC_READER_ENV,
     EXTRACTOR_VERSION,
     OUTPUT_VERSION,
     OUTPUT_VERSION_BY_EXT,
@@ -289,6 +290,12 @@ class Index:
         todo = [t for t in todo if t[3] <= MAX_FILE_BYTES]
         if todo:
             self._check_disk()
+        # the readers are other processes: they learn of the settings through the environment,
+        # which they are started with (and which tells which files go to the Office worker)
+        from docwhere.settings import read_doc_without_word
+
+        os.environ[COUNT_PICTURES_ENV] = "1" if self.counting_pictures() else "0"
+        os.environ[DOC_READER_ENV] = "fast" if read_doc_without_word(self.path) else "word"
         done, reading, saved = 0, [], time.monotonic()
         workers = _pool_size(todo, workers)
         history = {ext: k["seconds"] / k["files"] for ext, k in self.read_times().items() if k["files"]} if todo else {}
@@ -303,8 +310,6 @@ class Index:
             if progress:
                 progress(SyncProgress(done, len(todo), reading, estimate.seconds_left(reading)))
 
-        # the readers are other processes: they learn of the setting through the environment
-        os.environ[COUNT_PICTURES_ENV] = "1" if self.counting_pictures() else "0"
         outcomes = _extract_all(todo, workers, timeout, tick)
         try:
             for key, path, mtime, size, chunks, error, timed_out, seconds, digest, note, drawn in outcomes:

@@ -155,6 +155,20 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("to", choices=["on", "off", "status"], nargs="?", default="status")
     p.set_defaults(func=cmd_pictures)
 
+    p = sub.add_parser("doc-reader", help="how .doc files are read: by Word (the default) or without Word, which is "
+                       "much faster and reads them as Word does; check it first with doc-check")
+    p.add_argument("to", choices=["fast", "word", "status"], nargs="?", default="status")
+    p.set_defaults(func=cmd_doc_reader)
+
+    p = sub.add_parser("doc-check", help="read .doc files both without Word and by Word, and compare: whether "
+                       "doc-reader fast reads this PC's documents as Word does")
+    p.add_argument("folders", type=Path, nargs="*", help="where to take the files from (default: the indexed folders)")
+    p.add_argument("-n", type=int, default=50, help="files to check, spread over all found (default 50; 0: every file)")
+    p.add_argument("--show", action="store_true", help="also print the first line that differs in each file")
+    p.add_argument("--enable", action="store_true", help="when no file read differently, turn on doc-reader fast")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_doc_check)
+
     p = sub.add_parser("reader", help=argparse.SUPPRESS)  # the background reader (started by search)
     p.set_defaults(func=cmd_reader)
 
@@ -705,6 +719,83 @@ def cmd_pictures(args) -> int:
               " again by the next search or index of their folder)")
     else:
         print("pictures: off (pictures are not counted, and a search does not tell of them; reading PDFs is faster)")
+    return 0
+
+
+def cmd_doc_reader(args) -> int:
+    from docwhere.settings import read_doc_without_word, save_settings
+
+    index = Index(args.db)
+    if args.to != "status":
+        save_settings(index.path, doc_reader=args.to)
+    if read_doc_without_word(index.path):
+        print("doc-reader: fast (.doc files are read without Word, as Word reads them; a document this reader"
+              " does not handle the way Word does is still read by Word)")
+    else:
+        print("doc-reader: word (.doc files are converted by Word, one at a time; docwhere doc-check tells whether"
+              " reading them without Word gives the same text here)")
+    return 0
+
+
+def cmd_doc_check(args) -> int:
+    from docwhere import doccheck
+
+    index = Index(args.db)
+    if args.folders:
+        for folder in args.folders:
+            if not folder.is_dir():
+                raise NotADirectoryError(f"not a folder: {folder}")
+        found = doccheck.doc_files([f.resolve() for f in args.folders])
+    else:
+        from docwhere.index import MAX_FILE_BYTES
+
+        found = sorted({Path(r["path"]) for r in index.db.execute("SELECT path FROM files WHERE key LIKE '%.doc'")
+                        if Path(r["path"]).is_file() and doccheck._size(Path(r["path"])) <= MAX_FILE_BYTES})
+    index.close()
+    if not found:
+        print("no .doc files found" + ("" if args.folders else " in the indexed folders; name a folder"), file=sys.stderr)
+        return 1
+    picked = doccheck.sample(found, args.n)
+    print(f"checking {len(picked)} of {len(found)} .doc file(s): each read without Word and by Word", file=sys.stderr)
+    report = doccheck.check(picked, len(found), lambda done, total: print(f"  {done}/{total}", end="\r", file=sys.stderr))
+    print(file=sys.stderr)
+    enabled = False
+    if args.enable and report.same and not report.differ:
+        from docwhere.settings import save_settings
+
+        save_settings(index.path, doc_reader="fast")
+        enabled = True
+    if args.json:
+        out = report.as_dict()
+        if args.show:
+            out["differ"] = report.differ
+        out["enabled"] = enabled
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+        return 0
+    print(f"checked {report.checked} of {report.total} .doc file(s)")
+    print(f"  the same as Word: {report.same}")
+    left = sum(report.to_word.values())
+    print(f"  left to Word by the reader (read by Word as now): {left}"
+          + (" - " + ", ".join(f"{reason} {n}" for reason, n in report.to_word.most_common()) if left else ""))
+    print(f"  read differently from Word: {len(report.differ)}")
+    for d in report.differ:
+        print(f"    {d['path']}: section {d['section'] + 1}")
+        if args.show:
+            print(f"      without Word: {d['fast']!r}\n      by Word:      {d['word']!r}")
+    if report.word_failed:
+        print(f"  Word could not read: {len(report.word_failed)}")
+        for d in report.word_failed:
+            print(f"    {d['path']}: {d['error']}")
+    print(f"time: without Word {report.fast_seconds:.1f}s, by Word {report.word_seconds:.1f}s")
+    if report.differ:
+        print("some files read differently: keep reading .doc by Word (docwhere doc-reader word);"
+              " doc-check --show prints the first line that differs in each"
+              + ("; not turned on" if args.enable else ""))
+    elif enabled:
+        print("no file read differently: .doc files are now read without Word (doc-reader fast)")
+    elif report.same:
+        print("no file read differently: read .doc without Word with: docwhere doc-reader fast"
+              " (or doc-check --enable)")
     return 0
 
 

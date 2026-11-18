@@ -18,8 +18,14 @@ that take most of the time, in plain words: 「時間の大半は .doc（312 件
 です。.doc は Word で変換してから読むためです」. Then what helps, only where it fits:
 - a folder of old versions, backups or archives among the slow files: offer to exclude it
   (`references/exclude.md`)
-- many .doc or .ppt: these go through Office one at a time; say so, there is no switch to
-  make them faster
+- many .doc: by default these go through Word one at a time. `docwhere doc-reader` prints
+  how they are read; when it says `word`, tell the user that .doc files can be read without
+  Word, much faster, and that `docwhere doc-check` first compares both ways on their own
+  files. Offer to run it (it takes about a second a file, Word included). When it reports
+  no file read differently, offer `docwhere doc-reader fast` (`doc-check --enable` checks and
+  turns it on in one step); when some differ, keep Word and say how many. Do not turn it on
+  unasked
+- many .ppt: these go through PowerPoint one at a time; there is no switch to make them faster
 - the reading was already done: a later search reads only new and changed files, so it is
   slow once
 - to see it as a chart, with the slowest files of each folder: `docwhere manage` opens the

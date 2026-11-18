@@ -26,7 +26,7 @@ from docwhere.model import Chunk
 
 # Bump on every extractor change: files that could not be read are tried again, since the
 # change may let them be read.
-EXTRACTOR_VERSION = 15
+EXTRACTOR_VERSION = 16
 # The oldest version whose output is still current. Set it to EXTRACTOR_VERSION when the
 # output changes, so that every file is re-extracted.
 # 11: dashes and the wave dash are folded to one form each (model.norm), in every format
@@ -38,6 +38,8 @@ OUTPUT_VERSION = 12
 # 14: a bookmarked PDF's table rows and wrapped sentences are one line each, its symbol font's
 #     marks are the marks they show, and the page number and chapter tab are left out
 # 15: a PDF's pictures are counted page by page (``pictures``); its text is as in 14
+# 16: a .doc may be read without Word (extractors.msdoc), as Word reads it: a .doc Word could
+#     not read is tried again
 # .docx 13: text in tracked insertions, content controls and text boxes is read
 OUTPUT_VERSION_BY_EXT = {".pdf": 15, ".docx": 13, ".docm": 13}
 
@@ -106,7 +108,10 @@ def supported_extensions() -> frozenset[str]:
 
 def is_serial(path: Path) -> bool:
     _load()
-    return path.suffix.lower() in _SERIAL
+    ext = path.suffix.lower()
+    if ext == ".doc" and reading_doc_without_word():
+        return False  # read alongside the other files; the few it leaves to Word are handed on
+    return ext in _SERIAL
 
 
 _notes: list[str] = []
@@ -129,6 +134,13 @@ _pictures: dict[int, tuple[int, float]] = {}
 
 def counting_pictures() -> bool:
     return os.environ.get(COUNT_PICTURES_ENV) != "0"
+
+
+DOC_READER_ENV = "DOCWHERE_DOC_READER"  # "fast": .doc read without Word (the setting, see Index.extract)
+
+
+def reading_doc_without_word() -> bool:
+    return os.environ.get(DOC_READER_ENV) == "fast"
 
 
 

@@ -1,6 +1,9 @@
 """Legacy binary Office files (.doc .xls .ppt): converted to OOXML by Office itself, then read
 by the regular extractors.
 
+A .doc can be read without Word instead (extractors.msdoc), once that is turned on; it then
+reads alongside the other files, and hands the documents it leaves to Word on to Word's worker.
+
 An .xls is read directly instead (xlrd), with no Office and alongside the other files; only an
 .xls that xlrd cannot read (an HTML or XML table saved under that name) goes through Excel.
 A password-protected .xls is given up at once: Excel would ask for the password and wait.
@@ -25,6 +28,7 @@ from docwhere.extractors import (
     may_start_application,
     on_release,
     process_started,
+    reading_doc_without_word,
     register,
 )
 from docwhere.model import Chunk
@@ -162,6 +166,21 @@ def open_word_document(path: Path):
 
 @register(".doc", serial=True)
 def extract_doc(path: Path) -> list[Chunk]:
+    """Read without Word when that is turned on (``docwhere doc-reader fast``), as Word reads it;
+    a document that reader leaves to Word, and every .doc otherwise, is converted by Word."""
+    if reading_doc_without_word():
+        from docwhere.extractors import msdoc
+
+        try:
+            return msdoc.extract(path)
+        except Exception:  # noqa: BLE001 - whatever that reader does not read as Word would, Word reads
+            if not may_start_application():
+                raise NeedsApplication from None
+    return doc_through_word(path)
+
+
+def doc_through_word(path: Path) -> list[Chunk]:
+    """The .doc saved as .docx by Word, then read by the .docx reader."""
     from docwhere.extractors.word import extract as from_docx
 
     with tempfile.TemporaryDirectory() as tmp:

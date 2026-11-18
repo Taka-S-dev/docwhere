@@ -19,7 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 DEFAULT_SECONDS = 0.3  # a file of a kind never read on this PC
-DEFAULT_CONVERSION = 1.5  # the same for a legacy .doc/.ppt converted through Office
+DEFAULT_CONVERSION = 1.5  # the same for a legacy .doc/.ppt converted through Office (a .doc read without Word is not)
 WINDOW = 30.0  # seconds of the clock the pace is taken over
 MIN_FILES = 3  # files a lane must have finished within the window to have a pace
 MIN_WEIGHT = 0.001  # even a file read in no measurable time counts

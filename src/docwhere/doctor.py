@@ -221,13 +221,18 @@ def office_probe(kind: str) -> tuple[bool | None, str]:
     from docwhere.extractors import extract
     from docwhere.extractors import legacy as legacy_module
 
-    read = legacy_module._xls_through_excel if kind == "excel" else extract
+    # Word and Excel are what is checked, whatever reads the files without them
+    read = {"excel": legacy_module._xls_through_excel, "word": legacy_module.doc_through_word}.get(kind, extract)
 
     started = time.monotonic()
+    own = ""
     try:
         with tempfile.TemporaryDirectory() as tmp:
             legacy = _make_legacy(kind, Path(tmp))
-            text = "\n".join(line for chunk in read(legacy) for line in [chunk.title, *chunk.lines])
+            chunks = read(legacy)
+            text = "\n".join(line for chunk in chunks for line in [chunk.title, *chunk.lines])
+            if kind == "word":
+                own = _without_word(legacy, chunks)
     except pywintypes.com_error as e:
         if e.hresult == -2147221005:  # CO_E_CLASSSTRING: the application is not installed
             if kind == "excel":
@@ -238,7 +243,21 @@ def office_probe(kind: str) -> tuple[bool | None, str]:
         return False, f"{type(e).__name__}: {e}"
     if TOKEN not in text:
         return False, "converted, but the text did not come through"
-    return True, f"converted and read in {time.monotonic() - started:.1f}s"
+    return True, f"converted and read in {time.monotonic() - started:.1f}s{own}"
+
+
+def _without_word(path: Path, by_word: list) -> str:
+    """What reading the probe without Word gives (docwhere doc-reader fast), said after Word's result."""
+    from docwhere.extractors import msdoc
+
+    try:
+        own = msdoc.extract(path)
+    except msdoc.Unsupported as e:
+        return f"; without Word: left to Word ({e})"
+    except Exception as e:  # noqa: BLE001
+        return f"; without Word: failed ({type(e).__name__}: {e})"
+    same = [(c.title, c.lines) for c in own] == [(c.title, c.lines) for c in by_word]
+    return "; read without Word too, the same" if same else "; read without Word, NOT the same as Word"
 
 
 def _make_legacy(kind: str, folder: Path) -> Path:

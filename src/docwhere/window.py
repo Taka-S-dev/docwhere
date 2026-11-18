@@ -37,6 +37,7 @@ from docwhere.settings import (
     cite_mode,
     cite_name,
     count_pictures,
+    read_doc_without_word,
     load_settings,
     private,
     save_settings,
@@ -254,6 +255,7 @@ def settings_values(db: Path) -> dict:
         "copy_caption": copy_caption(db),
         "cite_path": cite_mode(db),
         "count_pictures": count_pictures(db),
+        "doc_reader": "fast" if read_doc_without_word(db) else "word",
     }
 
 
@@ -268,6 +270,8 @@ def save_settings_values(db: Path, values: dict) -> None:
     save_copy_options(db, values)  # a dialog of an older page has none of them: none is changed
     if "count_pictures" in values:
         save_settings(db, count_pictures=bool(values["count_pictures"]))
+    if values.get("doc_reader") in ("fast", "word"):
+        save_settings(db, doc_reader=values["doc_reader"])
 
 
 def try_pdf_app(pdf: str, page: int, program: str, args: str) -> str:

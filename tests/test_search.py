@@ -191,8 +191,10 @@ def test_a_partly_scanned_pdf_is_listed_and_old_reads_are_redone(docs, index):
     assert path.endswith("mixed.pdf") and "(p.2)" in note
     assert next(r for r in index.roots() if r["path"] == str(docs))["partly"] == 1
     assert index.sync(docs).updated == 0
-    # PDFs read before pages without text were noted are read again; other formats are not
-    index.db.execute("UPDATE files SET version = version - 1")
+    # PDFs read before the last change to how PDFs are read are read again; other formats are not
+    from docwhere.extractors import OUTPUT_VERSION_BY_EXT
+
+    index.db.execute("UPDATE files SET version = ?", (OUTPUT_VERSION_BY_EXT[".pdf"] - 1,))
     assert [Path(t[1]).suffix for t in index.scan(docs).todo] == [".pdf", ".pdf"]
 
 

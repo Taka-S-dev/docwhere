@@ -399,6 +399,9 @@ searching, showing a page, errors).
   not counted. The user can turn the count off (`docwhere pictures off`, or the settings of
   the index window) to read PDFs faster: then no hit has `pictures`, which says nothing about
   the page. `docwhere pictures` prints whether it is on.
+- A .doc is converted by Word one at a time, unless the user turned on reading it without
+  Word (`docwhere doc-reader fast`), which gives the same text. When reading is slow, see
+  `references/troubleshooting.md`.
 - Word has no page numbers in the file; the section heading is the location. Auto-numbered
   headings get a best-effort `3.2.1` prefix that may not match custom numbering like 第3章.
 - PDFs without bookmarks get headings guessed from font size and boldness; in unusually
