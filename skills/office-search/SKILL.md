@@ -158,6 +158,10 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
      (`旧資料\仕様書_v1.4.pdf` → `仕様書\仕様書_v2.3.docx`). Such hits are ranked lower; treat
      their content as possibly outdated and check the newer file, which is a guess from the
      names, not a certainty.
+   - `pictures` — set on a PDF hit whose page holds pictures large enough for a table or a
+     screen (`{"count": 2, "page_share": 0.45}`: how many, and the share of the page they
+     cover). What is written inside a picture is not read, so no search finds it and the
+     snippet cannot show it. See "Pictures" below for when to look at one.
    - `printed_page` — set on a PDF hit when the page prints another number than its index in
      `location` (front matter shifts it): `location` `p.42` with `printed_page` 40 is the
      page the manual itself calls 40, and its "40ページ参照" means that page. Cite both,
@@ -199,6 +203,49 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    wording before concluding the information is absent. When there are no hits at all, the
    JSON's `suggest` lists the parts of your terms that are in the documents (`何個まで登録できる`
    is in none as written; its part `登録できる` is in many sections): search again with those.
+
+   **Pictures.** A table or a screen pasted into a PDF as a picture is not text: its words are
+   in no snippet and no `show`. Most pictures are screens that only illustrate the text beside
+   them, so do not mention `pictures` and do not look at them as a habit. Look at the page
+   only when all of these hold:
+   - the text of the hits does not answer the question;
+   - a hit's section is the right place (its heading or text is about what was asked) and has
+     `pictures`;
+   - the section's text leaves out what was asked for, and that is something a table or a
+     screen holds: what to do about one code or number, a setting's value, the items of a
+     list. The text may say so (`下表に示します`, `次の画面`, a heading such as
+     `品番一覧` followed by little text) or only take it for granted
+     (`通知の番号を控えてから対応します`, with no number anywhere in the text). A picture that
+     covers much of the page (`page_share`) makes it likelier, a small one does not rule it out.
+
+   A `page_share` of half the page or more on the right section is enough by itself: go
+   straight to the page. Otherwise `docwhere show --id ID` tells what the text leaves out,
+   since a snippet is one line.
+
+   Then run `docwhere snap --id ID` and read the PNG it prints, without asking first; ask first
+   only when more than five pages would have to be looked at. Leave `--term` out: the words
+   asked for are not text on that page, so there is nothing to mark. Looking at a page is not
+   reading a section: it does not count against quick mode's one section. An answer read off
+   the page is settled; it does not call for thorough mode because the hit matched in body
+   text only.
+   When the picture is a table whose header row is not in it, say that the columns' meaning
+   is judged from their content; when the table plainly starts on the page before,
+   `docwhere snap --id ID -P 1` saves the neighbouring pages as well.
+
+   Say in the answer that the value was read from a picture on that page
+   (`p.48 の表の画像から読み取り`) and cite the page, in the chat as any other source. Only
+   when the user asks to be shown the source (step 7) does a view page come into it: there a
+   `--quote` cannot match words that are not text, so point at the picture with `--figure`.
+   The words of a picture are also why a later search will miss this place again: that is a
+   place "its wording would not lead to", so offer the note of step 6.
+   If you cannot read image files, tell the user that the page holds a picture that may hold
+   the answer and open it for them with `docwhere view`.
+
+   When there are no hits at all, `pictures_unread` gives the number of such pictures in the
+   files searched and the files with the most. It does not say the answer is in one. Search
+   again with a heading-like wording (`エラーコード`, `一覧`) to reach the section, then judge by
+   that hit's `pictures`. When the answer stays not found, say that words inside pictures are
+   not searched, with the count, instead of saying the documents do not mention it.
 
    **Reading on.** When none of the hits answers and `matched` says more sections matched than
    were listed, read past them before searching otherwise:
@@ -347,6 +394,11 @@ searching, showing a page, errors).
 
 - Scanned PDFs are not OCR'd; they appear in `unreadable`, and a PDF with only some pages
   scanned appears in `partly_unreadable`.
+- Words inside a picture (a table or a screen pasted into a PDF) are not read. A hit says how
+  many pictures its page holds (`pictures`); pictures in Word, Excel and PowerPoint files are
+  not counted. The user can turn the count off (`docwhere pictures off`, or the settings of
+  the index window) to read PDFs faster: then no hit has `pictures`, which says nothing about
+  the page. `docwhere pictures` prints whether it is on.
 - Word has no page numbers in the file; the section heading is the location. Auto-numbered
   headings get a best-effort `3.2.1` prefix that may not match custom numbering like 第3章.
 - PDFs without bookmarks get headings guessed from font size and boldness; in unusually

@@ -17,6 +17,7 @@ pooled worker; the file is then read again in the application's worker.
 from __future__ import annotations
 
 import importlib
+import os
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -25,7 +26,7 @@ from docwhere.model import Chunk
 
 # Bump on every extractor change: files that could not be read are tried again, since the
 # change may let them be read.
-EXTRACTOR_VERSION = 14
+EXTRACTOR_VERSION = 15
 # The oldest version whose output is still current. Set it to EXTRACTOR_VERSION when the
 # output changes, so that every file is re-extracted.
 # 11: dashes and the wave dash are folded to one form each (model.norm), in every format
@@ -36,8 +37,9 @@ OUTPUT_VERSION = 12
 # 10: a bookmarked PDF's running headers and footers are left out of each page's text
 # 14: a bookmarked PDF's table rows and wrapped sentences are one line each, its symbol font's
 #     marks are the marks they show, and the page number and chapter tab are left out
+# 15: a PDF's pictures are counted page by page (``pictures``); its text is as in 14
 # .docx 13: text in tracked insertions, content controls and text boxes is read
-OUTPUT_VERSION_BY_EXT = {".pdf": 14, ".docx": 13, ".docm": 13}
+OUTPUT_VERSION_BY_EXT = {".pdf": 15, ".docx": 13, ".docm": 13}
 
 # Office Open XML files are zip archives that the parsers inflate in memory. A small file can
 # declare gigabytes of content, so the declared total is checked before any parser touches it.
@@ -121,9 +123,27 @@ def notes() -> list[str]:
     return list(_notes)
 
 
+COUNT_PICTURES_ENV = "DOCWHERE_COUNT_PICTURES"  # "0": pictures are not counted (the setting, see Index.extract)
+_pictures: dict[int, tuple[int, float]] = {}
+
+
+def counting_pictures() -> bool:
+    return os.environ.get(COUNT_PICTURES_ENV) != "0"
+
+
+
+def pictures(found: dict[int, tuple[int, float]] | None = None) -> dict[int, tuple[int, float]]:
+    """The pictures of the file being read whose text no search reaches: page -> (how many, the
+    share of the page they cover). Told by a reader with ``found``; asked without."""
+    if found is not None:
+        _pictures.update(found)
+    return dict(_pictures)
+
+
 def extract(path: Path) -> list[Chunk]:
     _load()
     _notes.clear()
+    _pictures.clear()
     if path.suffix.lower() in _ZIP_BASED:
         _check_unzipped_size(path)
     return _REGISTRY[path.suffix.lower()](path)

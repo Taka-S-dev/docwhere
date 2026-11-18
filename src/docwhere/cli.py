@@ -1,4 +1,4 @@
-"""Command line: search, show, open, view, snap, viewer, clean, index, exclude, forget, status, wiki."""
+"""Command line: search, show, open, view, snap, viewer, pictures, clean, index, exclude, forget, status, wiki."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ HINT = "docwhere show --id ID prints the whole section; docwhere open N opens th
 STALE_DAYS = 90  # status flags folders not searched for this long
 MAX_UNREADABLE_LISTED = 20
 MAX_CHANGED_LISTED = 10
+MAX_PICTURE_FILES = 5  # files named when nothing was found and pictures may hold the words
 # A search waits this long for new or changed files to be read, then answers from what is read
 # and leaves the rest to the background reader, saying how much it has not seen yet.
 WAIT = 20
@@ -148,6 +149,11 @@ def _parser() -> argparse.ArgumentParser:
                    "pdf: the program and its arguments, {page} and {file} filled in "
                    r'(e.g. "D:\Tools\SumatraPDF.exe" -reuse-instance -page {page} {file}), or auto')
     p.set_defaults(func=cmd_viewer)
+
+    p = sub.add_parser("pictures", help="whether a PDF's pictures are counted when it is read, so that a search "
+                       "can say a page holds pictures whose words are not read (on, the default, or off)")
+    p.add_argument("to", choices=["on", "off", "status"], nargs="?", default="status")
+    p.set_defaults(func=cmd_pictures)
 
     p = sub.add_parser("reader", help=argparse.SUPPRESS)  # the background reader (started by search)
     p.set_defaults(func=cmd_reader)
@@ -310,8 +316,17 @@ def cmd_search(args) -> int:
                       must=args.must, groups=groups)
     # nothing found: the parts of the terms that are in the documents, to search again with
     suggest = [] if hits or args.regex or args.name else suggest_parts(index, roots, [*args.terms, *args.must], exts)
+    drawn: dict[str, dict] = {}
     for h in hits:
         h.printed_page = _printed_page(index, h.path, h.anchor)
+        if "page" in h.anchor:
+            if h.path not in drawn:
+                drawn[h.path] = index.pictures(h.path)
+            if seen := drawn[h.path].get(h.anchor["page"]):
+                h.pictures = {"count": seen[0], "page_share": seen[1]}
+    # nothing found: the words may be inside pictures, which are not read
+    unread = [] if hits or args.name else [
+        (p, n, pages) for p, n, pages in index.pictures_in(roots) if not exts or Path(p).suffix.lower().lstrip(".") in {e.lower().lstrip(".") for e in exts}]
     _write_whole(_last_path(index), json.dumps(
         {"terms": [*args.terms, *args.must, *also], "hits": [h.to_dict() for h in hits], "reading": reading}, ensure_ascii=False))
 
@@ -337,6 +352,12 @@ def cmd_search(args) -> int:
             "also_searched": also,
             # when nothing was found: parts of the terms that are in the documents
             "suggest": suggest,
+            # when nothing was found: pictures in the files searched, whose words are not read
+            "pictures_unread": {
+                "pictures": sum(n for _, n, _ in unread),
+                "pages": sum(pages for _, _, pages in unread),
+                "files": [{"path": p, "pictures": n, "pages": pages} for p, n, pages in unread[:MAX_PICTURE_FILES]],
+            } if unread else None,
             # terms matching so many sections that only the likeliest were ranked: a better
             # section may have been passed over, so narrow the search before concluding
             "capped": capped,
@@ -386,6 +407,9 @@ def cmd_search(args) -> int:
         if suggest:
             parts = ", ".join(f"{s['part']} ({s['sections']})" for s in suggest)
             print(f"not found as written; these parts of it are in the documents: {parts}", file=sys.stderr)
+        if unread:
+            print(f"words inside pictures are not read: the files searched hold {sum(n for _, n, _ in unread)} picture(s)"
+                  f" on {sum(pages for _, _, pages in unread)} page(s)", file=sys.stderr)
     for h in hits:
         heading = h.crumb or (h.title if h.title != Path(h.path).name else "")  # a --name hit is the file itself
         where = (page_label(h.anchor["page"], h.printed_page) if h.printed_page else h.location) + (
@@ -667,6 +691,20 @@ def cmd_snap(args) -> int:
         out.write_bytes(data)
         print(out)
     prune(folder, "*.png", **SNAP_RETENTION)
+    return 0
+
+
+def cmd_pictures(args) -> int:
+    from docwhere.settings import count_pictures, save_settings
+
+    index = Index(args.db)
+    if args.to != "status":
+        save_settings(index.path, count_pictures=args.to == "on")
+    if count_pictures(index.path):
+        print("pictures: on (a PDF's pictures are counted when it is read; PDFs read while this was off are read"
+              " again by the next search or index of their folder)")
+    else:
+        print("pictures: off (pictures are not counted, and a search does not tell of them; reading PDFs is faster)")
     return 0
 
 

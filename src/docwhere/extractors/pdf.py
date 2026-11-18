@@ -8,6 +8,9 @@ chunk is a detected section that may span pages, each line anchored to its own p
 A page's lines are put back the way they read (see _page_lines): the cells of a table row
 become one line, a sentence wrapped over several lines becomes one line, and a mark drawn with
 a symbol font's private character (the ○ and ― of a support table) becomes the mark it shows.
+
+What is written inside a picture is not read. The pictures large enough to hold a table or a
+screen are counted page by page (see _pictures), so that a search can say they are there.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from docwhere.extractors import note, register
+from docwhere.extractors import counting_pictures, note, pictures, register
 from docwhere.model import Chunk, SectionBuilder, norm
 
 HEADING_SIZE_RATIO = 1.15  # this much larger than body text counts as a heading
@@ -46,6 +49,10 @@ _SYMBOL = {0xAE: "→", 0xAC: "←", 0xAD: "↑", 0xAF: "↓", 0xB4: "×", 0xB7:
 _WINGDINGS = {0xFC: "✓", 0xFB: "✗", 0xFE: "☑", 0xFD: "☒", 0x6C: "●", 0x6E: "■", 0x6F: "□", 0xA1: "○", 0xA8: "□",
               0xA7: "▪", 0x9F: "•", 0xE0: "→", 0xDF: "←", 0xE1: "↑", 0xE2: "↓", 0xE8: "→", 0xF0: "⇒", 0x46: "☞",
               0xD8: "➢", 0x75: "◆", 0x76: "❖", 0xA4: "◉"}
+PICTURE_MIN_WIDTH, PICTURE_MIN_HEIGHT = 120.0, 40.0  # points; smaller is an icon, a button or a rule
+PICTURE_TEXT_CHARS = 50  # with this much text over it, the picture's words are in the text already
+PICTURE_REPEAT_PAGES, PICTURE_REPEAT_SHARE = 10, 0.2  # the same picture at the same place on this
+#                                                       many pages, and this share of them: a letterhead
 GLYPH_PIXELS = 48  # a private-use glyph is drawn about this large to see what mark it is
 _SENTENCE_STOP = tuple("。．.!?！？:：」）)】』")
 _ITEM_START = re.compile(r"[•・●○■□◆◇※＊*\-–—〔]|[(（]?[0-9０-９]{1,2}[)）.．]|[①-⑳]")
@@ -71,12 +78,50 @@ def extract(path: Path) -> list[Chunk]:
         # pages scanned into a PDF that has text elsewhere: nothing on them can be found, and
         # nothing else says so (a blank page has no picture either, and is not counted)
         scanned = [no for no in textless if doc[no - 1].get_images()]
+        if counting_pictures():
+            pictures(_pictures(doc))
         if scanned:
             shown = ", ".join(f"p.{no}" for no in scanned[:MAX_PAGES_NAMED])
             more = f" and {len(scanned) - MAX_PAGES_NAMED} more" if len(scanned) > MAX_PAGES_NAMED else ""
             note(f"{len(scanned)} of {doc.page_count} pages are pictures without text and cannot be searched"
                  f" ({shown}{more}); OCR the file to search them")
     return chunks
+
+
+def _pictures(doc) -> dict[int, tuple[int, float]]:
+    """page -> (pictures, share of the page they cover), for the pictures that may hold words no
+    search reaches: large enough for a table or a screen, not the same picture at the same place
+    page after page (a letterhead, a chapter banner), and without text of the page's own over it
+    (a scan that was given a text layer is searched through that layer)."""
+    import pymupdf
+
+    placed: dict[int, list[tuple]] = {}
+    pages_with: Counter[tuple] = Counter()
+    for page in doc:
+        # Asked first, since placing the pictures reads the page a second time and most pages have
+        # none. A picture written into the page's own drawing (an inline image, meant for a small
+        # one) is not in this list and is not counted.
+        if not page.get_images(full=True):
+            continue
+        here = []
+        for info in page.get_image_info():
+            rect = pymupdf.Rect(info["bbox"]) & page.rect
+            if rect.width < PICTURE_MIN_WIDTH or rect.height < PICTURE_MIN_HEIGHT:
+                continue
+            here.append((rect, (round(rect.x0), round(rect.y0), round(rect.x1), round(rect.y1), info["width"], info["height"])))
+        if here:
+            placed[page.number + 1] = here
+            pages_with.update({same for _, same in here})
+    often = max(PICTURE_REPEAT_PAGES, doc.page_count * PICTURE_REPEAT_SHARE)
+    found = {}
+    for no, here in placed.items():
+        page = doc[no - 1]
+        kept = [rect for rect, same in here if pages_with[same] < often
+                and len("".join(page.get_text("text", clip=rect, flags=_text_only()).split())) < PICTURE_TEXT_CHARS]
+        if kept:
+            area = sum(rect.width * rect.height for rect in kept) / max(page.rect.width * page.rect.height, 1.0)
+            found[no] = (len(kept), round(min(area, 1.0), 2))
+    return found
 
 
 def _by_bookmarks(doc, toc: list[tuple[int, str, int]], textless: list[int], glyphs: "_Glyphs") -> list[Chunk]:

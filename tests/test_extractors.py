@@ -372,3 +372,38 @@ def test_word_text_under_review_in_a_form_field_and_in_a_text_box_is_read(tmp_pa
     assert "承認者: 山田" in lines
     assert "再送回数は最大5回とする。" in lines  # the insertion and the field, not the deleted text
     assert lines.count("〔テキストボックス〕 注意: 電源を切らない") == 1 and "図の説明" in lines
+
+
+def _manual_with_pictures(path, pages=12):
+    """A manual: a letterhead on every page, a screen pasted into page 3, an icon on page 4, and
+    page 5 a scan that was given a text layer."""
+    import pymupdf
+
+    def picture(shade):
+        pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 8, 8))
+        pix.clear_with(shade)
+        return pix
+
+    doc = pymupdf.open()
+    for no in range(1, pages + 1):
+        page = doc.new_page()
+        page.insert_image(pymupdf.Rect(50, 20, 250, 70), pixmap=picture(120))  # the letterhead
+        page.insert_text((72, 120), f"Section {no} is explained in the table below")
+    doc[2].insert_image(pymupdf.Rect(72, 200, 372, 500), pixmap=picture(200))
+    doc[3].insert_image(pymupdf.Rect(72, 200, 102, 230), pixmap=picture(200))
+    doc[4].insert_image(pymupdf.Rect(72, 200, 372, 500), pixmap=picture(240))
+    for row in range(6):
+        doc[4].insert_text((80, 230 + row * 30), "E2041 the unit did not answer in time")
+    doc.save(path)
+
+
+def test_the_pictures_whose_words_are_not_read_are_counted_page_by_page(tmp_path):
+    from docwhere.extractors import pictures
+
+    path = tmp_path / "manual.pdf"
+    _manual_with_pictures(path)
+    extract(path)
+    # not the letterhead (every page), not the icon (small), not the scan (its words are text)
+    assert pictures() == {3: (1, 0.18)}
+    extract(_plain(tmp_path))
+    assert pictures() == {}  # what was counted in one file is not carried to the next

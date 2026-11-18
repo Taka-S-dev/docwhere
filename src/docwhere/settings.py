@@ -115,6 +115,13 @@ def _locked(lock: Path):
                 fcntl.flock(f, fcntl.LOCK_UN)
 
 
+def count_pictures(db: Path) -> bool:
+    """Whether a PDF's pictures are counted when it is read (on unless turned off): the count
+    lets a search say that a page holds pictures whose words are not read, and makes reading a
+    PDF with many of them take about half as long again."""
+    return load_settings(db).get("count_pictures") is not False
+
+
 # How much of a file's place a source names, as set in the settings dialog: the file's name,
 # its path from the indexed folder it lies in (folders often name the document, and the
 # indexed folder is where the user chose to start), or the whole path.

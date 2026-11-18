@@ -76,6 +76,10 @@ class Hit:
     # the number printed on the hit's PDF page when it differs from the page index in
     # ``location`` (front matter shifts it); set by the command line, which cites pages
     printed_page: int | None = None
+    # {"count", "page_share"}: pictures on the hit's PDF page whose words are not read, and the
+    # share of the page they cover; set by the command line. What the question asks for may be
+    # written in one of them, where no search finds it.
+    pictures: dict | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)

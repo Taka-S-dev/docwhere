@@ -377,3 +377,86 @@ def test_open_takes_a_section_id(docs, tmp_path, capsys, monkeypatch):
     assert main(["open", "--id", str(hit["id"]), "--term", "config"]) == 0
     assert opened == [(hit["path"], int(hit["location"][2:]))]
     assert main(["open"]) == 2
+
+
+def test_a_hit_says_that_its_page_holds_pictures_and_a_miss_that_the_files_do(tmp_path, capsys, monkeypatch):
+    from test_extractors import _manual_with_pictures
+
+    folder = tmp_path / "books"
+    folder.mkdir()
+    _manual_with_pictures(folder / "manual.pdf")
+    monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "index" / "index.db"))
+
+    def hit(term):
+        assert main(["search", term, "--in", str(folder), "--json"]) == 0
+        return json.loads(capsys.readouterr().out)["hits"][0]
+
+    assert (hit("Section 3 is")["location"], hit("Section 3 is")["pictures"]) == ("p.3", {"count": 1, "page_share": 0.18})
+    assert (hit("Section 6 is")["location"], hit("Section 6 is")["pictures"]) == ("p.6", None)
+
+    # a third of a manual's pages hold a screen: the list a person reads does not say so on each
+    assert main(["search", "Section 3 is", "--in", str(folder)]) == 0
+    assert "picture" not in capsys.readouterr().out
+
+    # nothing found: the words may be in a picture, and the answer says where pictures are
+    assert main(["search", "watchdog", "--in", str(folder), "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["hits"] == []
+    assert out["pictures_unread"] == {
+        "pictures": 1, "pages": 1, "files": [{"path": str(folder / "manual.pdf"), "pictures": 1, "pages": 1}]}
+    assert main(["search", "watchdog", "--in", str(folder)]) == 0
+    assert "the files searched hold 1 picture(s) on 1 page(s)" in capsys.readouterr().err
+
+
+def test_counting_pictures_can_be_turned_off_and_on_again(tmp_path, capsys, monkeypatch):
+    from test_extractors import _manual_with_pictures
+
+    from docwhere.index import Index
+
+    folder = tmp_path / "books"
+    folder.mkdir()
+    _manual_with_pictures(folder / "manual.pdf")
+    db = tmp_path / "index" / "index.db"
+    monkeypatch.setenv("DOCWHERE_DB", str(db))
+    monkeypatch.delenv("DOCWHERE_COUNT_PICTURES", raising=False)
+
+    def searched(term):
+        assert main(["search", term, "--in", str(folder), "--json"]) == 0
+        return json.loads(capsys.readouterr().out)
+
+    assert main(["pictures", "off"]) == 0
+    assert "pictures: off" in capsys.readouterr().out
+    out = searched("Section 3 is")
+    assert out["index"]["updated"] == 1 and out["hits"][0]["pictures"] is None
+    assert searched("watchdog")["pictures_unread"] is None
+    assert Index(db).db.execute("SELECT pictures FROM files").fetchone()[0] is None  # not counted, not "none"
+
+    # turned on: the PDF already in the index is read again, though the file did not change
+    assert main(["pictures", "on"]) == 0
+    capsys.readouterr()
+    out = searched("Section 3 is")
+    assert out["index"]["updated"] == 1 and out["hits"][0]["pictures"] == {"count": 1, "page_share": 0.18}
+    assert searched("Section 3 is")["index"]["updated"] == 0  # and only once
+
+    # turned off: nothing is read again, and the count that was made is no longer told
+    assert main(["pictures", "off"]) == 0
+    capsys.readouterr()
+    out = searched("Section 3 is")
+    assert out["index"]["updated"] == 0 and out["hits"][0]["pictures"] is None
+    assert main(["pictures"]) == 0
+    assert "pictures: off" in capsys.readouterr().out
+
+
+def test_a_pdf_without_pictures_is_not_read_again_for_the_count(tmp_path, capsys, monkeypatch):
+    import pymupdf
+
+    folder = tmp_path / "books"
+    folder.mkdir()
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "Only words on this page")
+    doc.save(folder / "plain.pdf")
+    monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "index" / "index.db"))
+    monkeypatch.delenv("DOCWHERE_COUNT_PICTURES", raising=False)
+    for updated in (1, 0):  # counted and found to have none: that is known, and it is current
+        assert main(["search", "Only words", "--in", str(folder), "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["index"]["updated"] == updated

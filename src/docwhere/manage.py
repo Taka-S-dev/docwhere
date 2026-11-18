@@ -1184,6 +1184,8 @@ BODY = """<div class="wrap" id="app">
     <label class="choice"><input type="radio" name="cite" value="root"> インデックスのフォルダから（例: 資料&#92;第2版&#92;仕様書.pdf）</label>
     <label class="choice"><input type="radio" name="cite" value="full"> フルパス（PC の中の場所がそのまま写ります）</label>
   </fieldset>
+  <label class="check"><input type="checkbox" name="pictures"> PDF の中の画像を数える（表や画面が画像になっているページを、検索の結果で知らせます）</label>
+  <p class="hint">画像の中の文字は読みません。数えると、画像の多い PDF の読み込みが 4 割ほど長くなります。切り替えた後の読み込みから変わります。</p>
   <fieldset>
     <legend>回答ページの開き方</legend>
     <label class="choice"><input type="radio" name="viewer" value="window"> 専用のウィンドウ</label>
@@ -1758,6 +1760,7 @@ MANAGE_JS = r"""(() => {
     field("args").value = current.pdf_args;
     field("title").value = current.title;
     field("caption").checked = current.copy_caption !== false;
+    field("pictures").checked = current.count_pictures !== false;
     $(`input[name=cite][value=${CITE_MODES.includes(current.cite_path) ? current.cite_path : "root"}]`, settingsForm).checked = true;
     $(`input[name=viewer][value=${current.viewer === "browser" ? "browser" : "window"}]`, settingsForm).checked = true;
     pdfMode(current.pdf_program ? "custom" : "auto");
@@ -1793,6 +1796,7 @@ MANAGE_JS = r"""(() => {
       viewer: $("input[name=viewer]:checked", settingsForm).value,
       copy_caption: field("caption").checked,
       cite_path: $("input[name=cite]:checked", settingsForm).value,
+      count_pictures: field("pictures").checked,
     }).then((saved) => { citeMode = saved.cite_path; settingsBox.close(); toast("設定を保存しました"); }).catch(showSettingsError);
   });
 

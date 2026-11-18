@@ -21,13 +21,16 @@ from docwhere import workers as worker_pool
 from docwhere.eta import Estimate
 from docwhere.excludes import Matcher, normalize
 from docwhere.extractors import (
+    COUNT_PICTURES_ENV,
     EXTRACTOR_VERSION,
     OUTPUT_VERSION,
     OUTPUT_VERSION_BY_EXT,
     NeedsApplication,
+    counting_pictures,
     extract,
     is_serial,
     notes,
+    pictures,
     supported_extensions,
 )
 from docwhere.model import Chunk
@@ -182,6 +185,9 @@ class Index:
             db.execute("ALTER TABLE files ADD COLUMN sha256 TEXT")  # of the content that was read
         if "note" not in {r["name"] for r in db.execute("PRAGMA table_info(files)")}:
             db.execute("ALTER TABLE files ADD COLUMN note TEXT")  # read, but part of it could not be
+        if "pictures" not in {r["name"] for r in db.execute("PRAGMA table_info(files)")}:
+            # pictures whose words are not read, as JSON: {page: [how many, share of the page]}
+            db.execute("ALTER TABLE files ADD COLUMN pictures TEXT")
         if "family" not in {r["name"] for r in db.execute("PRAGMA table_info(files)")}:
             # the name versions of one document share (versions.family): a search looks up the
             # versions of the files it found, not every file of the folders searched
@@ -236,17 +242,18 @@ class Index:
         else:
             on_disk = {path_key(p): (p, st.st_mtime_ns, st.st_size) for p, st in _walk(root, matcher, hits, stats.unlisted)}
         stats.left_out = {(self._root_path(k), p): hits.get((k, p), 0) for k, p in matcher.sources()}
-        known = {r["key"]: r for r in self._files_under(root_key, "id, key, mtime_ns, size, version, error, sha256")}
+        known = {r["key"]: r for r in self._files_under(root_key, "id, key, mtime_ns, size, version, error, sha256, pictures")}
         stats.files = len(on_disk)
+        counting = self.counting_pictures()
 
         # A folder that could not be listed (no permission, a share that dropped) says nothing
         # about its files: they stay in the index, rather than be dropped now and read again later.
         unseen = tuple(prefix_of(path_key(folder)) for folder in stats.unlisted)
         gone = [r["id"] for k, r in known.items() if k not in on_disk and not k.startswith(unseen)]
         todo = [
-            (k, p, mtime, size, _comparable_hash(known.get(k), size))
+            (k, p, mtime, size, _comparable_hash(known.get(k), size, counting))
             for k, (p, mtime, size) in on_disk.items()
-            if not _current(known.get(k), mtime, size)
+            if not _current(known.get(k), mtime, size, counting)
         ]
         changed = [t for t in todo if t[0] in known and (known[t[0]]["mtime_ns"], known[t[0]]["size"]) != (t[2], t[3])]
         stats.removed = len(gone)
@@ -296,15 +303,17 @@ class Index:
             if progress:
                 progress(SyncProgress(done, len(todo), reading, estimate.seconds_left(reading)))
 
+        # the readers are other processes: they learn of the setting through the environment
+        os.environ[COUNT_PICTURES_ENV] = "1" if self.counting_pictures() else "0"
         outcomes = _extract_all(todo, workers, timeout, tick)
         try:
-            for key, path, mtime, size, chunks, error, timed_out, seconds, digest, note in outcomes:
+            for key, path, mtime, size, chunks, error, timed_out, seconds, digest, note, drawn in outcomes:
                 estimate.done(path, seconds)
                 if chunks is None:  # the same content as before: keep what was read
                     self._touch(key, path, mtime, seconds)
                     stats.unchanged += 1
                 else:
-                    self._store(key, path, mtime, size, chunks, error, seconds, digest, note)
+                    self._store(key, path, mtime, size, chunks, error, seconds, digest, note, drawn)
                 done += 1
                 stats.updated += 1
                 stats.failed += error is not None
@@ -342,10 +351,12 @@ class Index:
             rows = {
                 r["key"]: r
                 for r in self.db.execute(
-                    f"SELECT key, mtime_ns, size, version, error FROM files WHERE key IN ({marks})", [t[0] for t in batch]
+                    f"SELECT key, mtime_ns, size, version, error, pictures FROM files WHERE key IN ({marks})",
+                    [t[0] for t in batch]
                 )
             }
-            left += [t for t in batch if not _current(rows.get(t[0]), t[2], t[3])]
+            counting = self.counting_pictures()
+            left += [t for t in batch if not _current(rows.get(t[0]), t[2], t[3], counting)]
         return left
 
     def forget(self, root: Path, keep_excludes: bool = False) -> dict:
@@ -507,6 +518,7 @@ class Index:
         seconds: float = 0.0,
         digest: str | None = None,
         note: str | None = None,
+        pictures: str | None = None,
     ) -> None:
         row = self.db.execute("SELECT id FROM files WHERE key = ?", (key,)).fetchone()
         read_ms = round(seconds * 1000)
@@ -515,14 +527,16 @@ class Index:
             self.db.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))
             self.db.execute(
                 "UPDATE files SET path = ?, mtime_ns = ?, size = ?, version = ?, error = ?, read_ms = ?, sha256 = ?,"
-                " note = ?, family = ? WHERE id = ?",
-                (str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, digest, note, family(str(path))[0], file_id),
+                " note = ?, pictures = ?, family = ? WHERE id = ?",
+                (str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, digest, note, pictures,
+                 family(str(path))[0], file_id),
             )
         else:
             file_id = self.db.execute(
-                "INSERT INTO files(key, path, mtime_ns, size, version, error, read_ms, sha256, note, family)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (key, str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, digest, note, family(str(path))[0]),
+                "INSERT INTO files(key, path, mtime_ns, size, version, error, read_ms, sha256, note, pictures, family)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (key, str(path), mtime, size, EXTRACTOR_VERSION, error, read_ms, digest, note, pictures,
+                 family(str(path))[0]),
             ).lastrowid
         self.db.executemany(
             "INSERT INTO chunks(file_id, title, crumb, body, anchors) VALUES (?, ?, ?, ?, ?)",
@@ -637,14 +651,16 @@ class Index:
             on_disk = {}
         else:
             on_disk = {path_key(p): (st.st_mtime_ns, st.st_size) for p, st in _walk(root, matcher, {})}
-        known = {r["key"]: r for r in self._files_under(root_key, "key, mtime_ns, size, version, error")}
+        known = {r["key"]: r for r in self._files_under(root_key, "key, mtime_ns, size, version, error, pictures")}
+        counting = self.counting_pictures()
+
         def counts(within: str) -> dict:
             disk = [k for k in on_disk if k.startswith(within)]
             return {
                 "exists": True,
                 "files": len(disk),
                 "new": sum(k not in known for k in disk),
-                "changed": sum(k in known and not _current(known[k], *on_disk[k]) for k in disk),
+                "changed": sum(k in known and not _current(known[k], *on_disk[k], counting) for k in disk),
                 "gone": sum(k not in on_disk for k in known if k.startswith(within)),
             }
 
@@ -696,6 +712,32 @@ class Index:
             rows += self._files_under(path_key(Path(root).resolve()), "path, mtime_ns")
         return rows
 
+    def counting_pictures(self) -> bool:
+        """The setting: whether a PDF's pictures are counted when it is read, and told of by a
+        search (settings.count_pictures)."""
+        from docwhere.settings import count_pictures
+
+        return count_pictures(self.path)
+
+    def pictures(self, path: str) -> dict[int, tuple[int, float]]:
+        """page -> (pictures, share of the page they cover) for the pictures of the file whose
+        words are not read (see extractors.pdf); empty for a file without any, and for every
+        file while the count is turned off."""
+        if not self.counting_pictures():
+            return {}
+        row = self.db.execute("SELECT pictures FROM files WHERE key = ?", (path_key(path),)).fetchone()
+        return _unpack_pictures(row["pictures"] if row else None)
+
+    def pictures_in(self, roots: list[Path]) -> list[tuple[str, int, int]]:
+        """(path, pictures, pages with one) of the files under ``roots`` that hold pictures whose
+        words are not read, the file with the most first."""
+        seen: dict[str, tuple[int, int]] = {}
+        for root in roots if self.counting_pictures() else ():
+            for r in self._files_under(path_key(Path(root).resolve()), "path, pictures"):
+                if pages := _unpack_pictures(r["pictures"]):
+                    seen[r["path"]] = (sum(n for n, _ in pages.values()), len(pages))
+        return sorted(((p, n, pages) for p, (n, pages) in seen.items()), key=lambda x: (-x[1], x[0]))
+
     def chunk_on_page(self, chunk_id: int, page: int) -> int | None:
         """The id of the section on ``page`` of the file that section ``chunk_id`` is in, for a
         PDF read a page a section; None when the file has no such section."""
@@ -720,6 +762,12 @@ class Index:
         ).fetchall()
 
 
+def _unpack_pictures(packed: str | None) -> dict[int, tuple[int, float]]:
+    if not packed:
+        return {}
+    return {int(page): (count, share) for page, (count, share) in json.loads(packed).items()}
+
+
 def _pack_anchors(anchors: list[dict]) -> str:
     """Store one anchor when every line shares it (Word sections, PDF pages, slides)."""
     if anchors and all(a == anchors[0] for a in anchors):
@@ -727,12 +775,18 @@ def _pack_anchors(anchors: list[dict]) -> str:
     return json.dumps(anchors, ensure_ascii=False, separators=(",", ":"))
 
 
-def _current(row: sqlite3.Row | None, mtime: int, size: int) -> bool:
+def _current(row: sqlite3.Row | None, mtime: int, size: int, counting: bool = False) -> bool:
+    """Whether what was read of the file still stands. With ``counting`` (pictures are counted,
+    see Index.counting_pictures), a PDF read while the count was turned off does not: it is read
+    again, so that turning the count on reaches the files already in the index."""
     if row is None or (row["mtime_ns"], row["size"]) != (mtime, size):
         return False
     if row["error"] is not None:
         return row["version"] == EXTRACTOR_VERSION
-    floor = max(OUTPUT_VERSION, OUTPUT_VERSION_BY_EXT.get(os.path.splitext(row["key"])[1].lower(), 0))
+    ext = os.path.splitext(row["key"])[1].lower()
+    if counting and ext == ".pdf" and row["pictures"] is None:
+        return False
+    floor = max(OUTPUT_VERSION, OUTPUT_VERSION_BY_EXT.get(ext, 0))
     return floor <= row["version"] <= EXTRACTOR_VERSION
 
 
@@ -770,23 +824,28 @@ def _walk(root: Path, matcher: Matcher, hits: dict, unlisted: list[str] | None =
             yield path, st
 
 
-def _extract_job(path: str, previous: str | None = None) -> tuple[list[Chunk] | None, str | None, str | None, str | None]:
-    """(sections, error, sha256 of the content, note). Sections are None when the content hashes
-    to ``previous``: a checkout or a copy that only changed the file's date is not read again.
-    The note says what of the file could not be read (``extractors.note``)."""
+def _extract_job(path: str, previous: str | None = None) -> tuple:
+    """(sections, error, sha256 of the content, note, pictures). Sections are None when the
+    content hashes to ``previous``: a checkout or a copy that only changed the file's date is not
+    read again. The note says what of the file could not be read (``extractors.note``); pictures
+    is the JSON of ``extractors.pictures``, None for a file without any."""
     try:
         digest = _sha256(Path(path))
     except OSError as e:
-        return [], f"{type(e).__name__}: {e}", None, None
+        return [], f"{type(e).__name__}: {e}", None, None, None
     if previous is not None and digest == previous:
-        return None, None, digest, None
+        return None, None, digest, None, None
     try:
         chunks = extract(Path(path))
-        return chunks, None, digest, "; ".join(notes()) or None
+        drawn = {str(page): list(seen) for page, seen in sorted(pictures().items())}
+        # "{}": counted, and there are none. None: not counted (not a PDF, or the count is off)
+        counted = drawn or (path.lower().endswith(".pdf") and counting_pictures())
+        return (chunks, None, digest, "; ".join(notes()) or None,
+                json.dumps(drawn, separators=(",", ":")) if counted else None)
     except NeedsApplication:
         raise  # the worker hands the file on to the application's worker
     except Exception as e:  # one unreadable file must not stop the sync
-        return [], f"{type(e).__name__}: {e}", digest, None
+        return [], f"{type(e).__name__}: {e}", digest, None, None
 
 
 def _sha256(path: Path) -> str:
@@ -797,10 +856,11 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _comparable_hash(row: sqlite3.Row | None, size: int) -> str | None:
+def _comparable_hash(row: sqlite3.Row | None, size: int, counting: bool = False) -> str | None:
     """The hash of what was read before, when the file may still hold the same content: same
     size, and read by extractors whose output is still current (or failed with these ones)."""
-    if row is None or row["sha256"] is None or row["size"] != size or not _current(row, row["mtime_ns"], size):
+    if (row is None or row["sha256"] is None or row["size"] != size
+            or not _current(row, row["mtime_ns"], size, counting)):
         return None
     return row["sha256"]
 
@@ -849,8 +909,8 @@ def available_memory() -> int | None:
 
 
 def _extract_all(todo: list[tuple], workers: int | None, timeout: float, tick) -> Iterator[tuple]:
-    """(key, path, mtime, size, chunks, error, timed_out, seconds, sha256, note) for every file
-    in ``todo``; chunks is None when the content is what was read before."""
+    """(key, path, mtime, size, chunks, error, timed_out, seconds, sha256, note, pictures) for
+    every file in ``todo``; chunks is None when the content is what was read before."""
     job = _extract_job  # looked up here so a test can put a slow reader in its place
     tasks = [
         worker_pool.Task(str(item[1]), is_serial(item[1]), item, () if item[4] is None else (item[4],)) for item in todo
@@ -858,7 +918,8 @@ def _extract_all(todo: list[tuple], workers: int | None, timeout: float, tick) -
     for out in worker_pool.run(tasks, job, _pool_size(todo, workers), timeout, tick):
         key, path, mtime, size, _ = out.task.data
         if out.failure:
-            yield key, path, mtime, size, [], out.failure, out.timed_out, out.seconds, None, None
+            yield key, path, mtime, size, [], out.failure, out.timed_out, out.seconds, None, None, None
         else:
             chunks, error, digest, *rest = out.result  # a reader put in place by a test may give no note
-            yield key, path, mtime, size, chunks, error, False, out.seconds, digest, rest[0] if rest else None
+            note, drawn = (*rest, None, None)[:2]
+            yield key, path, mtime, size, chunks, error, False, out.seconds, digest, note, drawn

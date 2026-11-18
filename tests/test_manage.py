@@ -470,3 +470,16 @@ def test_the_window_asks_before_closing_over_unsaved_map_edits(api):
     assert manage.may_close(api, lambda: True)  # "yes": the edits are given up
     api.map_unsaved(False)
     assert manage.may_close(api, lambda: False) and asked == [1]
+
+
+def test_the_settings_dialog_turns_the_picture_count_off_and_leaves_it_alone_when_not_asked(tmp_path):
+    from docwhere.settings import count_pictures
+    from docwhere.window import save_settings_values, settings_values
+
+    db = tmp_path / "index.db"
+    assert settings_values(db)["count_pictures"] is True  # on until turned off
+    save_settings_values(db, {"count_pictures": False})
+    assert count_pictures(db) is False and settings_values(db)["count_pictures"] is False
+    save_settings_values(db, {"title": "Reference"})  # a dialog of an older page: no such box
+    assert count_pictures(db) is False
+
