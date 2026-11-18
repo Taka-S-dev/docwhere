@@ -495,9 +495,11 @@ def suggest_parts(index: Index, roots: list[Path], terms: list[str], exts: list[
 def _scope(roots: list[Path], exts: list[str] | None) -> tuple[str, list]:
     parts, args = [], []
     for root in roots:
-        prefix = prefix_of(path_key(Path(root).resolve()))
-        parts.append("substr(f.key, 1, ?) = ?")
-        args += [len(prefix), prefix]
+        key = path_key(Path(root).resolve())
+        prefix = prefix_of(key)
+        # the files under a folder, or the one file the path names
+        parts.append("(substr(f.key, 1, ?) = ? OR f.key = ?)")
+        args += [len(prefix), prefix, key]
     sql = "(" + " OR ".join(parts) + ")"
     if exts:
         sql += " AND (" + " OR ".join("f.key LIKE ?" for _ in exts) + ")"

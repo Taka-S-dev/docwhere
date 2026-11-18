@@ -41,6 +41,9 @@ MAX_UNREADABLE = 200  # unreadable files listed per folder; the count is always 
 SLOWEST_SHOWN = 5  # files that took longest, listed per folder
 SEARCH_LIMIT = 30  # hits opened together at most
 ROOTS_RECOUNT = 10  # seconds between counts of the index's folders while it keeps changing
+INTO_LISTED = 300  # folders below the searched one counted for going down into
+PLACES_LISTED = 500  # folders and files the place box lists at once: past this, it says there is more
+PLACE_ROWS = 3000  # files looked at for a name typed there
 FIRST_PER_FILE = 3  # sections of one file in the first hits shown, so one long file does not fill the list
 COLLECTED_NAME = "collected.json"  # hits collected in the search tab, beside the index
 MAX_COLLECTED = 50  # hits one reading page shows together
@@ -113,6 +116,7 @@ class ManageApi:
         self._search_seq = 0
         self._search_lock = threading.Lock()
         self._map_unsaved = False  # the page says so: the window asks before closing over it
+        self._folder_lists: dict[str, tuple[tuple, frozenset[str]]] = {}  # see _folders_below
         self._page_asked = 0  # page pictures asked for so far: one that waited behind a newer one is dropped
         self._roots_cache = None  # (what the index looked like, its folders with their counts, when counted)
         self._roots_lock = threading.Lock()
@@ -357,6 +361,100 @@ class ManageApi:
                 out.append((Path(where), kind))
         return out
 
+    def _scope_roots(self, index: Index, scope: str) -> tuple[list[Path], int]:
+        """The folders ``scope`` stands for ("" for every folder, a folder of the index, or
+        "kind:仕様書"), and how many folders of that kind are in the map but not in the index."""
+        indexed = [Path(p) for p in index.root_paths()]
+        missing = 0
+        if scope.startswith("kind:"):
+            keys = [path_key(r) for r in indexed]
+            roots = []
+            for folder, kind in self._kind_folders():
+                if kind != scope[5:] or not folder.is_dir():
+                    continue
+                key = path_key(folder)
+                if any(key == k or key.startswith(prefix_of(k)) for k in keys):
+                    roots.append(folder)
+                else:
+                    missing += 1  # written in the map, never read: nothing of it to search
+        elif scope:
+            roots = [self._root(index, scope)]
+        else:
+            roots = [r for r in indexed if index.enclosing(path_key(r)) is None]
+        return roots, missing
+
+    def _folders_below(self, index: Index, prefix: str, span: dict) -> frozenset[str]:
+        """Every folder below the folder with key ``prefix`` that holds a file, and the folders
+        above those, each as its path below. Kept while the index stays as it is (the files'
+        count and the newest reading), since the place box asks at every letter typed."""
+        stamp = tuple(index.db.execute("SELECT count(*), coalesce(max(id), 0), coalesce(max(read_ms + mtime_ns), 0) FROM files").fetchone())
+        kept = self._folder_lists.get(prefix)
+        if kept and kept[0] == stamp:
+            return kept[1]
+        seen: set[str] = set()
+        for (path,) in index.db.execute("SELECT DISTINCT substr(path, 1, length(path) - length("
+                                        "replace(path, rtrim(path, replace(path, :sep, '')), ''))  - 1)"
+                                        " FROM files WHERE key >= :prefix AND key < :past", {**span, "sep": os.sep}):
+            below = path[len(prefix):]
+            while below and below not in seen:
+                seen.add(below)
+                below = below.rpartition(os.sep)[0]
+        self._folder_lists[prefix] = (stamp, frozenset(seen))
+        return self._folder_lists[prefix][1]
+
+    @staticmethod
+    def _shown(roots: list[Path], root: Path, below: str) -> str:
+        """A place as the place box writes it: its path below the folder searched, led by that
+        folder's name when several are searched (one folder's name stands before the box)."""
+        return "\\".join(x for x in ((root.name or str(root)) if len(roots) > 1 else "", below) if x)
+
+    @bridge_method
+    def search_places(self, query: dict) -> dict:
+        """The places a search can be kept to, for the place box: {places: [{path, shown, file}],
+        more}. With nothing typed, every folder of the scope at every depth, as one list ordered
+        by path. With ``text``, the folders whose path holds every part typed (split at spaces,
+        letter case ignored), then the files whose path does and whose own name holds one of the
+        parts: a file is not listed for words that are all its folders' (those name the folder,
+        and every file below would follow). ``more`` says the list was cut."""
+        parts = [os.path.normcase(p) for p in str(query.get("text") or "")[:200].split()]
+        index = self._index()
+        try:
+            roots, _ = self._scope_roots(index, str(query.get("scope") or ""))
+            folders: list[tuple[str, Path]] = []  # (as shown, path)
+            files: list[tuple[str, Path]] = []
+            more = False
+            for root in sorted(roots, key=lambda r: (r.name or str(r)).lower()):
+                prefix = prefix_of(path_key(root))
+                span = {"prefix": prefix, "past": prefix[:-1] + chr(ord(prefix[-1]) + 1)}
+                seen = set(self._folders_below(index, prefix, span))
+                if len(roots) > 1:
+                    seen.add("")  # one of several folders searched: itself a place
+                for below in seen:
+                    shown = self._shown(roots, root, below)
+                    if all(p in os.path.normcase(shown) for p in parts):
+                        folders.append((shown, root / below if below else root))
+                if parts:
+                    lead = os.path.normcase(self._shown(roots, root, "x"))[:-1]  # what stands before the path below
+                    rows = index.db.execute(
+                        "SELECT path FROM files WHERE key >= :prefix AND key < :past"
+                        + "".join(f" AND instr(:lead || substr(key, :n + 1), :p{i}) > 0" for i in range(len(parts)))
+                        + " ORDER BY key LIMIT :limit",
+                        {**span, "n": len(prefix), "lead": lead, "limit": PLACE_ROWS, **{f"p{i}": p for i, p in enumerate(parts)}},
+                    ).fetchall()
+                    more = more or len(rows) == PLACE_ROWS
+                    for (path,) in rows:
+                        below = path[len(prefix):]
+                        name = os.path.normcase(below.rpartition(os.sep)[2])
+                        if any(p in name for p in parts):  # named by what was typed, not only lying below it
+                            files.append((self._shown(roots, root, below), Path(path)))
+            by_path = lambda x: x[0].lower()  # noqa: E731
+            listed = ([(s, p, False) for s, p in sorted(folders, key=by_path)]
+                      + [(s, p, True) for s, p in sorted(files, key=by_path)])
+            return {"places": [{"path": str(p), "shown": s, "file": f} for s, p, f in listed[:PLACES_LISTED]],
+                    "more": more or len(listed) > PLACES_LISTED}
+        finally:
+            index.close()
+
     @bridge_method
     def search_scopes(self) -> dict:
         """What the search may be limited to: an indexed folder, or a kind of the notes map."""
@@ -377,8 +475,14 @@ class ManageApi:
     def search(self, query: dict) -> dict:
         """Search as ``docwhere search`` does, on what is read (no reading is started here).
         ``query``: text (words, "phrases", -left-out), scope ("" for every folder, a folder of
-        the index, or "kind:仕様書"), the switches all, name, regex and variants, and facet
-        ({kind, ext, folder}: keep only the hits with these values)."""
+        the index, or "kind:仕様書"), within (a folder at any depth below the scope, or one file of
+        it: only that is searched), the switches all, name, regex and variants, and facet
+        ({kind, ext, folder}: keep only the hits with these values).
+
+        The answer names the place searched (``within``: its path, whether it is a file, and the
+        folders from the scope's folder down to it) and the folders right below it (``into``,
+        each with its hits among those listed), so that the page can write the place in its box and
+        offer the folders below."""
         from docwhere.search import (
             PatternError,
             expand_variants,
@@ -408,23 +512,12 @@ class ManageApi:
         scope = str(query.get("scope") or "")
         index = self._index()
         try:
-            indexed = [Path(p) for p in index.root_paths()]
-            missing = 0
-            if scope.startswith("kind:"):
-                keys = [path_key(r) for r in indexed]
-                roots = []
-                for folder, kind in self._kind_folders():
-                    if kind != scope[5:] or not folder.is_dir():
-                        continue
-                    key = path_key(folder)
-                    if any(key == k or key.startswith(prefix_of(k)) for k in keys):
-                        roots.append(folder)
-                    else:
-                        missing += 1  # written in the map, never read: nothing of it to search
-            elif scope:
-                roots = [self._root(index, scope)]
-            else:
-                roots = [r for r in indexed if index.enclosing(path_key(r)) is None]
+            roots, missing = self._scope_roots(index, scope)
+            scoped = roots  # the folders of the scope, whatever place within them is searched
+            place = None
+            if query.get("within"):
+                place = self._within(index, roots, str(query["within"]))
+                roots = [place["at"]]
             started = time.monotonic()
             regex, name, every = bool(query.get("regex")), bool(query.get("name")), bool(query.get("all"))
             # other wordings of the terms (サーバ / サーバー, ログイン / ログオン), searched alongside them.
@@ -491,9 +584,62 @@ class ManageApi:
                 "terms": terms, "variants": variants, "exclude": exclude, "roots": [str(r) for r in roots],
                 "missing": missing, "ms": round((time.monotonic() - started) * 1000), "limit": SEARCH_LIMIT,
                 "facets": facets["counts"], "facet": chosen, "hints": hints,
+                "within": {"path": str(place["at"]), "file": place["file"], "trail": place["trail"],
+                           "shown": "\\".join(t["name"] for t in place["trail"][0 if len(scoped) > 1 else 1:])} if place else None,
+                "into": [] if place and place["file"] else self._into(index, roots, pool),
             }
         finally:
             index.close()
+
+    @staticmethod
+    def _within(index: Index, roots: list[Path], path: str) -> dict:
+        """``path`` as a place inside the folders searched: a folder at any depth below one of
+        them, or a file of the index. {at, file, trail}; a place outside them is refused. The
+        trail names the folders from the searched one down to the place, each with its path."""
+        key = path_key(Path(path))
+        top = next((r for r in sorted(roots, key=lambda r: -len(path_key(r)))
+                    if key == path_key(r) or key.startswith(prefix_of(path_key(r)))), None)
+        if top is None:
+            raise LookupError("この場所は、選んでいる範囲の中にありません")
+        row = index.db.execute("SELECT path FROM files WHERE key = ?", (key,)).fetchone()
+        at = Path(row["path"]) if row else Path(os.path.abspath(path))
+        trail = [{"name": top.name or str(top), "path": str(top)}]
+        below = str(at)[len(str(top).rstrip("\\/")):].strip("\\/")  # the key matched, whatever the case
+        step = top
+        for part in Path(below).parts if below else ():
+            step = step / part
+            trail.append({"name": part, "path": str(step)})
+        return {"at": at, "file": row is not None, "trail": trail}
+
+    def _into(self, index: Index, roots: list[Path], hits: list[dict]) -> list[dict]:
+        """The folders right below the folders searched: [{path, name, count}], the ones with most
+        of the listed hits first, then by name. Every folder that holds a file of the index is
+        named, with or without a hit: a folder whose hits are past the ones listed can be chosen
+        all the same."""
+        tops = [(prefix_of(path_key(root)), root) for root in roots]
+        found: dict[tuple[int, str], int] = {}
+        names: dict[tuple[int, str], str] = {}
+        for i, (prefix, _) in enumerate(tops):
+            # asked of the index in one go: a folder of the index may hold a hundred thousand files
+            for row in index.db.execute(
+                "SELECT substr(key, :n + 1, instr(substr(key, :n + 1), :sep) - 1) AS child, min(path) AS sample"
+                # a range of keys, which the index on them answers without reading every file's row
+                " FROM files WHERE key >= :prefix AND key < :past AND instr(substr(key, :n + 1), :sep) > 0 GROUP BY child",
+                {"n": len(prefix), "prefix": prefix, "past": prefix[:-1] + chr(ord(prefix[-1]) + 1), "sep": os.sep},
+            ):
+                found[i, row["child"]] = 0
+                names[i, row["child"]] = row["sample"][len(prefix):].partition(os.sep)[0]  # as written, not folded
+        for hit in hits:
+            key = path_key(hit["path"])
+            for i, (prefix, _) in enumerate(tops):
+                first, sep, _ = key[len(prefix):].partition(os.sep) if key.startswith(prefix) else ("", "", "")
+                if sep and (i, first) in found:
+                    found[i, first] += 1
+                    break
+        listed = [{"path": str(tops[i][1] / names[i, first]),
+                   "name": "\\".join(x for x in ((tops[i][1].name if len(tops) > 1 else ""), names[i, first]) if x),
+                   "count": n} for (i, first), n in found.items()]
+        return sorted(listed, key=lambda x: (-x["count"], x["name"].lower()))[:INTO_LISTED]
 
     def _facets(self, hits: list[dict], roots: list[Path]) -> dict:
         """For each hit its kind in the notes map, its format and its folder (the first one under
@@ -1119,6 +1265,13 @@ BODY = """<div class="wrap" id="app">
   <input type="search" id="q" placeholder="探す語（空白で区切る。-旧版 で除外、&quot;…&quot; でひと続きの語句）" autocomplete="off"
     spellcheck="false" aria-label="探す語" aria-controls="results">
   <select id="scope" aria-label="探す範囲"><option value="">すべてのフォルダ</option></select>
+  <span class="place-box" title="探す場所（フォルダか、1 つのファイル）。空なら範囲の全体を探します">
+    <span class="place-root" id="place-root" hidden></span>
+    <input type="search" id="place" placeholder="場所（空 = 全体）" autocomplete="off" spellcheck="false"
+      role="combobox" aria-label="探す場所を、フォルダやファイルの名前の一部で選ぶ" aria-controls="place-list" aria-expanded="false"
+      aria-autocomplete="list">
+    <ul class="place-list" id="place-list" role="listbox" aria-label="場所の候補" hidden></ul>
+  </span>
 </div>
 <div class="search-opts">
   <label title="サーバ／サーバー、ログイン／ログオンのような言い方の違いも一緒に探します"><input type="checkbox" id="opt-variants" checked>言い換えも探す</label>
@@ -1272,7 +1425,25 @@ html { scrollbar-gutter: stable; }
 .search-bar input { flex: 1; min-width: 0; padding: 10px 14px; font: inherit; font-size: 16px; color: var(--ink);
   background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
 .search-bar input:focus-visible { outline: 2px solid var(--blue); outline-offset: 0; border-color: transparent; }
-.search-bar select { max-width: 38%; padding: 0 10px; font: inherit; color: var(--ink); background: var(--surface);
+.place-box { position: relative; display: flex; align-items: center; flex: 0 1 34%; min-width: 14em; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+.place-box:focus-within { outline: 2px solid var(--blue); outline-offset: 0; border-color: transparent; }
+.place-root { flex: none; max-width: 45%; padding: 0 0 0 12px; overflow: hidden; color: var(--muted); font-size: 14px;
+  white-space: nowrap; text-overflow: ellipsis; }
+.search-bar .place-box input { font-size: 14px; padding: 10px 12px 10px 4px; background: none; border: 0; outline: 0; }
+.search-bar .place-box .place-root[hidden] + input { padding-left: 12px; }
+.place-list { position: absolute; top: 100%; right: 0; z-index: 5; width: max(100%, 36em); max-width: 90vw; max-height: 60vh;
+  margin: 4px 0 0; padding: 4px; overflow: auto; list-style: none; background: var(--surface); border: 1px solid var(--rule);
+  border-radius: 8px; box-shadow: 0 6px 18px rgba(0, 0, 0, .18); }
+.place-opt { display: flex; align-items: baseline; gap: 8px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  font-family: Consolas, "BIZ UDGothic", monospace; font-size: 13px; }
+.place-opt[aria-selected="true"], .place-opt:hover { background: var(--blue); color: var(--surface); }
+.place-kind { flex: none; font-size: 11px; color: var(--muted); border: 1px solid var(--rule); border-radius: 4px; padding: 0 4px; }
+.place-name { overflow-wrap: anywhere; }
+.place-opt.here .place-name { font-weight: 700; }
+.place-opt[aria-selected="true"] .place-kind, .place-opt:hover .place-kind { color: inherit; border-color: currentColor; }
+.place-none { padding: 6px 10px; color: var(--muted); font-size: 13px; }
+.search-bar select { max-width: 30%; padding: 0 10px; font: inherit; color: var(--ink); background: var(--surface);
   border: 1px solid var(--rule); border-radius: 8px; }
 .search-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 20px; margin: 0 0 14px; font-size: 13px;
   color: var(--muted); }
@@ -2502,7 +2673,11 @@ MANAGE_JS = r"""(() => {
   let results = null;  // the last answer: {hits, terms, facets, ...} or {error}
   let shownFor = "";   // the query the hits shown answer (see queryKey)
   let searching = false;
-  const queryKey = () => JSON.stringify([q.value.trim(), scopeSel.value, switches.all.checked, switches.name.checked,
+  // a folder below the scope, or one file, that alone is searched ("" for the whole scope); and
+  // the last answer's account of it, shown while a new search is on its way or found nothing
+  let withinPath = "";
+  let place = null;
+  const queryKey = () => JSON.stringify([q.value.trim(), scopeSel.value, withinPath, switches.all.checked, switches.name.checked,
     switches.regex.checked, switches.variants.checked]);
   let activeHit = 0;
   let searchTimer = 0;
@@ -2511,11 +2686,13 @@ MANAGE_JS = r"""(() => {
   let previewTimer = 0;
   const fillScopes = () => api.search_scopes().then((s) => {
     const keep = scopeSel.value;
+    scopeRoots = s.roots;
     put(scopeSel, h("option", { value: "", text: "すべてのフォルダ" }),
       s.kinds.length ? h("optgroup", { label: "地図の種類" },
         s.kinds.map((k) => h("option", { value: `kind:${k.kind}`, text: `${k.kind}（地図の ${k.folders} フォルダ）` }))) : null,
       h("optgroup", { label: "フォルダ" }, s.roots.map((r) => h("option", { value: r.path, text: r.name, title: r.path }))));
     if ([...scopeSel.options].some((o) => o.value === keep)) scopeSel.value = keep;
+    showPlace();
   }).catch(() => {});
   // text with every term marked, case ignored
   const markTerms = (text, terms) => {
@@ -2550,9 +2727,9 @@ MANAGE_JS = r"""(() => {
     $("#search-meta").textContent = "探しています…";
     busy(true);
     searching = true;
-    api.search({ text, scope: scopeSel.value, all: switches.all.checked, name: switches.name.checked,
+    api.search({ text, scope: scopeSel.value, within: withinPath, all: switches.all.checked, name: switches.name.checked,
       regex: switches.regex.checked, variants: switches.variants.checked, facet, seq: mine })
-      .then((r) => { if (mine === searchSeq) { busy(false); searching = false; results = r; shownFor = key; activeHit = 0; visible = firstShown(r); renderResults(); } })
+      .then((r) => { if (mine === searchSeq) { busy(false); searching = false; results = r; place = r.within || null; showPlace(); shownFor = key; activeHit = 0; visible = firstShown(r); renderResults(); } })
       .catch((e) => { if (mine === searchSeq) { busy(false); searching = false; results = { error: reason(e), hits: [] }; shownFor = key; renderResults(); } });
   };
   const viewHits = (numbers) => opening("読み取り画面を作っています…（Word・PowerPoint は数秒かかることがあります）",
@@ -2585,7 +2762,129 @@ MANAGE_JS = r"""(() => {
   let searchAfterUpdate = false;  // the search to run again once the folders asked for are read
 
   // narrowing buttons: the hits by kind in the map, by format and by folder, with their counts
-  const FACETS = [["kind", "種類"], ["ext", "形式"], ["folder", "フォルダ"]];
+  // The folder is not among them: a folder is gone down into (see goTo), and is then what is
+  // searched, so its hits are all counted and none is left out for being past the ones listed.
+  const FACETS = [["kind", "種類"], ["ext", "形式"]];
+  const goTo = (path) => {
+    withinPath = path;
+    if (!path) place = null;
+    showPlace();
+    runSearch(false);
+    q.focus({ preventScroll: true });
+  };
+  // the folders right below the place searched that hold the listed hits, to go down into; the
+  // place itself is written in the place box, where any other is chosen
+  const renderPlace = () => {
+    const rows = [];
+    const into = (results && !results.error && results.into) || [];
+    if (into.length) {
+      // the folders holding the listed hits; any other folder, and any file, is reached by its name
+      // in the place box
+      const top = into.filter((x) => x.count).slice(0, 8);
+      const others = into.length - top.length;
+      if (top.length) {
+        rows.push(h("div", { class: "facet", role: "group", "aria-label": "下のフォルダ" },
+          h("span", { class: "facet-label", text: withinPath ? "この下のフォルダ" : "フォルダ" }),
+          top.map((x) => h("button", { type: "button", class: "chip-btn", title: `${x.path} の中だけを探す`, onclick: () => goTo(x.path) },
+            x.name, h("small", { text: ` ${fmt(x.count)}` }))),
+          others ? h("button", { type: "button", class: "link", text: `ほか ${fmt(others)} フォルダ`,
+            title: "場所の欄に、フォルダがパスの一覧で並びます。名前の一部を打って探すこともできます", onclick: () => placeIn.focus() }) : null));
+      }
+    }
+    if (withinPath) {
+      rows.push(h("button", { type: "button", class: "link", text: "場所の指定をやめる", title: "範囲の全体を探します（場所の欄を空にしても同じです）",
+        onclick: () => goTo("") }));
+    }
+    return rows;
+  };
+
+  // ---- the place box: it holds the place searched (empty for the whole scope), and its list is
+  // every folder of the scope by path, narrowed by what is typed; a name typed also finds files
+  const placeIn = $("#place");
+  const placeList = $("#place-list");
+  let placeSeq = 0;
+  let placeItems = [];
+  let placeAt = -1;
+  let placeTimer = 0;
+  let placeTyped = false;  // typed in since the box was entered: its text is then a filter, not the place
+  let scopeRoots = [];
+  // one folder searched: its name stands before the box, and the places are written from below it
+  const showPlace = () => {
+    const one = scopeRoots.find((r) => r.path === scopeSel.value) || (!scopeSel.value && scopeRoots.length === 1 ? scopeRoots[0] : null);
+    $("#place-root").textContent = one ? `${one.name}\\` : "";
+    $("#place-root").hidden = !one;
+    if (document.activeElement !== placeIn) placeIn.value = withinPath && place ? place.shown : "";
+    placeIn.title = withinPath ? withinPath : "";
+  };
+  const closePlaces = () => {
+    placeSeq += 1;  // an answer still on its way is not shown
+    clearTimeout(placeTimer);
+    placeItems = [];
+    placeAt = -1;
+    placeList.hidden = true;
+    placeIn.setAttribute("aria-expanded", "false");
+    placeIn.removeAttribute("aria-activedescendant");
+  };
+  const markPlace = () => {
+    [...placeList.querySelectorAll(".place-opt")].forEach((li, i) => {
+      li.setAttribute("aria-selected", String(i === placeAt));
+      if (i === placeAt) { placeIn.setAttribute("aria-activedescendant", li.id); li.scrollIntoView({ block: "nearest" }); }
+    });
+    if (placeAt < 0) placeIn.removeAttribute("aria-activedescendant");
+  };
+  const pickPlace = (x) => {
+    closePlaces();
+    placeTyped = false;
+    withinPath = x ? x.path : "";
+    place = x ? { path: x.path, file: x.file, shown: x.shown, trail: [] } : null;  // known at once, with or without words to search
+    q.focus({ preventScroll: true });  // the box is left, and then shows the place
+    showPlace();
+    runSearch(false);
+  };
+  const askPlaces = () => {
+    const text = placeTyped ? placeIn.value.trim() : "";  // on entering, every folder: the place held is not a filter
+    const mine = ++placeSeq;
+    api.search_places({ text, scope: scopeSel.value }).then((r) => {
+      if (mine !== placeSeq || document.activeElement !== placeIn) return;
+      placeItems = r.places;
+      // typing takes the first place; on entering, the place held now is the one marked
+      placeAt = placeTyped ? (r.places.length ? 0 : -1) : r.places.findIndex((x) => keyOf(x.path) === keyOf(withinPath));
+      put(placeList,
+        r.places.map((x, i) => h("li", { role: "option", id: `place-opt-${i}`, title: x.path,
+          class: keyOf(x.path) === keyOf(withinPath) ? "place-opt here" : "place-opt",
+          onmousedown: (e) => { e.preventDefault(); pickPlace(x); } },  // before the box loses the keyboard
+          h("span", { class: "place-name", text: x.shown }),
+          x.file ? h("span", { class: "place-kind", text: "ファイル" }) : null)),
+        r.places.length ? null : h("li", { class: "place-none", text: text ? "合うフォルダやファイルはありません" : "フォルダはありません" }),
+        r.more ? h("li", { class: "place-none", text: "ほかにもあります。名前の一部を打つと絞れます" }) : null);
+      placeList.hidden = false;
+      placeIn.setAttribute("aria-expanded", "true");
+      markPlace();
+    }).catch(() => closePlaces());
+  };
+  const placesSoon = () => { placeTyped = true; clearTimeout(placeTimer); placeTimer = setTimeout(askPlaces, 120); };
+  placeIn.addEventListener("input", (e) => { if (!e.isComposing) placesSoon(); });
+  placeIn.addEventListener("compositionend", placesSoon);
+  placeIn.addEventListener("keydown", (e) => {
+    if (composing(e)) return;  // Enter, the arrows and Escape belong to the conversion then
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && placeItems.length) {
+      e.preventDefault();
+      const n = placeItems.length;
+      placeAt = placeAt < 0 ? (e.key === "ArrowDown" ? 0 : n - 1) : (placeAt + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+      markPlace();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (!placeIn.value.trim()) pickPlace(null);  // emptied: the whole scope
+      else if (placeItems[placeAt]) pickPlace(placeItems[placeAt]);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      q.focus({ preventScroll: true });  // left as it was: the box shows the place again
+    }
+  });
+  placeIn.addEventListener("focus", () => { placeTyped = false; placeIn.select(); askPlaces(); });
+  placeIn.addEventListener("blur", () => { closePlaces(); placeTyped = false; setTimeout(showPlace, 0); });
+
   const renderFacets = () => {
     const box = $("#facets");
     const counts = (results && results.facets) || {};
@@ -2600,8 +2899,9 @@ MANAGE_JS = r"""(() => {
       groups.push(h("button", { type: "button", class: "link", text: "絞り込みをやめる",
         onclick: () => { facet = { kind: "", ext: "", folder: "" }; runSearch(true); } }));
     }
-    put(box, groups);
-    box.hidden = !groups.length;
+    const places = renderPlace();
+    put(box, places, groups);
+    box.hidden = !(groups.length + places.length);
   };
 
   // the pane shows the hit's text, or its page as a picture; the choice is kept for next time
@@ -2690,6 +2990,8 @@ MANAGE_JS = r"""(() => {
         hit.chunk_id ? h("button", { type: "button", class: "btn primary", text: "該当箇所を詳しく見る", title: "読み取り画面で、該当箇所に枠を付けて見ます（Enter）",
           onclick: () => viewHits([hit.n]) }) : null,
         h("button", { type: "button", class: "btn", text: "ファイルを開く", onclick: () => openFile(hit.n) }),
+        place && place.file ? null : h("button", { type: "button", class: "btn", text: "このファイルの中だけを探す",
+          title: "探す範囲をこのファイルだけにします。語を変えても、やめるまでこのファイルの中を探します", onclick: () => goTo(hit.path) }),
         h("button", { type: "button", class: "btn", text: "出典をコピー", title: citation(hit), onclick: () => copyCitation(hit) }),
         hit.chunk_id ? h("button", { type: "button", class: "btn", id: "pv-collect", onclick: () => toggleCollect(hit) }) : null,
         modes));
@@ -2847,7 +3149,7 @@ MANAGE_JS = r"""(() => {
   const searchSoon = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => runSearch(false), 250); };
   q.addEventListener("input", (e) => { if (!e.isComposing) searchSoon(); });
   q.addEventListener("compositionend", searchSoon);
-  scopeSel.addEventListener("change", () => runSearch(false));
+  scopeSel.addEventListener("change", () => { withinPath = ""; place = null; closePlaces(); showPlace(); runSearch(false); });  // another scope: its own places
   Object.values(switches).forEach((box) => box.addEventListener("change", () => runSearch(false)));
   // the folded conditions: the switch counts the ones on, so a search narrowed by one says so
   const moreToggle = $("#more-opts-toggle");

@@ -483,3 +483,115 @@ def test_the_settings_dialog_turns_the_picture_count_off_and_leaves_it_alone_whe
     save_settings_values(db, {"title": "Reference"})  # a dialog of an older page: no such box
     assert count_pictures(db) is False
 
+
+def _deep(folder, api):
+    """docs/projects/alpha/design/net.md and its neighbours, each naming "timeout"."""
+    for rel in ("projects/alpha/design/net.md", "projects/alpha/design/ui.md", "projects/alpha/plan.md",
+                "projects/beta/notes.md"):
+        path = folder / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# {path.stem}\ntimeout of {path.stem}\nretry of {path.stem}\n", encoding="utf-8")
+    index = Index(api._db)
+    index.sync(folder)
+    index.close()
+
+
+def test_the_search_goes_down_into_folders_at_any_depth_and_back_up(api, folder, tmp_path):
+    _deep(folder, api)
+    out = api.search({"text": "timeout"})
+    assert out["within"] is None
+    # every folder right below is named, the one with most hits first
+    assert [(x["name"], x["count"]) for x in out["into"]] == [("projects", 4), ("old", 1)]
+    assert out["into"][0]["path"] == str(folder / "projects")
+
+    down = api.search({"text": "timeout", "within": str(folder / "projects" / "alpha")})
+    assert sorted(Path(h["path"]).name for h in down["hits"]) == ["net.md", "plan.md", "ui.md"]
+    assert down["total"] == 3  # counted as a search of that folder, not as a part of the listed hits
+    assert [t["name"] for t in down["within"]["trail"]] == ["docs", "projects", "alpha"]
+    assert down["within"]["trail"][1]["path"] == str(folder / "projects") and not down["within"]["file"]
+    assert [(x["name"], x["count"]) for x in down["into"]] == [("design", 2)]
+
+    # a folder with no hit is still offered, so a word found elsewhere does not hide the way down
+    none = api.search({"text": "plan", "within": str(folder / "projects" / "alpha")})
+    assert [(x["name"], x["count"]) for x in none["into"]] == [("design", 0)]
+    assert api.preview(1)["sections"][0]["current"]  # the hits open as numbered
+
+    with pytest.raises(LookupError, match="範囲の中にありません"):
+        api.search({"text": "timeout", "within": str(tmp_path)})  # outside the index
+    with pytest.raises(LookupError, match="範囲の中にありません"):
+        api.search({"text": "timeout", "scope": str(folder), "within": str(folder.parent / "docs2" / "x")})
+
+
+def test_the_search_can_be_kept_to_one_file(api, folder):
+    _deep(folder, api)
+    one = folder / "projects" / "alpha" / "design" / "net.md"
+    out = api.search({"text": "timeout retry", "within": str(one)})
+    assert {Path(h["path"]).name for h in out["hits"]} == {"net.md"} and out["files"] == 1
+    assert out["within"]["file"] and [t["name"] for t in out["within"]["trail"]][-2:] == ["design", "net.md"]
+    assert out["into"] == []  # nothing below a file
+    # another word, the same file: the place stays until it is given up
+    assert api.search({"text": "ui", "within": str(one)})["hits"] == []
+    assert [Path(h["path"]).name for h in api.search({"text": "ui"})["hits"]] == ["ui.md"]
+
+
+def test_the_page_holds_the_place_in_a_box_and_lists_the_folders_under_it():
+    from docwhere.manage import MANAGE_JS
+
+    assert "within: withinPath" in MANAGE_JS  # sent with every search
+    assert "このファイルの中だけを探す" in MANAGE_JS and "場所の指定をやめる" in MANAGE_JS
+    assert 'withinPath = ""; place = null; closePlaces(); showPlace(); runSearch(false);' in MANAGE_JS  # another scope starts at its top
+    assert 'id="place"' in manage.BODY and 'id="place-root"' in manage.BODY
+    assert "api.search_places({ text, scope: scopeSel.value })" in MANAGE_JS
+    # entering the box lists every folder, whatever place it holds; an emptied box is the whole scope
+    assert 'const text = placeTyped ? placeIn.value.trim() : "";' in MANAGE_JS
+    assert "if (!placeIn.value.trim()) pickPlace(null);" in MANAGE_JS
+    # each part the results are drawn with is there: one left out stops every search with an error
+    for name in ("renderResults", "renderFacets", "renderPlace", "renderPreview", "showPlace", "askPlaces", "goTo"):
+        assert f"const {name} = " in MANAGE_JS, name
+
+
+def test_the_place_box_lists_every_folder_by_path_and_narrows_as_typed(api, folder, tmp_path):
+    _deep(folder, api)
+
+    def listed(text="", **more):
+        return [(p["shown"], p["file"]) for p in api.search_places({"text": text, **more})["places"]]
+
+    # nothing typed: every folder at every depth, one list ordered by path, written from below the
+    # folder searched (whose name stands before the box)
+    assert listed() == [("old", False), ("projects", False), ("projects\\alpha", False),
+                        ("projects\\alpha\\design", False), ("projects\\beta", False)]
+    # typed: the folders whose path holds every part, in any order and any letter case...
+    assert listed("design alpha") == [("projects\\alpha\\design", False)]
+    # ...then the files whose own name holds a part typed; a file is not listed for words that
+    # are all its folders'
+    assert listed("net") == [("projects\\alpha\\design\\net.md", True)]
+    assert listed("alpha plan") == [("projects\\alpha\\plan.md", True)]
+    assert listed("ALPHA") == [("projects\\alpha", False), ("projects\\alpha\\design", False)]
+    assert listed("nowhere") == []
+    # a file named as its folder is: the folder, then the file
+    (folder / "projects" / "beta" / "beta-plan.md").write_text("# beta plan\ntimeout\n", encoding="utf-8")
+    index = Index(api._db)
+    index.sync(folder)
+    index.close()
+    assert listed("beta") == [("projects\\beta", False), ("projects\\beta\\beta-plan.md", True)]
+    assert listed("alpha plan") == [("projects\\alpha\\plan.md", True)]  # not the other folder's plan
+
+    # what is listed is what the search then takes, and the search says how the box writes it
+    [place] = api.search_places({"text": "design alpha"})["places"]
+    assert place["path"] == str(folder / "projects" / "alpha" / "design")
+    out = api.search({"text": "timeout", "within": place["path"]})
+    assert sorted(Path(h["path"]).name for h in out["hits"]) == ["net.md", "ui.md"]
+    assert out["within"]["shown"] == "projects\\alpha\\design"
+
+    # several folders searched at once: each is a place itself, and leads the paths below it
+    other = tmp_path / "manuals"
+    (other / "v2").mkdir(parents=True)
+    (other / "v2" / "m.md").write_text("# m\ntimeout\n", encoding="utf-8")
+    index = Index(api._db)
+    index.sync(other)
+    index.close()
+    assert listed()[:2] == [("docs", False), ("docs\\old", False)] and listed()[-2:] == [("manuals", False), ("manuals\\v2", False)]
+    assert listed(scope=str(other)) == [("v2", False)]
+    assert api.search({"text": "timeout", "within": str(other / "v2")})["within"]["shown"] == "manuals\\v2"
+    with pytest.raises(LookupError):
+        api.search_places({"text": "x", "scope": str(tmp_path)})  # not a folder of the index
