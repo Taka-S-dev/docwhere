@@ -58,7 +58,7 @@ class _Compound:
 
     def __init__(self, data: bytes) -> None:
         if data[:8] != _SIGNATURE:
-            raise Unsupported("not a Word 97-2003 file (no compound file signature)")
+            raise Unsupported("not an Office 97-2003 file (no compound file signature)")
         self.data = data
         shift = _at(_u16, data, 0x1E, "the header")
         if shift not in (9, 12):

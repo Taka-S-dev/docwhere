@@ -115,7 +115,7 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    **A folder not read yet.** The first search on a new folder (or after many files changed)
    waits at most 20 seconds, then answers from the files read so far and leaves the rest to a
    background reader, which keeps going after the command returns (legacy .doc/.ppt are
-   converted through Office, about a second each). The JSON's `reading` says how much the
+   converted through Office, about a second each, unless read without Office). The JSON's `reading` says how much the
    search saw: `complete` is true once every file was read; while it is false, `read` of
    `files` were searched, `remaining` are not yet, `remaining_types` tells which kinds and
    `about_seconds_left` how long reading should take. `reading` is always there; never take
@@ -399,8 +399,8 @@ searching, showing a page, errors).
   not counted. The user can turn the count off (`docwhere pictures off`, or the settings of
   the index window) to read PDFs faster: then no hit has `pictures`, which says nothing about
   the page. `docwhere pictures` prints whether it is on.
-- A .doc is converted by Word one at a time, unless the user turned on reading it without
-  Word (`docwhere doc-reader fast`), which gives the same text. When reading is slow, see
+- A .doc or .ppt is converted by Word or PowerPoint one at a time, unless the user turned on
+  reading them without Office (`docwhere doc-reader fast`), which gives the same text. When reading is slow, see
   `references/troubleshooting.md`.
 - Word has no page numbers in the file; the section heading is the location. Auto-numbered
   headings get a best-effort `3.2.1` prefix that may not match custom numbering like 第3章.

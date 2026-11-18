@@ -115,9 +115,10 @@ def _locked(lock: Path):
                 fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def read_doc_without_word(db: Path) -> bool:
-    """Whether a .doc is read without Word (off unless turned on with ``docwhere doc-reader
-    fast``, after ``docwhere doc-check`` found it reads the documents of this PC as Word does)."""
+def read_without_office(db: Path) -> bool:
+    """Whether a .doc and a .ppt are read without Office (off unless turned on with ``docwhere
+    doc-reader fast``, after ``docwhere doc-check`` found it reads the files of this PC as Word
+    and PowerPoint do)."""
     return load_settings(db).get("doc_reader") == "fast"
 
 

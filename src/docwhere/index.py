@@ -292,10 +292,10 @@ class Index:
             self._check_disk()
         # the readers are other processes: they learn of the settings through the environment,
         # which they are started with (and which tells which files go to the Office worker)
-        from docwhere.settings import read_doc_without_word
+        from docwhere.settings import read_without_office
 
         os.environ[COUNT_PICTURES_ENV] = "1" if self.counting_pictures() else "0"
-        os.environ[DOC_READER_ENV] = "fast" if read_doc_without_word(self.path) else "word"
+        os.environ[DOC_READER_ENV] = "fast" if read_without_office(self.path) else "word"
         done, reading, saved = 0, [], time.monotonic()
         workers = _pool_size(todo, workers)
         history = {ext: k["seconds"] / k["files"] for ext, k in self.read_times().items() if k["files"]} if todo else {}

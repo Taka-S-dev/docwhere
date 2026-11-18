@@ -1,8 +1,9 @@
 """Legacy binary Office files (.doc .xls .ppt): converted to OOXML by Office itself, then read
 by the regular extractors.
 
-A .doc can be read without Word instead (extractors.msdoc), once that is turned on; it then
-reads alongside the other files, and hands the documents it leaves to Word on to Word's worker.
+A .doc and a .ppt can be read without Office instead (extractors.msdoc, extractors.msppt), once
+that is turned on; they then read alongside the other files, and hand the files those readers
+leave to Office on to the Office worker.
 
 An .xls is read directly instead (xlrd), with no Office and alongside the other files; only an
 .xls that xlrd cannot read (an HTML or XML table saved under that name) goes through Excel.
@@ -28,7 +29,7 @@ from docwhere.extractors import (
     may_start_application,
     on_release,
     process_started,
-    reading_doc_without_word,
+    reading_without_office,
     register,
 )
 from docwhere.model import Chunk
@@ -168,7 +169,7 @@ def open_word_document(path: Path):
 def extract_doc(path: Path) -> list[Chunk]:
     """Read without Word when that is turned on (``docwhere doc-reader fast``), as Word reads it;
     a document that reader leaves to Word, and every .doc otherwise, is converted by Word."""
-    if reading_doc_without_word():
+    if reading_without_office():
         from docwhere.extractors import msdoc
 
         try:
@@ -283,6 +284,22 @@ def _xls_through_excel(path: Path) -> list[Chunk]:
 
 @register(".ppt", serial=True)
 def extract_ppt(path: Path) -> list[Chunk]:
+    """Read without PowerPoint when that is turned on (``docwhere doc-reader fast``), as
+    PowerPoint reads it; a presentation that reader leaves to PowerPoint, and every .ppt
+    otherwise, is converted by PowerPoint."""
+    if reading_without_office():
+        from docwhere.extractors import msppt
+
+        try:
+            return msppt.extract(path)
+        except Exception:  # noqa: BLE001 - whatever that reader does not read as PowerPoint would, PowerPoint reads
+            if not may_start_application():
+                raise NeedsApplication from None
+    return ppt_through_powerpoint(path)
+
+
+def ppt_through_powerpoint(path: Path) -> list[Chunk]:
+    """The .ppt saved as .pptx by PowerPoint, then read by the .pptx reader."""
     from docwhere.extractors.powerpoint import extract as from_pptx
 
     app = _app("PowerPoint.Application")

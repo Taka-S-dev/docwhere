@@ -109,7 +109,7 @@ def supported_extensions() -> frozenset[str]:
 def is_serial(path: Path) -> bool:
     _load()
     ext = path.suffix.lower()
-    if ext == ".doc" and reading_doc_without_word():
+    if ext in (".doc", ".ppt") and reading_without_office():
         return False  # read alongside the other files; the few it leaves to Word are handed on
     return ext in _SERIAL
 
@@ -136,10 +136,10 @@ def counting_pictures() -> bool:
     return os.environ.get(COUNT_PICTURES_ENV) != "0"
 
 
-DOC_READER_ENV = "DOCWHERE_DOC_READER"  # "fast": .doc read without Word (the setting, see Index.extract)
+DOC_READER_ENV = "DOCWHERE_DOC_READER"  # "fast": .doc and .ppt read without Office (the setting, see Index.extract)
 
 
-def reading_doc_without_word() -> bool:
+def reading_without_office() -> bool:
     return os.environ.get(DOC_READER_ENV) == "fast"
 
 

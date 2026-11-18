@@ -221,8 +221,9 @@ def office_probe(kind: str) -> tuple[bool | None, str]:
     from docwhere.extractors import extract
     from docwhere.extractors import legacy as legacy_module
 
-    # Word and Excel are what is checked, whatever reads the files without them
-    read = {"excel": legacy_module._xls_through_excel, "word": legacy_module.doc_through_word}.get(kind, extract)
+    # the applications are what is checked, whatever reads the files without them
+    read = {"excel": legacy_module._xls_through_excel, "word": legacy_module.doc_through_word,
+            "powerpoint": legacy_module.ppt_through_powerpoint}.get(kind, extract)
 
     started = time.monotonic()
     own = ""
@@ -231,8 +232,8 @@ def office_probe(kind: str) -> tuple[bool | None, str]:
             legacy = _make_legacy(kind, Path(tmp))
             chunks = read(legacy)
             text = "\n".join(line for chunk in chunks for line in [chunk.title, *chunk.lines])
-            if kind == "word":
-                own = _without_word(legacy, chunks)
+            if kind in ("word", "powerpoint"):
+                own = _without_office(kind, legacy, chunks)
     except pywintypes.com_error as e:
         if e.hresult == -2147221005:  # CO_E_CLASSSTRING: the application is not installed
             if kind == "excel":
@@ -246,18 +247,20 @@ def office_probe(kind: str) -> tuple[bool | None, str]:
     return True, f"converted and read in {time.monotonic() - started:.1f}s{own}"
 
 
-def _without_word(path: Path, by_word: list) -> str:
-    """What reading the probe without Word gives (docwhere doc-reader fast), said after Word's result."""
-    from docwhere.extractors import msdoc
+def _without_office(kind: str, path: Path, by_office: list) -> str:
+    """What reading the probe without the application gives (docwhere doc-reader fast), said
+    after the application's result."""
+    from docwhere.extractors import msdoc, msppt
 
+    app = "Word" if kind == "word" else "PowerPoint"
     try:
-        own = msdoc.extract(path)
+        own = (msdoc if kind == "word" else msppt).extract(path)
     except msdoc.Unsupported as e:
-        return f"; without Word: left to Word ({e})"
+        return f"; without {app}: left to {app} ({e})"
     except Exception as e:  # noqa: BLE001
-        return f"; without Word: failed ({type(e).__name__}: {e})"
-    same = [(c.title, c.lines) for c in own] == [(c.title, c.lines) for c in by_word]
-    return "; read without Word too, the same" if same else "; read without Word, NOT the same as Word"
+        return f"; without {app}: failed ({type(e).__name__}: {e})"
+    same = [(c.title, c.lines) for c in own] == [(c.title, c.lines) for c in by_office]
+    return f"; read without {app} too, the same" if same else f"; read without {app}, NOT the same as {app}"
 
 
 def _make_legacy(kind: str, folder: Path) -> Path:

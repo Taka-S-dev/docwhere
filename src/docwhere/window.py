@@ -37,7 +37,7 @@ from docwhere.settings import (
     cite_mode,
     cite_name,
     count_pictures,
-    read_doc_without_word,
+    read_without_office,
     load_settings,
     private,
     save_settings,
@@ -255,7 +255,7 @@ def settings_values(db: Path) -> dict:
         "copy_caption": copy_caption(db),
         "cite_path": cite_mode(db),
         "count_pictures": count_pictures(db),
-        "doc_reader": "fast" if read_doc_without_word(db) else "word",
+        "doc_reader": "fast" if read_without_office(db) else "office",
     }
 
 
@@ -270,7 +270,7 @@ def save_settings_values(db: Path, values: dict) -> None:
     save_copy_options(db, values)  # a dialog of an older page has none of them: none is changed
     if "count_pictures" in values:
         save_settings(db, count_pictures=bool(values["count_pictures"]))
-    if values.get("doc_reader") in ("fast", "word"):
+    if values.get("doc_reader") in ("fast", "office"):
         save_settings(db, doc_reader=values["doc_reader"])
 
 

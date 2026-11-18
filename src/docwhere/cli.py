@@ -155,13 +155,14 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("to", choices=["on", "off", "status"], nargs="?", default="status")
     p.set_defaults(func=cmd_pictures)
 
-    p = sub.add_parser("doc-reader", help="how .doc files are read: by Word (the default) or without Word, which is "
-                       "much faster and reads them as Word does; check it first with doc-check")
-    p.add_argument("to", choices=["fast", "word", "status"], nargs="?", default="status")
+    p = sub.add_parser("doc-reader", help="how .doc and .ppt files are read: by Word and PowerPoint (office, the "
+                       "default) or without them (fast), which is much faster and reads them as Office does; check it "
+                       "first with doc-check")
+    p.add_argument("to", choices=["fast", "office", "status"], nargs="?", default="status")
     p.set_defaults(func=cmd_doc_reader)
 
-    p = sub.add_parser("doc-check", help="read .doc files both without Word and by Word, and compare: whether "
-                       "doc-reader fast reads this PC's documents as Word does")
+    p = sub.add_parser("doc-check", help="read .doc and .ppt files both without Office and by Word or PowerPoint, "
+                       "and compare: whether doc-reader fast reads this PC's files as Office does")
     p.add_argument("folders", type=Path, nargs="*", help="where to take the files from (default: the indexed folders)")
     p.add_argument("-n", type=int, default=50, help="files to check, spread over all found (default 50; 0: every file)")
     p.add_argument("--show", action="store_true", help="also print the first line that differs in each file")
@@ -723,17 +724,17 @@ def cmd_pictures(args) -> int:
 
 
 def cmd_doc_reader(args) -> int:
-    from docwhere.settings import read_doc_without_word, save_settings
+    from docwhere.settings import read_without_office, save_settings
 
     index = Index(args.db)
     if args.to != "status":
         save_settings(index.path, doc_reader=args.to)
-    if read_doc_without_word(index.path):
-        print("doc-reader: fast (.doc files are read without Word, as Word reads them; a document this reader"
-              " does not handle the way Word does is still read by Word)")
+    if read_without_office(index.path):
+        print("doc-reader: fast (.doc and .ppt files are read without Office, as Word and PowerPoint read them;"
+              " a file this reader does not handle the way Office does is still read by Word or PowerPoint)")
     else:
-        print("doc-reader: word (.doc files are converted by Word, one at a time; docwhere doc-check tells whether"
-              " reading them without Word gives the same text here)")
+        print("doc-reader: office (.doc and .ppt files are converted by Word and PowerPoint, one at a time;"
+              " docwhere doc-check tells whether reading them without Office gives the same text here)")
     return 0
 
 
@@ -749,14 +750,16 @@ def cmd_doc_check(args) -> int:
     else:
         from docwhere.index import MAX_FILE_BYTES
 
-        found = sorted({Path(r["path"]) for r in index.db.execute("SELECT path FROM files WHERE key LIKE '%.doc'")
+        found = sorted({Path(r["path"]) for r in index.db.execute(
+                            "SELECT path FROM files WHERE key LIKE '%.doc' OR key LIKE '%.ppt'")
                         if Path(r["path"]).is_file() and doccheck._size(Path(r["path"])) <= MAX_FILE_BYTES})
     index.close()
     if not found:
-        print("no .doc files found" + ("" if args.folders else " in the indexed folders; name a folder"), file=sys.stderr)
+        print("no .doc or .ppt files found" + ("" if args.folders else " in the indexed folders; name a folder"), file=sys.stderr)
         return 1
     picked = doccheck.sample(found, args.n)
-    print(f"checking {len(picked)} of {len(found)} .doc file(s): each read without Word and by Word", file=sys.stderr)
+    print(f"checking {len(picked)} of {len(found)} .doc/.ppt file(s): each read without Office and by Word or"
+          " PowerPoint", file=sys.stderr)
     report = doccheck.check(picked, len(found), lambda done, total: print(f"  {done}/{total}", end="\r", file=sys.stderr))
     print(file=sys.stderr)
     enabled = False
@@ -772,29 +775,29 @@ def cmd_doc_check(args) -> int:
         out["enabled"] = enabled
         print(json.dumps(out, ensure_ascii=False, indent=1))
         return 0
-    print(f"checked {report.checked} of {report.total} .doc file(s)")
-    print(f"  the same as Word: {report.same}")
-    left = sum(report.to_word.values())
-    print(f"  left to Word by the reader (read by Word as now): {left}"
-          + (" - " + ", ".join(f"{reason} {n}" for reason, n in report.to_word.most_common()) if left else ""))
-    print(f"  read differently from Word: {len(report.differ)}")
+    print(f"checked {report.checked} of {report.total} .doc/.ppt file(s)")
+    print(f"  the same as Office: {report.same}")
+    left = sum(report.to_office.values())
+    print(f"  left to Office by the reader (read by Word or PowerPoint as now): {left}"
+          + (" - " + ", ".join(f"{reason} {n}" for reason, n in report.to_office.most_common()) if left else ""))
+    print(f"  read differently from Office: {len(report.differ)}")
     for d in report.differ:
-        print(f"    {d['path']}: section {d['section'] + 1}")
+        print(f"    {d['path']}: {'slide' if d['path'].lower().endswith('.ppt') else 'section'} {d['section'] + 1}")
         if args.show:
-            print(f"      without Word: {d['fast']!r}\n      by Word:      {d['word']!r}")
-    if report.word_failed:
-        print(f"  Word could not read: {len(report.word_failed)}")
-        for d in report.word_failed:
+            print(f"      without Office: {d['fast']!r}\n      by Office:      {d['office']!r}")
+    if report.office_failed:
+        print(f"  Office could not read: {len(report.office_failed)}")
+        for d in report.office_failed:
             print(f"    {d['path']}: {d['error']}")
-    print(f"time: without Word {report.fast_seconds:.1f}s, by Word {report.word_seconds:.1f}s")
+    print(f"time: without Office {report.fast_seconds:.1f}s, by Office {report.office_seconds:.1f}s")
     if report.differ:
-        print("some files read differently: keep reading .doc by Word (docwhere doc-reader word);"
+        print("some files read differently: keep reading .doc and .ppt by Office (docwhere doc-reader office);"
               " doc-check --show prints the first line that differs in each"
               + ("; not turned on" if args.enable else ""))
     elif enabled:
-        print("no file read differently: .doc files are now read without Word (doc-reader fast)")
+        print("no file read differently: .doc and .ppt files are now read without Office (doc-reader fast)")
     elif report.same:
-        print("no file read differently: read .doc without Word with: docwhere doc-reader fast"
+        print("no file read differently: read .doc and .ppt without Office with: docwhere doc-reader fast"
               " (or doc-check --enable)")
     return 0
 

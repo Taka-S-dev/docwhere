@@ -104,12 +104,12 @@ def test_doc_reader_is_word_until_turned_on(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "index" / "index.db"))
     assert main(["doc-reader"]) == 0
-    assert "doc-reader: word" in capsys.readouterr().out
+    assert "doc-reader: office" in capsys.readouterr().out
     assert main(["doc-reader", "fast"]) == 0
     assert "doc-reader: fast" in capsys.readouterr().out
     settings = json.loads((tmp_path / "index" / "settings.json").read_text(encoding="utf-8"))
     assert settings["doc_reader"] == "fast"
-    assert main(["doc-reader", "word"]) == 0 and "doc-reader: word" in capsys.readouterr().out
+    assert main(["doc-reader", "office"]) == 0 and "doc-reader: office" in capsys.readouterr().out
 
 
 def test_doc_check_takes_files_spread_over_all_and_skips_words_lock_files(tmp_path):
@@ -260,10 +260,10 @@ def test_doc_check_reports_and_can_turn_the_reader_on(made, tmp_path, monkeypatc
     monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "index" / "index.db"))
     assert main(["doc-check", str(made), "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
-    assert (out["checked"], out["same"], out["differ"], out["word_failed"]) == (4, 3, [], [])
-    assert sum(out["to_word"].values()) == 1 and not out["enabled"]
+    assert (out["checked"], out["same"], out["differ"], out["office_failed"]) == (4, 3, [], [])
+    assert sum(out["to_office"].values()) == 1 and not out["enabled"]
     assert main(["doc-check", str(made), "--enable"]) == 0
-    assert "now read without Word" in capsys.readouterr().out
+    assert "now read without Office" in capsys.readouterr().out
     assert main(["doc-reader"]) == 0 and "doc-reader: fast" in capsys.readouterr().out
 
 
@@ -273,7 +273,7 @@ def test_an_index_reads_doc_without_word_when_turned_on(made, tmp_path, monkeypa
 
     monkeypatch.setenv(DOC_READER_ENV, "word")  # put back after the test, which the index changes
     contents = {}
-    for mode in ("word", "fast"):
+    for mode in ("office", "fast"):
         db = tmp_path / mode / "index.db"
         save_settings(db, doc_reader=mode)
         index = Index(db)
@@ -282,7 +282,7 @@ def test_an_index_reads_doc_without_word_when_turned_on(made, tmp_path, monkeypa
         contents[mode] = sorted(tuple(r) for r in index.db.execute(
             "SELECT f.path, c.title, c.body FROM chunks c JOIN files f ON f.id = c.file_id"))
         index.close()
-    assert contents["fast"] == contents["word"]  # the one left to Word, Word read
+    assert contents["fast"] == contents["office"]  # the one left to Word, Word read
 
 
 def test_a_piece_of_text_whose_attached_properties_change_the_text_is_left_to_word():
