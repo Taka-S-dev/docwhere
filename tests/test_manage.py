@@ -545,6 +545,7 @@ def test_the_page_holds_the_place_in_a_box_and_lists_the_folders_under_it():
     # entering the box lists every folder, whatever place it holds; an emptied box is the whole scope
     assert 'const text = placeTyped ? placeIn.value.trim() : "";' in MANAGE_JS
     assert "if (!placeIn.value.trim()) pickPlace(null);" in MANAGE_JS
+    assert 'placeIcon(x.file ? fileKind(x.path) : "folder")' in MANAGE_JS  # a row shows what it is before it is read
     # each part the results are drawn with is there: one left out stops every search with an error
     for name in ("renderResults", "renderFacets", "renderPlace", "renderPreview", "showPlace", "askPlaces", "goTo"):
         assert f"const {name} = " in MANAGE_JS, name

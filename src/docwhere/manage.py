@@ -1435,13 +1435,19 @@ html { scrollbar-gutter: stable; }
 .place-list { position: absolute; top: 100%; right: 0; z-index: 5; width: max(100%, 36em); max-width: 90vw; max-height: 60vh;
   margin: 4px 0 0; padding: 4px; overflow: auto; list-style: none; background: var(--surface); border: 1px solid var(--rule);
   border-radius: 8px; box-shadow: 0 6px 18px rgba(0, 0, 0, .18); }
+.place-icon { flex: none; align-self: center; color: var(--muted); fill: none; stroke: currentColor; stroke-width: 1.2;
+  stroke-linejoin: round; stroke-linecap: round; }
+.place-icon.folder { fill: currentColor; fill-opacity: .25; }
+.place-icon.pdf { color: #e5484d; }
+.place-icon.word { color: #4b8fe2; }
+.place-icon.sheet { color: #3fa66b; }
+.place-icon.slides { color: #e8833a; }
+.place-opt[aria-selected="true"] .place-icon, .place-opt:hover .place-icon { color: inherit; }
 .place-opt { display: flex; align-items: baseline; gap: 8px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
   font-family: Consolas, "BIZ UDGothic", monospace; font-size: 13px; }
 .place-opt[aria-selected="true"], .place-opt:hover { background: var(--blue); color: var(--surface); }
-.place-kind { flex: none; font-size: 11px; color: var(--muted); border: 1px solid var(--rule); border-radius: 4px; padding: 0 4px; }
 .place-name { overflow-wrap: anywhere; }
 .place-opt.here .place-name { font-weight: 700; }
-.place-opt[aria-selected="true"] .place-kind, .place-opt:hover .place-kind { color: inherit; border-color: currentColor; }
 .place-none { padding: 6px 10px; color: var(--muted); font-size: 13px; }
 .search-bar select { max-width: 30%; padding: 0 10px; font: inherit; color: var(--ink); background: var(--surface);
   border: 1px solid var(--rule); border-radius: 8px; }
@@ -2816,6 +2822,30 @@ MANAGE_JS = r"""(() => {
     if (document.activeElement !== placeIn) placeIn.value = withinPath && place ? place.shown : "";
     placeIn.title = withinPath ? withinPath : "";
   };
+  // a folder, or a sheet of paper in its format's colour: what a row is shows before it is read
+  const SHEET = "M4.3 1.8h4.6l3.3 3.3v7.8c0 .7-.6 1.3-1.3 1.3H4.3c-.7 0-1.3-.6-1.3-1.3V3.1c0-.7.6-1.3 1.3-1.3zM8.8 1.9v3.4h3.3";
+  const PLACE_ICONS = {
+    folder: "M1.8 4.3c0-.7.6-1.3 1.3-1.3h3.1l1.4 1.5h5.3c.7 0 1.3.6 1.3 1.3v5.9c0 .7-.6 1.3-1.3 1.3H3.1c-.7 0-1.3-.6-1.3-1.3z",
+    file: SHEET,
+    // the sheet with what the format holds drawn on it: lines of text, a table, a slide
+    pdf: `${SHEET}M5.4 8.4h5.2M5.4 10.3h5.2M5.4 12.2h5.2`,
+    word: `${SHEET}M5.4 8.4h5.2M5.4 10.3h5.2M5.4 12.2h3`,
+    sheet: `${SHEET}M5.3 7.9h5.4v4.4H5.3zM5.3 10.1h5.4M8 7.9v4.4`,
+    slides: `${SHEET}M5.3 8.2h5.4v3.6H5.3z`,
+  };
+  const FILE_KINDS = { pdf: "pdf", doc: "word", docx: "word", docm: "word", xls: "sheet", xlsx: "sheet", xlsm: "sheet", csv: "sheet",
+    tsv: "sheet", ppt: "slides", pptx: "slides", pptm: "slides" };
+  const fileKind = (path) => FILE_KINDS[(/\.([^.\\/]+)$/.exec(String(path)) || ["", ""])[1].toLowerCase()] || "file";
+  const placeIcon = (kind) => {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    for (const [k, v] of Object.entries({ class: `place-icon ${kind}`, viewBox: "0 0 16 16", width: "16", height: "16",
+      "aria-hidden": "true", focusable: "false" })) svg.setAttribute(k, v);
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", PLACE_ICONS[kind]);
+    svg.append(path);
+    return svg;
+  };
   const closePlaces = () => {
     placeSeq += 1;  // an answer still on its way is not shown
     clearTimeout(placeTimer);
@@ -2851,10 +2881,11 @@ MANAGE_JS = r"""(() => {
       placeAt = placeTyped ? (r.places.length ? 0 : -1) : r.places.findIndex((x) => keyOf(x.path) === keyOf(withinPath));
       put(placeList,
         r.places.map((x, i) => h("li", { role: "option", id: `place-opt-${i}`, title: x.path,
+          "aria-label": `${x.file ? "ファイル" : "フォルダ"} ${x.shown}`,
           class: keyOf(x.path) === keyOf(withinPath) ? "place-opt here" : "place-opt",
           onmousedown: (e) => { e.preventDefault(); pickPlace(x); } },  // before the box loses the keyboard
-          h("span", { class: "place-name", text: x.shown }),
-          x.file ? h("span", { class: "place-kind", text: "ファイル" }) : null)),
+          placeIcon(x.file ? fileKind(x.path) : "folder"),
+          h("span", { class: "place-name", text: x.shown }))),
         r.places.length ? null : h("li", { class: "place-none", text: text ? "合うフォルダやファイルはありません" : "フォルダはありません" }),
         r.more ? h("li", { class: "place-none", text: "ほかにもあります。名前の一部を打つと絞れます" }) : null);
       placeList.hidden = false;
