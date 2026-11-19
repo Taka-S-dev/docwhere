@@ -413,6 +413,21 @@ _A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 MAX_XML_BYTES = 16 << 20
 
 
+def _refuse_declarations(xml: bytes) -> None:
+    """Refuse a document type or entity declaration, which DrawingML never has and whose
+    entities could expand without end. Asked of the parser, not of the bytes: a part in
+    UTF-16 or another encoding spells ``<!DOCTYPE`` in bytes no search for it would find."""
+    from xml.parsers import expat
+
+    def refuse(*_):
+        raise Unsupported("a shape's DrawingML declares a document type or entities")
+
+    parser = expat.ParserCreate()
+    parser.StartDoctypeDeclHandler = refuse
+    parser.EntityDeclHandler = refuse
+    parser.Parse(xml, True)
+
+
 def _drawingml(blob: bytes) -> list[str] | None:
     """The lines of a shape kept in DrawingML, read as the .pptx reader reads the shape; None
     when only the note of how it was drawn is kept (the shape itself is the drawing)."""
@@ -420,6 +435,7 @@ def _drawingml(blob: bytes) -> list[str] | None:
     import zipfile
     import zlib
     from xml.etree import ElementTree
+    from xml.parsers import expat
 
     try:
         with zipfile.ZipFile(io.BytesIO(blob)) as z:
@@ -436,11 +452,10 @@ def _drawingml(blob: bytes) -> list[str] | None:
                 xml = f.read(MAX_XML_BYTES + 1)
             if len(xml) > MAX_XML_BYTES:  # the size the zip gives was not the size it holds
                 raise Unsupported("a shape's DrawingML is too large")
-        if b"<!DOCTYPE" in xml or b"<!ENTITY" in xml:  # never in DrawingML; entities could expand without end
-            raise Unsupported("a shape's DrawingML declares entities")
+        _refuse_declarations(xml)
         root = ElementTree.fromstring(xml)
-    except (zipfile.BadZipFile, KeyError, ElementTree.ParseError, EOFError, ValueError, NotImplementedError,
-            OSError, zlib.error) as e:
+    except (zipfile.BadZipFile, KeyError, ElementTree.ParseError, expat.ExpatError, EOFError, ValueError,
+            NotImplementedError, OSError, zlib.error) as e:
         raise Unsupported(f"a shape's DrawingML does not read ({type(e).__name__})") from e
     return list(_xml_lines([root], 0))
 

@@ -93,6 +93,12 @@ def test_drawingml_that_could_expand_without_end_is_refused():
     bomb = '<!DOCTYPE x [<!ENTITY a "aaaa"><!ENTITY b "&a;&a;&a;">]><p:sp ' + P + '>&b;</p:sp>'
     with pytest.raises(msppt.Unsupported):
         msppt._drawingml(_blob(bomb))
+    # the same in UTF-16, where no byte search for "<!DOCTYPE" finds it
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        z.writestr("drs/shapexml.xml", ('<?xml version="1.0" encoding="UTF-16"?>' + bomb).encode("utf-16"))
+    with pytest.raises(msppt.Unsupported, match="declares"):
+        msppt._drawingml(out.getvalue())
     with pytest.raises(msppt.Unsupported):
         msppt._drawingml(b"PK\x03\x04 not a zip")
 
