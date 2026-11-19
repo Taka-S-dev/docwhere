@@ -100,6 +100,15 @@ def open_manager(db: Path, tab: str = "folders") -> bool:
 # ---- what the page may ask -------------------------------------------------------------------
 
 
+def _shown_at(raw: list[str], shown: list[tuple[int, str]], line: str | None) -> int | None:
+    """Which of the lines shown (``shown``, from display_lines over ``raw``) holds the hit's
+    line, the one its snippet was cut from; None when the section no longer holds it."""
+    if not line or line not in raw:
+        return None
+    at = raw.index(line)
+    return max(i for i, (start, _) in enumerate(shown) if start <= at)
+
+
 class ManageApi:
     """Methods the manager script may call. Attributes are private so pywebview exposes only these.
     Each call opens its own index connection: the bridge runs every call on a thread of its own."""
@@ -685,13 +694,14 @@ class ManageApi:
             rows = index.chunk_with_neighbors(hit["chunk_id"], 2)
         finally:
             index.close()
-        return {
-            "path": hit["path"],
-            "sections": [{"title": r["title"], "crumb": r["crumb"],
-                          "body": "\n".join(t for _, t in display_lines(r["body"][:20000].split("\n"))),
-                          "current": r["id"] == hit["chunk_id"]} for r in rows],
-            "pages": pages,
-        }
+        sections = []
+        for r in rows:
+            raw = r["body"][:20000].split("\n")
+            shown = display_lines(raw)
+            sections.append({"title": r["title"], "crumb": r["crumb"], "body": "\n".join(t for _, t in shown),
+                             "current": r["id"] == hit["chunk_id"],
+                             "hit": _shown_at(raw, shown, hit["anchor"].get("text")) if r["id"] == hit["chunk_id"] else None})
+        return {"path": hit["path"], "sections": sections, "pages": pages}
 
     @bridge_method
     def page_image(self, n: int, convert: bool = False) -> dict:
@@ -1517,6 +1527,9 @@ html { scrollbar-gutter: stable; }
 .pv-sec.current { color: var(--ink); padding: 8px 12px; margin-left: -12px; margin-right: -12px;
   border-left: 4px solid var(--marker); background: color-mix(in srgb, var(--marker-soft) 18%, transparent); border-radius: 0 6px 6px 0; }
 .pv-text p { margin: 0 0 4px; overflow-wrap: anywhere; }
+/* the hit's own line within its marked section: blue, as the section's marker is not */
+.pv-text p.pv-hit { margin: 2px -8px 6px; padding: 3px 8px; border-radius: 4px;
+  background: color-mix(in srgb, var(--blue) 30%, transparent); box-shadow: inset 3px 0 0 var(--blue); }
 .pv-loading { color: var(--muted); margin: 16px 0 0; overflow-wrap: anywhere; }
 /* text or page: a two-way switch at the end of the actions */
 .pv-mode { display: inline-flex; margin-left: auto; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
@@ -3106,19 +3119,33 @@ MANAGE_JS = r"""(() => {
       const terms = allTerms().concat(hit.terms);
       // a heading only where the file has one: a file's name as its only "title" says nothing new
       const heading = (sec) => sec.crumb || (sec.title !== base(hit.path) ? sec.title : "");
-      // a section's text starts with its own heading: shown once, above it
+      // a section's text starts with its own heading: shown once, above it. [lines, how many
+      // were dropped from the top], so the hit's line is still found by its place
       const lines = (sec) => {
         const all = sec.body.split("\n");
         const own = heading(sec).split(" > ").pop().trim();
-        return own && all[0].trim() === own ? all.slice(1) : all;
+        return own && all[0].trim() === own ? [all.slice(1), 1] : [all, 0];
+      };
+      // the line the hit's snippet was cut from is marked, apart from the rest of its section:
+      // in a long section it is what to read first, and the terms are marked everywhere
+      const text = (sec) => {
+        const [shown, dropped] = lines(sec);
+        const hitAt = sec.hit == null ? -1 : sec.hit - dropped;
+        return shown.map((line, i) => h("p", i === hitAt ? { class: "pv-hit", title: "この結果の行" } : {},
+          markTerms(line.split("\t").join("　｜　"), terms)));
       };
       const body = p.sections.length ? p.sections.map((sec) => h("section", { class: `pv-sec${sec.current ? " current" : ""}` },
         heading(sec) ? h("h3", { text: heading(sec) }) : null,
-        h("div", { class: "pv-text" }, lines(sec).map((line) => h("p", {}, markTerms(line.split("\t").join("　｜　"), terms))))))
+        h("div", { class: "pv-text" }, text(sec))))
         : [h("p", { class: "pv-loading", text: p.note || "この結果には本文がありません（ファイル名で見つけたもの）。ファイルを開いて見てください。" })];
       put(pane, head, body);
+      // the hit's line a third of the way down, with what leads up to it above; else its section's top
+      const line = pane.querySelector(".pv-hit");
       const current = pane.querySelector(".pv-sec.current");
-      if (current) pane.scrollTop += current.getBoundingClientRect().top - pane.getBoundingClientRect().top - head.offsetHeight - 12;
+      if (line) {
+        const room = pane.clientHeight - head.offsetHeight;
+        pane.scrollTop += line.getBoundingClientRect().top - pane.getBoundingClientRect().top - head.offsetHeight - room / 3;
+      } else if (current) pane.scrollTop += current.getBoundingClientRect().top - pane.getBoundingClientRect().top - head.offsetHeight - 12;
     }).catch((e) => { if (mine === previewSeq) put(pane, head, h("p", { class: "pv-loading", text: `表示できませんでした: ${reason(e)}` })); }), 120);
   };
 

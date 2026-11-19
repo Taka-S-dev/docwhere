@@ -633,3 +633,23 @@ def test_a_hit_in_the_search_tab_names_its_sections_other_pages(api, monkeypatch
     assert opened == [{"page": 2}, {"page": 1}]
     with pytest.raises(LookupError):
         api.open_file(1, 5)
+
+def test_the_pane_marks_the_line_the_hit_was_found_on(api, folder):
+    lines = [f"手順 {i}: 野菜を切る。" for i in range(30)] + ["ここで鍋の火加減を中火にする。"] + ["後片付けをする。"] * 10
+    (folder / "long.md").write_text("# 煮込み\n" + "\n".join(lines) + "\n", encoding="utf-8")
+    index = Index(api._db)
+    index.sync(folder)
+    index.close()
+    out = api.search({"text": "火加減"})
+    section = next(s for s in api.preview(out["hits"][0]["n"])["sections"] if s["current"])
+    assert "火加減" in section["body"].split("\n")[section["hit"]]
+
+
+def test_the_hit_line_is_found_among_lines_put_together_for_reading():
+    from docwhere.model import display_lines
+
+    raw = ["前の文。", *"あいうえおかきくけこ", "ここで鍋を出す。"]  # a run of one-character lines is shown as one
+    shown = display_lines(raw)
+    assert shown[manage._shown_at(raw, shown, "ここで鍋を出す。")][1] == "ここで鍋を出す。"
+    assert manage._shown_at(raw, shown, "う") == 1  # inside the run: the line it was put into
+    assert manage._shown_at(raw, shown, "もうない行") is None
