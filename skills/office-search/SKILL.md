@@ -97,7 +97,10 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    were read" below).
 
    Add `--all` when every term must appear (narrowing), `--ext pdf,docx` to limit formats,
-   `-n 20` for more results. Later searches take well under a second.
+   `-n 20` for more results. Later searches take well under a second. With `--all`, a
+   section's pages count together: a hit may hold some terms and have the rest further on
+   under the same heading, listed in its `elsewhere` (term, page, words around it). Read
+   that place too before answering from such a hit.
 
    - A term is matched as written: quote words that must stay together (`"接続 タイムアウト"`).
    - `--not WORD` (repeatable) leaves out sections containing it, or files whose path does:

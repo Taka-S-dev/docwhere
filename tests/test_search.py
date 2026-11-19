@@ -462,3 +462,71 @@ def test_a_pdf_without_pictures_is_not_read_again_for_the_count(tmp_path, capsys
     for updated in (1, 0):  # counted and found to have none: that is known, and it is current
         assert main(["search", "Only words", "--in", str(folder), "--json"]) == 0
         assert json.loads(capsys.readouterr().out)["index"]["updated"] == updated
+
+
+def _pdf(path: Path, pages: list[str], heading: str | None = None, *more_headings) -> None:
+    import pymupdf
+
+    doc = pymupdf.open()
+    for text in pages:
+        doc.new_page().insert_text((72, 72), text, fontname="japan", fontsize=11)
+    if heading:
+        doc.set_toc([[1, heading, 1], *more_headings])
+    doc.save(path)
+
+
+def test_all_the_words_are_found_across_the_pages_of_one_section(tmp_path, index):
+    root = tmp_path / "docs"
+    root.mkdir()
+    filler = "野菜を切って下ごしらえをする。\n" * 10
+    # the dish named on one page and the setting asked about on a later one, under one heading
+    _pdf(root / "far.pdf", ["煮込みの手順\n" + filler + "鍋を用意する。", filler, "強火で沸かす。\n" + filler], "煮込みの手順")
+    _pdf(root / "next.pdf", ["焼き物の手順\n" + filler + "鍋を用意する。", "強火で沸かす。\n" + filler], "焼き物の手順")
+    _pdf(root / "same.pdf", ["蒸し物の手順\n鍋を用意する。強火で沸かす。"], "蒸し物の手順")
+    # under two headings: words of two sections are not found together
+    _pdf(root / "apart.pdf", ["揚げ物\n鍋を用意する。", "炒め物\n強火で沸かす。"], "揚げ物", [1, "炒め物", 2])
+    index.sync(root)
+    hits = search(index, [root], ["鍋", "強火"], require_all=True, limit=10)
+    names = [Path(h.path).name for h in hits]
+    assert names == ["same.pdf", "next.pdf", "far.pdf"]  # the closer, the higher
+    assert hits[0].elsewhere is None
+    assert hits[1].elsewhere == [{"term": "強火", "location": "p.2", "snippet": "強火で沸かす。"}]
+    assert hits[2].location == "p.1" and hits[2].elsewhere[0]["location"] == "p.3"
+
+
+def test_a_long_section_read_in_pieces_holds_its_words_together(tmp_path, index):
+    import docx
+
+    root = tmp_path / "docs"
+    root.mkdir()
+    d = docx.Document()
+    d.add_heading("長い節", 1)
+    d.add_paragraph("ここで鍋を出す。")
+    for i in range(140):  # past MAX_CHUNK_CHARS: the section is indexed in two pieces
+        d.add_paragraph(f"{i} 番目の段落。材料をそろえて、順に下ごしらえをしておく。")
+    d.add_paragraph("強火にかける。")
+    d.save(root / "long.docx")
+    index.sync(root)
+    hits = search(index, [root], ["鍋", "強火"], require_all=True)
+    assert len(hits) == 1 and hits[0].elsewhere[0]["term"] == "強火"
+
+
+def test_a_file_named_for_one_word_holds_it_for_require_all(tmp_path, index):
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "煮込み.md").write_text("# 手順\n火加減は中火。\n", encoding="utf-8")
+    (root / "焼き物.md").write_text("# 手順\n火加減は強火。\n", encoding="utf-8")
+    index.sync(root)
+    hits = search(index, [root], ["煮込み", "火加減"], require_all=True)
+    assert [Path(h.path).name for h in hits] == ["煮込み.md"]
+
+def test_a_section_opening_with_several_bookmarks_is_still_one(tmp_path, index):
+    root = tmp_path / "docs"
+    root.mkdir()
+    # two bookmarks start on page 1: its title names both, page 2's only the inner one;
+    # the heading path is the same, and so is the section
+    _pdf(root / "two.pdf", ["下ごしらえ\n鍋を用意する。", "強火で沸かす。"], "台所", [2, "下ごしらえ", 1])
+    index.sync(root)
+    hits = search(index, [root], ["鍋", "強火"], require_all=True)
+    assert [Path(h.path).name for h in hits] == ["two.pdf"]
+    assert hits[0].elsewhere[0]["location"] == "p.2"

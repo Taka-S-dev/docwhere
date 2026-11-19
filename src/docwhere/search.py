@@ -80,6 +80,9 @@ class Hit:
     # share of the page they cover; set by the command line. What the question asks for may be
     # written in one of them, where no search finds it.
     pictures: dict | None = None
+    # when not all the words asked for are in this part of the section: where in the same
+    # section the rest are, [{"term", "location", "snippet"}] (see _across_sections)
+    elsewhere: list[dict] | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -165,17 +168,103 @@ def search(
     rows = list(_fetch(index, candidates))
     newer = index.newer_among({r["family"] for r in rows if r["family"]}, roots)  # the versions of these files only
     folded = [t.lower() for t in terms]
-    scored = []
+    scored, partly = [], []
     for row in rows:
         if _excluded(row, unwanted):
             continue
         score, matched = score_row(row, folded, weights, group_of)
-        if matched and required <= {group_of[i] for i in matched}:
-            if row["path"] in newer:
-                score *= SUPERSEDED_FACTOR
+        if not matched:
+            continue
+        if row["path"] in newer:
+            score *= SUPERSEDED_FACTOR
+        holds = {group_of[i] for i in matched}
+        if required <= holds:
             scored.append((score, row, [terms[i] for i in matched]))
+        elif len(required) > 1:
+            partly.append((score, row, matched, holds))
+    if partly:
+        scored += _across_sections(index, partly, scored, required, terms, group_of)
     _count(scored, found)
     return _with_heading_pages(index, _hits(scored, newer, limit, per_file, found))
+
+
+SPLIT_NEXT = 0.7  # all the words in a section, but not on one page or part: next to each other...
+SPLIT_FARTHER = 0.9  # ...and this much less for each further page between them...
+SPLIT_LEAST = 0.3  # ...down to this, so a section's words far apart still come before none
+
+
+def _across_sections(index: Index, partly: list[tuple], whole: list[tuple], required: set[int],
+                     terms: list[str], group_of: list[int]) -> list[tuple]:
+    """Hits for sections that hold every word asked for, though no one part of them does.
+
+    A section is read in parts: a bookmarked PDF a page each, a long one in pieces of
+    MAX_CHUNK_CHARS. "This feature's setting" may have the feature named on one page and the
+    setting a few pages on, under the same heading; asked for both, it is found only when the
+    parts of one section count together. A heading is not crossed: words in two sections are
+    two things that happen to be near.
+
+    ``partly`` holds (score, row, matched, groups held) for parts holding some of the words.
+    Each section whose parts hold them all gives one hit, at its part holding the most of them,
+    ranked by how close the rest are (SPLIT_NEXT and on) and with where they are as
+    ``elsewhere``. A section with a part that holds them all is a hit already (``whole``)."""
+    by_heading: dict[tuple, list[tuple]] = {}
+    for item in partly:
+        row = item[1]
+        by_heading.setdefault((row["path"], _heading(row)), []).append(item)
+    held = {(r["path"], _heading(r)): [] for _, r, _ in whole}
+    for _, r, _ in whole:
+        held[(r["path"], _heading(r))].append(r["id"])
+    out = []
+    for key, items in by_heading.items():
+        if len(items) < 2:
+            continue
+        items.sort(key=lambda item: item[1]["id"])
+        runs, run = [], [items[0]]
+        for before, after in zip(items, items[1:]):
+            if _one_section(index, before[1], after[1]):
+                run.append(after)
+            else:
+                runs.append(run)
+                run = [after]
+        runs.append(run)
+        for run in runs:
+            if not required <= set().union(*(item[3] for item in run)):
+                continue
+            first, last = run[0][1]["id"], run[-1][1]["id"]
+            if any(first <= i <= last for i in held.get(key, ())):
+                continue  # a part of this section holds every word: that is the hit
+            score, row, matched, holds = max(run, key=lambda item: (len(item[3]), item[0]))
+            elsewhere, more, farthest = [], 0.0, 0
+            for group in sorted(required - holds):
+                other = min((item for item in run if group in item[3]),
+                            key=lambda item: (abs(item[1]["id"] - row["id"]), -item[0]))
+                farthest = max(farthest, abs(other[1]["id"] - row["id"]))
+                term = next(terms[i] for i in other[2] if group_of[i] == group)
+                snippet, anchor = locate_snippet(other[1], [term])
+                elsewhere.append({"term": term, "location": location_label(anchor), "snippet": snippet})
+                more += other[0] / len(other[3])  # its share of the score of the part it is in
+            near = max(SPLIT_LEAST, SPLIT_NEXT * SPLIT_FARTHER ** (farthest - 1))
+            out.append(((score + more) * near, row, [terms[i] for i in matched], elsewhere))
+    return out
+
+
+def _heading(row) -> str:
+    """What a part is a part of: its heading path (a bookmarked PDF's page in mid-section has
+    the path, and a title that differs from its first page's when several bookmarks start
+    there); its title only when it has no path."""
+    return row["crumb"] or row["title"]
+
+
+def _one_section(index: Index, before, after) -> bool:
+    """Whether two parts with the same heading are of one section: nothing of another heading
+    lies between them."""
+    if after["id"] == before["id"] + 1:
+        return True
+    return index.db.execute(
+        "SELECT 1 FROM chunks WHERE id > ? AND id < ? AND (file_id != (SELECT file_id FROM chunks WHERE id = ?)"
+        " OR (CASE WHEN crumb != '' THEN crumb ELSE title END) != ?) LIMIT 1",
+        (before["id"], after["id"], before["id"], _heading(before)),
+    ).fetchone() is None
 
 
 HEADING_PAGES_LOOKED_AT = 300  # pages either side of a hit looked at for the rest of its heading
@@ -237,7 +326,7 @@ def _hits(scored: list[tuple], newer: dict, limit: int, per_file: int, found: di
     if found is not None and found.get("then_rest"):
         found["first"] = len(first)
     hits: list[Hit] = []
-    for score, row, matched in (first + rest)[:limit]:
+    for score, row, matched, *elsewhere in (first + rest)[:limit]:
         snippet, anchor = locate_snippet(row, matched)
         hits.append(
             Hit(
@@ -253,6 +342,7 @@ def _hits(scored: list[tuple], newer: dict, limit: int, per_file: int, found: di
                 newer_version=newer.get(row["path"]),
                 anchor=anchor,
                 chunk_id=row["id"],
+                elsewhere=elsewhere[0] if elsewhere else None,
             )
         )
     return hits
@@ -571,15 +661,17 @@ def score_row(row, folded: list[str], weights: list[float] | None = None,
     # term each, a section repeating 既定値 and 初期値 outranked the one about the subject asked for.
     things: dict[int, list] = {}
     for i, term in enumerate(folded):
-        in_title, in_crumb, count = term in title, term in crumb, body.count(term)
-        if not (in_title or in_crumb or count):
+        in_title, in_crumb, count, in_name = term in title, term in crumb, body.count(term), term in filename
+        # a file named for what is asked about holds it in every section: "this feature's
+        # setting" asked of a manual a file per feature
+        if not (in_title or in_crumb or count or in_name):
             continue
         matched.append(i)
         thing = things.setdefault(group_of[i] if group_of else i, [False, False, 0, False, math.inf])
         thing[0] |= in_title
         thing[1] |= in_crumb
         thing[2] = max(thing[2], count)
-        thing[3] |= term in filename
+        thing[3] |= in_name
         thing[4] = min(thing[4], weights[i] if weights else 1.0)
     for in_title, in_crumb, count, in_name, weight in things.values():
         score += weight * (W_TITLE * (in_title and not continued) + W_CRUMB * in_crumb + math.log1p(count)

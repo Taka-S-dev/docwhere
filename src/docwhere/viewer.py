@@ -984,6 +984,11 @@ def _card(
     if hit.get("query"):  # collected from several searches: the words this one was found by
         facts.append(f"<span>検索語 {esc(hit['query'])}</span>")
     newer = f'<p class="warn">新しい版かもしれません: {esc(Path(hit["newer_version"]).name)}</p>' if hit.get("newer_version") else ""
+    # all the words were asked for, and some are further on in the same section: where
+    newer += "".join(
+        f'<p class="elsewhere"><span>{esc("同じ節の " + e["location"] if e.get("location") else "同じ節の別の箇所")}：</span>'
+        f'{esc(e.get("snippet", ""))}</p>'
+        for e in hit.get("elsewhere") or ())
     if hit.get("rendered_from") in (".docx", ".docm", ".doc"):
         newer += '<p class="note">ページは Word で PDF にしたときの番号です。印刷設定によってずれることがあります。</p>'
 
@@ -1251,6 +1256,8 @@ blockquote { margin: 14px 0 0; padding: 2px 0 2px 14px; border-left: 3px solid v
 .hit .path-ops .quiet { min-height: 24px; padding: 2px 6px; font-size: 12px; color: var(--blue); background: transparent; border-color: transparent; }
 .hit .path-ops .quiet:hover { border-color: var(--rule); }
 .warn { margin: 8px 0 0; color: var(--warn); font-size: 14px; }
+.hit .elsewhere { margin: 4px 0 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.hit .elsewhere span { color: var(--ink); }
 .hit .note { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
 .sheet { margin: 18px 0 0; scroll-margin-top: 12px; }
 .sheet figcaption { margin: 0 0 6px; color: var(--muted); font-size: 13px; }

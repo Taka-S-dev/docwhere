@@ -1476,6 +1476,8 @@ html { scrollbar-gutter: stable; }
 .r-snippet { margin: 0; overflow-wrap: anywhere; }
 .r-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
 .r-flag { color: var(--warn); font-size: 12px; }
+.r-elsewhere { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.r-elsewhere-at { color: var(--ink); }
 /* hits collected across searches: a bar with their count, and a mark on each one in the list */
 .collect-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; padding: 8px 12px;
   background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
@@ -2762,6 +2764,11 @@ MANAGE_JS = r"""(() => {
   const copyCitation = (hit) => api.copy(citation(hit))
     .then(() => toast(`出典をコピーしました: ${citation(hit)}`))
     .catch(failed("コピーできませんでした"));
+  // all the words were asked for, and some are not here but further on in the same section:
+  // where, with the words around them, so the reader can tell whether the two belong together
+  const elsewhereLines = (hit) => (hit.elsewhere || []).map((e) => h("p", { class: "r-elsewhere" },
+    h("span", { class: "r-elsewhere-at", text: e.location ? `同じ節の ${e.location}：` : "同じ節の別の箇所：" }),
+    markTerms(e.snippet, [e.term])));
   const copyPath = (path) => api.copy(path)
     .then(() => toast(`パスをコピーしました: ${path}`))
     .catch(failed("コピーできませんでした"));
@@ -3027,6 +3034,7 @@ MANAGE_JS = r"""(() => {
     const head = h("header", { class: "pv-head" },
       h("h2", { class: "pv-name", text: base(hit.path), title: hit.path }),
       h("p", { class: "pv-where", text: [hit.crumb || "", hit.location].filter(Boolean).join("　") }),
+      ...elsewhereLines(hit),
       // what acts on the file sits on its path's line, apart from what acts on the hit below
       h("p", { class: "pv-path" },
         h("span", { text: `${shortPath(hit.path)}　${hit.modified}`, title: hit.path }),
@@ -3149,6 +3157,7 @@ MANAGE_JS = r"""(() => {
           h("span", { class: "r-where", text: [heading, hit.location].filter(Boolean).join("　") }),
           h("span", { class: "r-collected", text: "調査リスト" })),
         h("p", { class: "r-snippet" }, markTerms(hit.snippet, terms.concat(hit.terms))),
+        ...elsewhereLines(hit),
         // the name is in bold above: the date first, so it is never the part cut off, then the folder
         h("span", { class: "r-path", text: `${hit.modified}　${nearDir(hit.path)}`, title: hit.path }),
         hit.newer_version ? h("span", { class: "r-flag", text: `新しい版かもしれません: ${base(hit.newer_version)}` }) : null);

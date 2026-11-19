@@ -614,3 +614,7 @@ def test_the_place_box_lists_every_folder_by_path_and_narrows_as_typed(api, fold
     assert api.search({"text": "timeout", "within": str(other / "v2")})["within"]["shown"] == "manuals\\v2"
     with pytest.raises(LookupError):
         api.search_places({"text": "x", "scope": str(tmp_path)})  # not a folder of the index
+
+
+def test_a_hit_in_the_search_tab_says_where_the_rest_of_the_words_are():
+    assert manage.MANAGE_JS.count("...elsewhereLines(hit)") == 2  # in the list and in the pane beside it

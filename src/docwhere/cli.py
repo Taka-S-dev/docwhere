@@ -432,6 +432,8 @@ def cmd_search(args) -> int:
         line = "  ".join(x for x in (Path(h.path).name, heading, where, f"({h.modified})") if x)
         print(f"{h.n:>2}. {line}")
         print(f"    {highlight(h.snippet, h.terms)}")
+        for e in h.elsewhere or ():  # the rest of the words asked for, further on in the same section
+            print(f"    {e['term']}: {e['location'] or 'elsewhere'} in the same section: {highlight(e['snippet'], [e['term']])}")
         print(f"    {h.path}")
         if h.newer_version:
             print(f"    ! maybe a newer version: {Path(h.newer_version).name}")

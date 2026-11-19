@@ -411,3 +411,20 @@ def test_page_images_go_to_the_evidence_before_the_neighbours_of_earlier_hits(tm
     # hit 1 with its neighbours would take 3 of the 4 pictures; the evidence in hit 2 comes first
     assert 'id="hit2-p7"' in html and 'id="hit1-p4"' in html and 'id="hit2-p4"' in html
     assert "残りの 3 ページは文字だけで表示しています" in html
+
+
+def test_a_hit_says_where_in_its_section_the_rest_of_the_words_are(tmp_path, capsys, monkeypatch):
+    import pymupdf
+
+    root = tmp_path / "docs"
+    root.mkdir()
+    doc = pymupdf.open()
+    for text in ("煮込みの手順\n鍋を用意する。", "強火で沸かす。"):
+        doc.new_page().insert_text((72, 72), text, fontname="japan", fontsize=11)
+    doc.set_toc([[1, "煮込みの手順", 1]])
+    doc.save(root / "split.pdf")
+    monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "cli" / "index.db"))
+    assert main(["search", "鍋", "強火", "--all", "--in", str(root), "--json"]) == 0
+    capsys.readouterr()
+    page = _view(capsys)
+    assert '<p class="elsewhere"><span>同じ節の p.2：</span>強火で沸かす。</p>' in page
