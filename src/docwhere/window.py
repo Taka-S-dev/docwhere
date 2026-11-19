@@ -709,6 +709,50 @@ class Api:
         return self._pinned
 
 
+def show_in_folder(path: Path) -> str:
+    """Open Explorer at a file's folder with the file selected; at the folder alone when the
+    file has gone. The caller checks the file is one it may show.
+
+    Explorer reads its own command line: ``/select,`` then the path in quotes. Handed as one
+    argument, the path quoted with ``/select,`` in front of it, a path holding a comma opens
+    the Documents folder instead. No Windows path holds a quote, so quoting it is safe.
+
+    The path is made absolute, not resolved: resolving turns a mapped drive into the share it
+    maps, so Explorer would show a path the user does not know the file by."""
+    target = Path(os.path.abspath(path))
+    explorer = Path(os.environ.get("SystemRoot") or r"C:\Windows") / "explorer.exe"
+    if target.is_file():
+        command = f'"{explorer}" /select,"{target}"'
+        said = f"{target.name} のフォルダを開きました"
+    elif target.parent.is_dir():
+        command = [str(explorer), str(target.parent)]
+        said = "ファイルが見つからないので、フォルダだけを開きました"
+    elif str(target).startswith("\\\\") or _is_network_drive(target):
+        raise FileNotFoundError(f"ネットワークのフォルダに届きません: {target.parent}")
+    else:
+        raise FileNotFoundError(f"フォルダが見つかりません: {target.parent}")
+    _let_take_foreground()
+    subprocess.Popen(command)
+    return said
+
+
+def _is_network_drive(path: Path) -> bool:
+    import ctypes
+
+    DRIVE_REMOTE = 4
+    return bool(path.drive) and ctypes.windll.kernel32.GetDriveTypeW(path.drive + "\\") == DRIVE_REMOTE
+
+
+def _let_take_foreground() -> None:
+    """Let the window opened next come to the front. Explorer opens it in the shell's own
+    process, not the one started here, and Windows lets only a process the foreground one
+    allows take the foreground; without this the folder may open behind this window."""
+    import ctypes
+
+    ASFW_ANY = -1
+    ctypes.windll.user32.AllowSetForegroundWindow(ASFW_ANY)
+
+
 def allowed(db: Path, path: str, renditions: bool, pdf_only: bool = False) -> None:
     """Only files in the index (and, for reading, docwhere's own PDF exports) may be touched."""
     from docwhere.index import Index, path_key

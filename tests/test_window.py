@@ -49,6 +49,14 @@ def test_open_runs_only_for_indexed_files(api, monkeypatch, tmp_path):
     assert opened == [(target, {"term": "config"})]
 
 
+def test_a_share_that_does_not_answer_is_named_as_one(monkeypatch):
+    started = []
+    monkeypatch.setattr(window.subprocess, "Popen", lambda command: started.append(command))
+    with pytest.raises(FileNotFoundError, match="ネットワーク"):
+        window.show_in_folder(window.Path(r"\\no-such-host.invalid\share\a.docx"))
+    assert started == []
+
+
 def test_later_pages_are_handed_to_the_running_window_with_the_key(tmp_path):
     db = tmp_path / "index.db"
     received = []

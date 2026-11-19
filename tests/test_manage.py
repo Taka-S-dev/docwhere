@@ -124,6 +124,16 @@ def test_actions_only_reach_folders_in_the_index(api, folder, tmp_path):
     assert api.queued == []
 
 
+def test_an_indexed_file_is_shown_selected_in_its_folder(api, folder, monkeypatch):
+    from docwhere import window
+
+    started = []
+    monkeypatch.setattr(window.subprocess, "Popen", lambda command: started.append(command))
+    assert api.reveal(str(folder / "old" / "d.md"))
+    # one command line, the path quoted after /select, (a list would quote "/select,..." whole)
+    assert started == [f'"{window.Path(os.environ["SystemRoot"]) / "explorer.exe"}" /select,"{(folder / "old" / "d.md").resolve()}"']
+
+
 def test_update_rebuild_and_forget(api, folder, tmp_path):
     assert api.update([str(folder)]) == {"queued": [str(folder)]}
     assert api.rebuild(str(folder)) == {"queued": str(folder)}

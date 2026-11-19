@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 import threading
 import time
 from multiprocessing import AuthenticationError
@@ -30,7 +29,7 @@ from docwhere import background, notes
 from docwhere.index import MIN_FREE_BYTES, Index, path_key, prefix_of
 from docwhere.model import display_lines
 from docwhere.settings import load_settings, private, save_settings
-from docwhere.window import bridge_method
+from docwhere.window import bridge_method, show_in_folder
 
 KIND = "manage"  # the window's pipe and settings are kept apart from the viewer's
 STORAGE = "webview-manage"
@@ -334,20 +333,22 @@ class ManageApi:
             index.close()
 
     @bridge_method
-    def reveal(self, path: str) -> bool:
-        """Show an indexed folder, or an indexed file selected in its folder, in Explorer."""
+    def reveal(self, path: str) -> str:
+        """Show an indexed folder, or an indexed file selected in its folder, in Explorer; says
+        what was opened."""
         index = self._index()
         try:
             key = path_key(Path(str(path)))
-            if index.db.execute("SELECT 1 FROM roots WHERE key = ?", (key,)).fetchone():
-                os.startfile(str(path))  # an indexed folder, checked above
-                return True
-            if index.db.execute("SELECT 1 FROM files WHERE key = ?", (key,)).fetchone():
-                subprocess.Popen(["explorer", f"/select,{Path(str(path))}"])  # an indexed file, checked above
-                return True
-            raise LookupError("インデックスにないファイルです")
+            is_root = index.db.execute("SELECT 1 FROM roots WHERE key = ?", (key,)).fetchone()
+            is_file = not is_root and index.db.execute("SELECT 1 FROM files WHERE key = ?", (key,)).fetchone()
         finally:
-            index.close()
+            index.close()  # not held while Explorer starts, which can wait on a network folder
+        if is_root:
+            os.startfile(str(path))  # an indexed folder, checked above
+            return "フォルダを開きました"
+        if is_file:
+            return show_in_folder(Path(str(path)))  # an indexed file, checked above
+        raise LookupError("インデックスにないファイルです")
 
     # ---- the search tab
 
@@ -1036,15 +1037,14 @@ class ManageApi:
         return str(path)
 
     @bridge_method
-    def reveal_note(self, path: str) -> bool:
+    def reveal_note(self, path: str) -> str:
         target = self._in_map(path)
         if target.is_dir():
             os.startfile(str(target))  # a folder written in the map, checked above
-        elif target.is_file():
-            subprocess.Popen(["explorer", f"/select,{target}"])  # a file written in the map, checked above
-        else:
-            raise FileNotFoundError("見つかりません")
-        return True
+            return "フォルダを開きました"
+        if target.is_file():
+            return show_in_folder(target)  # a file written in the map, checked above
+        raise FileNotFoundError("見つかりません")
 
     @bridge_method
     def index_note(self, path: str) -> dict:
@@ -2142,7 +2142,8 @@ MANAGE_JS = r"""(() => {
       refresh();
     }).catch(failed("インデックスから外せませんでした"));
   };
-  const reveal = (path) => api.reveal(path).catch(failed("開けませんでした"));
+  // a network folder can take a while to answer: say so at once, then what was opened
+  const reveal = (path) => { toast("エクスプローラーで開いています…"); return api.reveal(path).then(toast).catch(failed("開けませんでした")); };
 
   // ---- rendering: rows are kept and updated in place, so focus and typed text survive refreshes
   let totals = null;  // where the whole index spends its time; asked for when it may have changed
@@ -2575,7 +2576,8 @@ MANAGE_JS = r"""(() => {
     const open = h("button", { type: "button", class: "icon", text: "↗", title: "エクスプローラーで開く", "aria-label": "エクスプローラーで開く",
       onclick: () => {
         if (!saved()) { toast("保存してから開いてください"); return; }
-        api.reveal_note(it.cells.path).catch(failed("開けませんでした"));
+        toast("エクスプローラーで開いています…");
+        api.reveal_note(it.cells.path).then(toast).catch(failed("開けませんでした"));
       } });
     showMark();
     const typing = fresh && !it.cells.path;
