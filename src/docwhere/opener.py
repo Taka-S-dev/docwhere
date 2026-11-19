@@ -10,11 +10,14 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from docwhere.model import norm
 
 WORD_FIND_LIMIT = 500  # occurrences of the term to try before settling for the first one
+WORD_FIND_SECONDS = 3.0  # and the longest that trying may take (each costs Word tens of ms)
+WORD_AROUND = (24, 8)  # characters each side of the term to look for in Word, then fewer
 WD_WITH_IN_TABLE = 12  # Range.Information: whether the range is inside a table
 _MACROS_BY_UI = 2  # msoAutomationSecurityByUI
 
@@ -144,17 +147,130 @@ def _word(path: str, anchor: dict) -> str:
 def _find_in_word(doc, term: str, line: str):
     """The occurrence of ``term`` inside the paragraph the hit came from.
 
-    The index stores normalised paragraph text, so each occurrence's paragraph is normalised
-    the same way before comparing; the first occurrence is the fallback.
+    The words around the term in that paragraph are looked for first, in one search: a common
+    term can occur hundreds of times before the hit, and each occurrence checked costs Word
+    tens of milliseconds. When Word does not hold them as the index wrote them (a circled
+    digit the index folds to a plain one), the paragraph is found in the document's text,
+    read once. Only when that cannot be placed either is each occurrence's paragraph compared,
+    for a few seconds at most; the first occurrence is the fallback.
+
+    A table of contents repeats each heading's text (with its number) near the top, so a
+    place found inside one is passed over: the hit is the heading itself. Only when the words
+    are nowhere else (the hit was the table of contents' own line) is the place in it taken.
     """
     if not term:
         return None
     line = norm(line)
+    in_contents = _in_contents(doc)
+    in_a_contents = None
+    for around in _words_around(line, term):
+        rng = doc.Content
+        find = rng.Find
+        found = _search(find, around)
+        while found and in_contents(rng):
+            if in_a_contents is None:
+                in_a_contents = rng.Duplicate
+            found = find.Execute()
+        if found and _search(rng.Find, term):  # the term, inside the words found
+            return rng
+    rng = _paragraph_holding(doc, line, term, in_contents)
+    if rng is not None and _search(rng.Find, term):
+        return rng
+    if in_a_contents is not None and _search(in_a_contents.Find, term):
+        return in_a_contents
     target = line[:60]
     rng = doc.Content
     find = rng.Find
+    if not _search(find, term):
+        return None
+    first = rng.Duplicate
+    until = time.monotonic() + WORD_FIND_SECONDS
+    for _ in range(WORD_FIND_LIMIT):
+        if not in_contents(rng):
+            paragraph = norm(rng.Paragraphs(1).Range.Text.replace("\x07", " "))
+            if target and target in paragraph:
+                return rng
+            if rng.Information(WD_WITH_IN_TABLE) and paragraph and paragraph in line:
+                return rng  # a table row is indexed as one line, so the cell is a part of it
+        if time.monotonic() > until or not find.Execute():
+            break
+    return first
+
+
+def _in_contents(doc):
+    """A test of whether a range starts inside one of the document's tables of contents."""
+    try:
+        spans = [(t.Range.Start, t.Range.End) for t in doc.TablesOfContents]
+    except Exception:  # a document Word gives no such collection for
+        spans = []
+    return lambda rng: any(start <= rng.Start < end for start, end in spans) if spans else False
+
+
+def _paragraph_holding(doc, line: str, term: str, in_contents=lambda rng: False):
+    """The range of the paragraph ``line`` was indexed from, found in the document's text read
+    in one call (passing over one in a table of contents); None when no paragraph is it, or
+    the place found does not hold it.
+
+    The text ends each paragraph with \\r, a table cell and a row with \\r\\x07, so the i-th
+    piece of it is the i+1-th paragraph. A place counted in the text is quicker to reach than
+    a paragraph by number (Word walks to it), so that is tried first: \\x07 takes no place of
+    its own, but a field (a table of contents, a link) takes places for its code that its
+    shown text does not, so each range found is read back and compared."""
+    target, low_term = line[:60], term.lower()
+    pieces = doc.Content.Text.split("\r")
+    at = 0
+    for i, raw in enumerate(pieces):
+        text = raw.replace("\x07", "")
+        here = norm(text)
+        in_cell = i + 1 < len(pieces) and pieces[i + 1].startswith("\x07")
+        # a table row is indexed as one line, so a cell is a part of it
+        if here and ((target and target in here) or (in_cell and low_term in here.lower() and here in line)):
+            rng = next((r for r in (reach() for reach in (lambda: doc.Range(at, at + len(text)),
+                                                           lambda: doc.Paragraphs(i + 1).Range))
+                        if norm(r.Text.replace("\x07", "")) == here), None)
+            if rng is None:
+                return None  # the places do not line up: leave it to comparing each occurrence
+            if not in_contents(rng):
+                return rng
+        at += len(text) + 1
+    return None
+
+
+def _words_around(line: str, term: str) -> list[str]:
+    """What to look for in Word to land on ``term`` where ``line`` holds it: the words around
+    it, then fewer of them.
+
+    The index joins a table row's cells as "label: text / label: text", the label being the
+    header's cell, which is not in the row. So the line is taken a cell at a time, its text
+    without the label first (the term in a header's label, as 設定 in 設定値, is not the
+    hit), and only then whole, for text that holds ": " or " / " of its own."""
+    low_term = term.lower()
+    parts = []
+    for cell in line.split(" / "):
+        label, sep, text = cell.partition(": ")
+        if sep and low_term in text.lower():
+            parts.append(text)
+    parts += [cell for cell in line.split(" / ") if low_term in cell.lower()] + [line]
+    out = []
+    for part in parts:
+        at = part.lower().find(low_term)
+        if at < 0:
+            continue
+        for reach in WORD_AROUND:
+            around = part[max(0, at - reach):at + len(term) + reach].strip()
+            if around.lower() != low_term and around not in out:
+                out.append(around)
+    return out
+
+
+def _search(find, text: str) -> bool:
+    """Look for ``text`` from the find's range on, matching any run of whitespace for a space
+    (the index folds runs to one) and full- or half-width alike, as the index does."""
+    pattern = "^w".join(part.replace("^", "^^") for part in text.split(" "))  # ^ starts Word's specials
+    if len(pattern) > 255:  # what Word's Find takes
+        return False
     find.ClearFormatting()
-    find.Text = term.replace("^", "^^")[:255]  # ^ starts a Word special character
+    find.Text = pattern
     find.Forward = True
     find.Wrap = 0  # wdFindStop
     find.MatchCase = False
@@ -163,18 +279,7 @@ def _find_in_word(doc, term: str, line: str):
         find.MatchByte = False  # ignore full-width/half-width differences (Japanese Word only)
     except Exception:
         pass
-    first = None
-    for _ in range(WORD_FIND_LIMIT):
-        if not find.Execute():
-            break
-        if first is None:
-            first = rng.Duplicate
-        paragraph = norm(rng.Paragraphs(1).Range.Text.replace("\x07", " "))
-        if target and target in paragraph:
-            return rng
-        if rng.Information(WD_WITH_IN_TABLE) and paragraph and paragraph in line:
-            return rng  # a table row is indexed as one line, so the cell is a part of it
-    return first
+    return bool(find.Execute())
 
 
 def _excel(path: str, anchor: dict) -> str:
