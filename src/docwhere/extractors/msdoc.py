@@ -845,6 +845,11 @@ class _Table:
         self.parts = []
 
 
+def _flag(props: dict, sprm: int) -> bool:
+    """Whether a paragraph's one-byte property ``sprm`` is set (present and not zero)."""
+    return props.get(sprm, b"\0")[:1] not in (b"\0", b"")
+
+
 def _extract(path: Path) -> list[Chunk]:
     from docwhere.extractors.word import MAX_TABLE_DEPTH, TEXT_BOX, _HeadingNumberer
     from docwhere.index import MAX_FILE_BYTES
@@ -891,8 +896,7 @@ def _extract(path: Path) -> list[Chunk]:
                 builder.add(f"{TEXT_BOX} {text}", {})
             continue
         table = open_tables[-1]
-        flag = (lambda sprm: p.props.get(sprm, b"\0")[:1] not in (b"\0", b""))
-        row_end = flag(_P_TTP) if depth == 1 else flag(_P_INNER_TTP)
+        row_end = _flag(p.props, _P_TTP if depth == 1 else _P_INNER_TTP)
         if row_end:
             if boxes:
                 raise Unsupported("a text box anchored at a row's end")
@@ -927,7 +931,7 @@ def _extract(path: Path) -> list[Chunk]:
         for text in boxes:
             budget.spend(len(text))
             table.parts.append(f"{TEXT_BOX} {text}")
-        if (p.mark == "\x07") if depth == 1 else flag(_P_INNER_CELL):
+        if (p.mark == "\x07") if depth == 1 else _flag(p.props, _P_INNER_CELL):
             table.end_cell()
     while open_tables:
         close()

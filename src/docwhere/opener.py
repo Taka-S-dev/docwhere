@@ -225,11 +225,11 @@ def _paragraph_holding(doc, line: str, term: str, in_contents=lambda rng: False)
         in_cell = i + 1 < len(pieces) and pieces[i + 1].startswith("\x07")
         # a table row is indexed as one line, so a cell is a part of it
         if here and ((target and target in here) or (in_cell and low_term in here.lower() and here in line)):
-            rng = next((r for r in (reach() for reach in (lambda: doc.Range(at, at + len(text)),
-                                                           lambda: doc.Paragraphs(i + 1).Range))
-                        if norm(r.Text.replace("\x07", "")) == here), None)
-            if rng is None:
-                return None  # the places do not line up: leave it to comparing each occurrence
+            rng = doc.Range(at, at + len(text))  # by place first: Word walks to a paragraph by number
+            if norm(rng.Text.replace("\x07", "")) != here:
+                rng = doc.Paragraphs(i + 1).Range
+                if norm(rng.Text.replace("\x07", "")) != here:
+                    return None  # the places do not line up: leave it to comparing each occurrence
             if not in_contents(rng):
                 return rng
         at += len(text) + 1
