@@ -8,8 +8,8 @@ no port is opened. One window serves every view: a later ``docwhere view`` hands
 the running window over a named pipe that only callers holding the key file can use.
 
 What the page may ask of Python is the ``Api`` class: render a page or list its links for a
-PDF that is in the index (or one docwhere exported), open an indexed file at a spot, copy
-text, keep the window on top. Nothing else is reachable.
+PDF that is in the index (or one docwhere exported), open an indexed file at a spot or show
+it in its folder, copy text, keep the window on top. Nothing else is reachable.
 """
 
 from __future__ import annotations
@@ -641,6 +641,16 @@ class Api:
         finally:
             if pythoncom is not None:
                 pythoncom.CoUninitialize()
+
+    @bridge_method
+    def reveal(self, path: str) -> str:
+        """Show an indexed file selected in its folder in Explorer."""
+        path = str(path)
+        allowed(self._db, path, renditions=False)
+        said = show_in_folder(Path(path))
+        if self._pinned:  # a window kept on top stays above the folder, which looks like nothing happened
+            said += "（この窓を手前に表示しているので、フォルダはこの窓の後ろに出ます）"
+        return said
 
     @bridge_method
     def open_url(self, url: str) -> str:

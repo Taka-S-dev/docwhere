@@ -1495,7 +1495,10 @@ html { scrollbar-gutter: stable; }
   border-bottom: 1px solid var(--rule); }
 .pv-name { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
 .pv-where { margin: 2px 0 0; color: var(--ink); font-size: 13px; }
-.pv-path { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.pv-path { margin: 2px 0 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; color: var(--muted);
+  font-size: 12px; overflow-wrap: anywhere; }
+.pv-path-ops { display: inline-flex; gap: 2px; }
+.pv-path-ops .btn.quiet { min-height: 24px; padding: 2px 6px; font-size: 12px; }  /* 24px: the smallest easy target */
 .pv-ops { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .pv-sec { margin: 16px 0 0; color: var(--muted); }
 .pv-sec h3 { margin: 0 0 4px; font-size: 13px; }
@@ -2759,6 +2762,9 @@ MANAGE_JS = r"""(() => {
   const copyCitation = (hit) => api.copy(citation(hit))
     .then(() => toast(`出典をコピーしました: ${citation(hit)}`))
     .catch(failed("コピーできませんでした"));
+  const copyPath = (path) => api.copy(path)
+    .then(() => toast(`パスをコピーしました: ${path}`))
+    .catch(failed("コピーできませんでした"));
   const pendingIn = (roots) => {
     // changes the folder tab found in the searched folders, not read yet: the answer may lie there
     let n = 0;
@@ -3021,14 +3027,20 @@ MANAGE_JS = r"""(() => {
     const head = h("header", { class: "pv-head" },
       h("h2", { class: "pv-name", text: base(hit.path), title: hit.path }),
       h("p", { class: "pv-where", text: [hit.crumb || "", hit.location].filter(Boolean).join("　") }),
-      h("p", { class: "pv-path", text: `${shortPath(hit.path)}　${hit.modified}`, title: hit.path }),
+      // what acts on the file sits on its path's line, apart from what acts on the hit below
+      h("p", { class: "pv-path" },
+        h("span", { text: `${shortPath(hit.path)}　${hit.modified}`, title: hit.path }),
+        h("span", { class: "pv-path-ops" },
+          h("button", { type: "button", class: "btn quiet", text: "フォルダを開く", title: "エクスプローラーでこのファイルを選んで開きます",
+            onclick: () => reveal(hit.path) }),
+          h("button", { type: "button", class: "btn quiet", text: "パスをコピー", title: hit.path, onclick: () => copyPath(hit.path) }),
+          place && place.file ? null : h("button", { type: "button", class: "btn quiet", text: "このファイルの中だけを探す",
+            title: "探す範囲をこのファイルだけにします。語を変えても、やめるまでこのファイルの中を探します", onclick: () => goTo(hit.path) }))),
       hit.newer_version ? h("p", { class: "r-flag", text: `新しい版かもしれません: ${base(hit.newer_version)}` }) : null,
       h("div", { class: "pv-ops" },
         hit.chunk_id ? h("button", { type: "button", class: "btn primary", text: "該当箇所を詳しく見る", title: "読み取り画面で、該当箇所に枠を付けて見ます（Enter）",
           onclick: () => viewHits([hit.n]) }) : null,
         h("button", { type: "button", class: "btn", text: "ファイルを開く", onclick: () => openFile(hit.n) }),
-        place && place.file ? null : h("button", { type: "button", class: "btn", text: "このファイルの中だけを探す",
-          title: "探す範囲をこのファイルだけにします。語を変えても、やめるまでこのファイルの中を探します", onclick: () => goTo(hit.path) }),
         h("button", { type: "button", class: "btn", text: "出典をコピー", title: citation(hit), onclick: () => copyCitation(hit) }),
         hit.chunk_id ? h("button", { type: "button", class: "btn", id: "pv-collect", onclick: () => toggleCollect(hit) }) : null,
         modes));

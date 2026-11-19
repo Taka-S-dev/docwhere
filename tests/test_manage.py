@@ -134,6 +134,14 @@ def test_an_indexed_file_is_shown_selected_in_its_folder(api, folder, monkeypatc
     assert started == [f'"{window.Path(os.environ["SystemRoot"]) / "explorer.exe"}" /select,"{(folder / "old" / "d.md").resolve()}"']
 
 
+def test_the_search_tab_offers_the_folder_and_the_path_of_a_hit():
+    assert 'text: "フォルダを開く"' in manage.MANAGE_JS and "reveal(hit.path)" in manage.MANAGE_JS
+    assert 'text: "パスをコピー"' in manage.MANAGE_JS and "copyPath(hit.path)" in manage.MANAGE_JS
+    # on the path's line, kept apart from the buttons that act on the hit
+    on_path = manage.MANAGE_JS.split('class: "pv-path-ops"', 1)[1].split('class: "pv-ops"', 1)[0]
+    assert all(label in on_path for label in ("フォルダを開く", "パスをコピー", "このファイルの中だけを探す"))
+
+
 def test_update_rebuild_and_forget(api, folder, tmp_path):
     assert api.update([str(folder)]) == {"queued": [str(folder)]}
     assert api.rebuild(str(folder)) == {"queued": str(folder)}

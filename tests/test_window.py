@@ -49,6 +49,22 @@ def test_open_runs_only_for_indexed_files(api, monkeypatch, tmp_path):
     assert opened == [(target, {"term": "config"})]
 
 
+def test_a_file_is_shown_in_its_folder_only_when_it_is_indexed(api, monkeypatch, tmp_path):
+    api, docs, _ = api
+    started = []
+    monkeypatch.setattr(window.subprocess, "Popen", lambda command: started.append(command))
+    target = docs / "運用マニュアル.docx"
+    assert "フォルダを開きました" in api.reveal(str(target))
+    assert started[-1].endswith(f'explorer.exe" /select,"{target.resolve()}"')  # selected in its folder
+    with pytest.raises(PermissionError):
+        api.reveal(str(tmp_path / "evil.bat"))
+    target.rename(target.with_name("moved.docx"))  # gone since it was indexed: its folder alone
+    assert "フォルダだけ" in api.reveal(str(target))
+    assert started[-1][1] == str(target.resolve().parent) and len(started) == 2
+    api._pinned = True  # kept on top: the folder opens behind it, and the message says so
+    assert "後ろ" in api.reveal(str(target))
+
+
 def test_a_share_that_does_not_answer_is_named_as_one(monkeypatch):
     started = []
     monkeypatch.setattr(window.subprocess, "Popen", lambda command: started.append(command))

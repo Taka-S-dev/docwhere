@@ -38,6 +38,20 @@ def test_view_page_is_self_contained_with_pdf_page_images(docs, tmp_path, capsys
     assert "#page=" in page  # the PDF link opens at the page
 
 
+def test_each_hit_offers_its_folder_and_its_path_in_the_window(docs, tmp_path, capsys, monkeypatch):
+    import html
+
+    hits = _search(docs, tmp_path, capsys, monkeypatch, "config")
+    page = _view(capsys)
+    for hit in hits:
+        path = html.escape(hit["path"])
+        assert f'data-reveal="{path}"' in page and f'data-copy-path="{path}"' in page
+        # on the path's line, apart from the button that opens the file
+        assert f'{path}</span><span class="hint static-only">' in page
+    # buttons for the window only; a page opened in a browser keeps the select-and-copy hint
+    assert page.count('<span class="path-ops" data-live hidden>') == len(hits)
+
+
 def test_view_escapes_document_text(docs, tmp_path, capsys, monkeypatch):
     (docs / "evil.md").write_text('# config <script>alert(1)</script>\n<img src=x onerror=alert(1)>\n', encoding="utf-8")
     _search(docs, tmp_path, capsys, monkeypatch, "config")

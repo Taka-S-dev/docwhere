@@ -1011,7 +1011,7 @@ def _card(
     <p class="crumb">{esc(hit['crumb'] or hit['title'])}</p>
     <p class="facts">{''.join(facts)}{_open_link(hit, excerpts)}</p>
     {_open_button(hit, "actions")}
-    <p class="path"><span class="copy" title="クリックで全体を選択">{esc(str(path))}</span><span class="hint">クリックで選択して Ctrl+C でコピー</span></p>
+    {_path_line(str(path))}
     {newer}
   </header>
   {content}
@@ -1033,6 +1033,17 @@ def _open_button(hit: dict, cls: str) -> str:
     anchor = {k: v for k, v in hit["anchor"].items() if k != "page" or not hit.get("rendered_from")}
     return (f'<p class="{cls}" data-live hidden><button type="button" data-open="{esc(_open_spec(hit["path"], anchor))}">'
             f"{label}</button></p>")
+
+
+def _path_line(path: str) -> str:
+    """The file's path, with what acts on it beside it: in the window, buttons that show it in
+    its folder and copy it; in a browser, where they cannot run, how to copy it by hand."""
+    p = esc(path)
+    return (f'<p class="path"><span class="copy" title="クリックで全体を選択">{p}</span>'
+            '<span class="hint static-only">クリックで選択して Ctrl+C でコピー</span>'
+            '<span class="path-ops" data-live hidden>'
+            f'<button type="button" class="quiet" data-reveal="{p}" title="エクスプローラーでこのファイルを選んで開く">フォルダを開く</button>'
+            f'<button type="button" class="quiet" data-copy-path="{p}">パスをコピー</button></span></p>')
 
 
 def _pager(hit: dict, page: int) -> str:
@@ -1235,6 +1246,10 @@ blockquote { margin: 14px 0 0; padding: 2px 0 2px 14px; border-left: 3px solid v
   background: var(--bg); border: 1px solid var(--rule); border-radius: 3px; word-break: break-all; }
 .hit .path .copy:hover { border-color: var(--blue); }
 .hit .path .hint { color: var(--muted); }
+.hit .path-ops { display: inline-flex; gap: 2px; }
+.hit .path-ops[hidden] { display: none; }
+.hit .path-ops .quiet { min-height: 24px; padding: 2px 6px; font-size: 12px; color: var(--blue); background: transparent; border-color: transparent; }
+.hit .path-ops .quiet:hover { border-color: var(--rule); }
 .warn { margin: 8px 0 0; color: var(--warn); font-size: 14px; }
 .hit .note { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
 .sheet { margin: 18px 0 0; scroll-margin-top: 12px; }
@@ -1493,6 +1508,19 @@ APP_JS = r"""(() => {
       event.preventDefault();
       toast("開いています…");
       try { toast(await (await bridge()).open(open.dataset.open)); } catch (e) { failed("ファイルを開けませんでした")(e); }
+      return;
+    }
+    const reveal = event.target.closest("[data-reveal]");
+    if (reveal) {
+      event.preventDefault();
+      toast("エクスプローラーで開いています…");  // a network folder can take a while to answer
+      try { toast(await (await bridge()).reveal(reveal.dataset.reveal)); } catch (e) { failed("フォルダを開けませんでした")(e); }
+      return;
+    }
+    const copyPath = event.target.closest("[data-copy-path]");
+    if (copyPath) {
+      event.preventDefault();
+      try { await (await bridge()).copy(copyPath.dataset.copyPath); toast("パスをコピーしました"); } catch (e) { failed("パスをコピーできませんでした")(e); }
       return;
     }
     const cite = event.target.closest("[data-cite]");
