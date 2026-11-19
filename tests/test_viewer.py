@@ -428,3 +428,22 @@ def test_a_hit_says_where_in_its_section_the_rest_of_the_words_are(tmp_path, cap
     capsys.readouterr()
     page = _view(capsys)
     assert '<p class="elsewhere"><span>同じ節の p.2：</span>強火で沸かす。</p>' in page
+
+
+def test_a_hit_names_its_sections_other_pages_and_opens_them(tmp_path, capsys, monkeypatch):
+    import pymupdf
+
+    root = tmp_path / "docs"
+    root.mkdir()
+    doc = pymupdf.open()
+    for text in ("鍋の手入れ\n鍋は乾かす。", "鍋は重ねない。", "鍋の底を磨く。"):
+        doc.new_page().insert_text((72, 72), text, fontname="japan", fontsize=11)
+    doc.set_toc([[1, "鍋の手入れ", 1]])
+    doc.save(root / "book.pdf")
+    monkeypatch.setenv("DOCWHERE_DB", str(tmp_path / "cli" / "index.db"))
+    assert main(["search", "鍋", "--in", str(root), "--json"]) == 0
+    capsys.readouterr()
+    page = _view(capsys)
+    assert page.count('<article class="hit"') == 1
+    assert '<span class="static-only">p.' in page  # in a browser: the pages named
+    assert page.count('class="quiet" data-open=') == 2  # in the window: a button a page

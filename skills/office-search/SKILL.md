@@ -100,7 +100,9 @@ Quick mode must not guess. Escalate to thorough on your own, or answer with an e
    `-n 20` for more results. Later searches take well under a second. With `--all`, a
    section's pages count together: a hit may hold some terms and have the rest further on
    under the same heading, listed in its `elsewhere` (term, page, words around it). Read
-   that place too before answering from such a hit.
+   that place too before answering from such a hit. A hit stands for its whole section: the
+   section's other pages that match are in its `more_in_section` (page and `chunk_id`, which
+   `docwhere show --id` reads) rather than hits of their own.
 
    - A term is matched as written: quote words that must stay together (`"接続 タイムアウト"`).
    - `--not WORD` (repeatable) leaves out sections containing it, or files whose path does:

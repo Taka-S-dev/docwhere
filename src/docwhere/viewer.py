@@ -989,6 +989,7 @@ def _card(
         f'<p class="elsewhere"><span>{esc("同じ節の " + e["location"] if e.get("location") else "同じ節の別の箇所")}：</span>'
         f'{esc(e.get("snippet", ""))}</p>'
         for e in hit.get("elsewhere") or ())
+    newer += _more_in_section(hit)
     if hit.get("rendered_from") in (".docx", ".docm", ".doc"):
         newer += '<p class="note">ページは Word で PDF にしたときの番号です。印刷設定によってずれることがあります。</p>'
 
@@ -1038,6 +1039,28 @@ def _open_button(hit: dict, cls: str) -> str:
     anchor = {k: v for k, v in hit["anchor"].items() if k != "page" or not hit.get("rendered_from")}
     return (f'<p class="{cls}" data-live hidden><button type="button" data-open="{esc(_open_spec(hit["path"], anchor))}">'
             f"{label}</button></p>")
+
+
+MORE_BUTTONS = 12  # the section's other pages named as buttons; the rest are counted
+
+
+def _more_in_section(hit: dict) -> str:
+    """The section's other pages that match too, folded into the hit: in the window, a button
+    each that opens the file there; in a browser, where buttons cannot run, the pages named."""
+    from docwhere.search import pages_label
+
+    places = hit.get("more_in_section") or []
+    if not places:
+        return ""
+    label = pages_label(places) or f"ほかに {len(places)} か所"
+    buttons = "".join(
+        f'<button type="button" class="quiet" data-open="{esc(_open_spec(hit["path"], p["anchor"]))}"'
+        f' title="このページでファイルを開く">{esc(p["location"] or f"別の箇所 {k + 1}")}</button>'
+        for k, p in enumerate(places[:MORE_BUTTONS]))
+    rest = f"<span>ほか {len(places) - MORE_BUTTONS}</span>" if len(places) > MORE_BUTTONS else ""
+    return (f'<p class="more-pages"><span>同じ節のほかのページ：</span>'
+            f'<span class="static-only">{esc(label)}</span>'
+            f'<span class="more-ops" data-live hidden>{buttons}{rest}</span></p>')
 
 
 def _path_line(path: str) -> str:
@@ -1258,6 +1281,11 @@ blockquote { margin: 14px 0 0; padding: 2px 0 2px 14px; border-left: 3px solid v
 .warn { margin: 8px 0 0; color: var(--warn); font-size: 14px; }
 .hit .elsewhere { margin: 4px 0 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .hit .elsewhere span { color: var(--ink); }
+.hit .more-pages { margin: 4px 0 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 2px; color: var(--muted); font-size: 13px; }
+.hit .more-ops { display: inline-flex; flex-wrap: wrap; gap: 2px; }
+.hit .more-ops[hidden] { display: none; }
+.hit .more-ops .quiet { min-height: 24px; padding: 2px 6px; font-size: 12px; color: var(--blue); background: transparent; border-color: transparent; }
+.hit .more-ops .quiet:hover { border-color: var(--rule); }
 .hit .note { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
 .sheet { margin: 18px 0 0; scroll-margin-top: 12px; }
 .sheet figcaption { margin: 0 0 6px; color: var(--muted); font-size: 13px; }

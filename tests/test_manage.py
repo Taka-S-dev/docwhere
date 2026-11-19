@@ -618,3 +618,18 @@ def test_the_place_box_lists_every_folder_by_path_and_narrows_as_typed(api, fold
 
 def test_a_hit_in_the_search_tab_says_where_the_rest_of_the_words_are():
     assert manage.MANAGE_JS.count("...elsewhereLines(hit)") == 2  # in the list and in the pane beside it
+
+
+def test_a_hit_in_the_search_tab_names_its_sections_other_pages(api, monkeypatch):
+    from docwhere import opener
+
+    assert "moreLine(hit)," in manage.MANAGE_JS and "moreButtons(hit)," in manage.MANAGE_JS
+    opened = []
+    monkeypatch.setattr(opener, "open_at", lambda path, anchor, app=None: opened.append(anchor) or "ok")
+    api._results = (None, [{"path": "x.pdf", "anchor": {"page": 1},
+                            "more_in_section": [{"location": "p.2", "anchor": {"page": 2}}]}])
+    api.open_file(1, 0)
+    api.open_file(1)
+    assert opened == [{"page": 2}, {"page": 1}]
+    with pytest.raises(LookupError):
+        api.open_file(1, 5)

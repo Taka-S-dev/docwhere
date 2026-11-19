@@ -251,6 +251,7 @@ def cmd_search(args) -> int:
         compile_patterns,
         expand_variants,
         load_variant_groups,
+        pages_label,
         search,
         search_names,
         suggest_parts,
@@ -432,6 +433,8 @@ def cmd_search(args) -> int:
         line = "  ".join(x for x in (Path(h.path).name, heading, where, f"({h.modified})") if x)
         print(f"{h.n:>2}. {line}")
         print(f"    {highlight(h.snippet, h.terms)}")
+        if h.more_in_section:  # the section's other pages that match too, folded into this hit
+            print(f"    also in this section: {pages_label(h.more_in_section) or f'{len(h.more_in_section)} more part(s)'}")
         for e in h.elsewhere or ():  # the rest of the words asked for, further on in the same section
             print(f"    {e['term']}: {e['location'] or 'elsewhere'} in the same section: {highlight(e['snippet'], [e['term']])}")
         print(f"    {h.path}")

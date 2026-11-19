@@ -83,6 +83,9 @@ class Hit:
     # when not all the words asked for are in this part of the section: where in the same
     # section the rest are, [{"term", "location", "snippet"}] (see _across_sections)
     elsewhere: list[dict] | None = None
+    # the section's other pages or parts that match too, shown as this one hit:
+    # [{"location", "chunk_id", "anchor"}] in the order they come (see _one_hit_a_section)
+    more_in_section: list[dict] | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -185,7 +188,7 @@ def search(
     if partly:
         scored += _across_sections(index, partly, scored, required, terms, group_of)
     _count(scored, found)
-    return _with_heading_pages(index, _hits(scored, newer, limit, per_file, found))
+    return _with_heading_pages(index, _hits(scored, newer, limit, per_file, found, index))
 
 
 SPLIT_NEXT = 0.7  # all the words in a section, but not on one page or part: next to each other...
@@ -307,11 +310,45 @@ def _count(scored: list[tuple], found: dict | None) -> None:
         found.setdefault("at_least", False)
 
 
-def _hits(scored: list[tuple], newer: dict, limit: int, per_file: int, found: dict | None = None) -> list[Hit]:
-    """The first ``limit`` of ``scored``, at most ``per_file`` of a file. With ``found`` holding
-    "then_rest", the sections past ``per_file`` follow in rank order up to ``limit`` in all, and
+def _one_hit_a_section(index: Index, scored: list[tuple]) -> tuple[list[tuple], dict[int, list[dict]]]:
+    """``scored`` (best first) with each section's later-ranked parts folded into its best one:
+    the parts, and {the best part's id: the others' places}.
+
+    A bookmarked PDF is indexed a page a section, so the pages of one section that repeat what
+    was asked for each made a hit, and filled the list with one section while others went
+    unseen. Parts fold when they have one heading with nothing of another between them (as in
+    _across_sections). A spreadsheet's parts do not: each of its rows is a record of its own."""
+    kept, more = [], {}
+    by_heading: dict[tuple, list] = {}
+    for item in scored:
+        row = item[1]
+        if '"sheet"' in row["anchors"] or not (row["title"] or row["crumb"]):
+            kept.append(item)
+            continue
+        key = (row["path"], _heading(row))
+        best = next((b for b in by_heading.get(key, ())
+                     if _one_section(index, *sorted((b[1], row), key=lambda r: r["id"]))), None)
+        if best is None:
+            by_heading.setdefault(key, []).append(item)
+            kept.append(item)
+            continue
+        _, anchor = locate_snippet(row, item[2])
+        more.setdefault(best[1]["id"], []).append({"location": location_label(anchor), "chunk_id": row["id"], "anchor": anchor})
+    for places in more.values():
+        places.sort(key=lambda p: p["chunk_id"])
+    return kept, more
+
+
+def _hits(scored: list[tuple], newer: dict, limit: int, per_file: int, found: dict | None = None,
+          index: Index | None = None) -> list[Hit]:
+    """The first ``limit`` of ``scored``, at most ``per_file`` of a file, a hit a section when
+    ``index`` is given (see _one_hit_a_section). With ``found`` holding "then_rest", the
+    sections past ``per_file`` follow in rank order up to ``limit`` in all, and
     ``found["first"]`` says how many came before them."""
     scored.sort(key=lambda s: (-s[0], s[1]["path"], s[1]["id"]))
+    more: dict[int, list[dict]] = {}
+    if index is not None:
+        scored, more = _one_hit_a_section(index, scored)
     per_path: dict[str, int] = {}
     first, rest = [], []
     for item in scored:
@@ -343,6 +380,7 @@ def _hits(scored: list[tuple], newer: dict, limit: int, per_file: int, found: di
                 anchor=anchor,
                 chunk_id=row["id"],
                 elsewhere=elsewhere[0] if elsewhere else None,
+                more_in_section=more.get(row["id"]),
             )
         )
     return hits
@@ -479,7 +517,7 @@ def _search_regex(index, roots, patterns, require_all, exts, limit, per_file, ex
     newer = index.newer_among({s[1]["family"] for s in scored if s[1]["family"]}, roots)
     scored = [(score * SUPERSEDED_FACTOR if row["path"] in newer else score, row, m) for score, row, m in scored]
     _count(scored, found)
-    return _hits(scored, newer, limit, per_file, found)
+    return _hits(scored, newer, limit, per_file, found, index)
 
 
 def search_names(
@@ -759,6 +797,21 @@ def _row_snippet(line: str, anchor: dict, lines: list[str], anchors: list[dict],
             break
     text = " / ".join(f"{headers[c]}: {v}" if c in headers else v for c, v in zip(cols, values))
     return text if len(text) <= ROW_SNIPPET_CHARS else text[:ROW_SNIPPET_CHARS] + "…"
+
+
+def pages_label(places: list[dict]) -> str:
+    """A section's other pages as runs ("p.12-15, p.21-23"); "" when they are not all pages
+    (the parts of a long Word section have no page to name)."""
+    pages = sorted(int(p["location"][2:]) for p in places if re.fullmatch(r"p\.\d+", p["location"]))
+    if not pages or len(pages) != len(places):
+        return ""
+    runs = [[pages[0], pages[0]]]
+    for page in pages[1:]:
+        if page == runs[-1][1] + 1:
+            runs[-1][1] = page
+        else:
+            runs.append([page, page])
+    return ", ".join(f"p.{a}" if a == b else f"p.{a}-{b}" for a, b in runs)
 
 
 def location_label(anchor: dict) -> str:

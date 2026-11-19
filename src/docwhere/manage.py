@@ -893,17 +893,24 @@ class ManageApi:
             index.close()
 
     @bridge_method
-    def open_file(self, n: int) -> str:
-        """Open a hit's file in its application at the spot (page, sheet and cell, heading)."""
+    def open_file(self, n: int, more: int | None = None) -> str:
+        """Open a hit's file in its application at the spot (page, sheet and cell, heading); with
+        ``more``, at that one of the section's other pages folded into the hit."""
         import pythoncom
 
         from docwhere.opener import open_at
         from docwhere.window import pdf_app
 
         hit = self._hit(n)
+        anchor = hit["anchor"]
+        if more is not None:
+            places = hit.get("more_in_section") or []
+            if not isinstance(more, int) or not 0 <= more < len(places):
+                raise LookupError("もう一度検索してください")
+            anchor = places[more]["anchor"]
         pythoncom.CoInitialize()  # each bridge call runs on a thread of its own; Office is reached through COM
         try:
-            return open_at(hit["path"], hit["anchor"], pdf_app(self._db))
+            return open_at(hit["path"], anchor, pdf_app(self._db))
         finally:
             pythoncom.CoUninitialize()
 
@@ -1478,6 +1485,9 @@ html { scrollbar-gutter: stable; }
 .r-flag { color: var(--warn); font-size: 12px; }
 .r-elsewhere { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .r-elsewhere-at { color: var(--ink); }
+.r-more { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.pv-more { margin: 4px 0 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 2px; color: var(--muted); font-size: 12px; }
+.pv-more .btn.quiet { min-height: 24px; padding: 2px 6px; font-size: 12px; }  /* 24px: the smallest easy target */
 /* hits collected across searches: a bar with their count, and a mark on each one in the list */
 .collect-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; padding: 8px 12px;
   background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
@@ -2753,7 +2763,7 @@ MANAGE_JS = r"""(() => {
     () => api.open_hits(numbers, q.value.trim())
       .then(() => toast("読み取り画面で開きました"))
       .catch(failed("読み取り画面で開けませんでした")));
-  const openFile = (n) => opening("ファイルを開いています…", () => api.open_file(n)
+  const openFile = (n, more = null) => opening("ファイルを開いています…", () => api.open_file(n, more)
     .then(() => toast("ファイルを開きました"))
     .catch(failed("ファイルを開けませんでした")));
   const citation = (hit) => {
@@ -2766,6 +2776,34 @@ MANAGE_JS = r"""(() => {
     .catch(failed("コピーできませんでした"));
   // all the words were asked for, and some are not here but further on in the same section:
   // where, with the words around them, so the reader can tell whether the two belong together
+  // the section's other pages that match too, folded into the hit so one section does not fill
+  // the list: runs of pages ("p.12-15, p.21-23"), as search.pages_label writes them
+  const pagesLabel = (places) => {
+    const pages = places.map((p) => /^p\.(\d+)$/.exec(p.location)).filter(Boolean).map((m) => Number(m[1])).sort((a, b) => a - b);
+    if (!pages.length || pages.length !== places.length) return "";
+    const runs = [[pages[0], pages[0]]];
+    for (const page of pages.slice(1)) {
+      if (page === runs[runs.length - 1][1] + 1) runs[runs.length - 1][1] = page; else runs.push([page, page]);
+    }
+    return runs.map(([a, b]) => (a === b ? `p.${a}` : `p.${a}-${b}`)).join(", ");
+  };
+  const moreLine = (hit) => {
+    const places = hit.more_in_section || [];
+    if (!places.length) return null;
+    const label = pagesLabel(places);
+    return h("p", { class: "r-more", text: label ? `同じ節のほかのページ：${label}` : `同じ節のほかに ${places.length} か所` });
+  };
+  const MORE_BUTTONS = 12;  // pages named as buttons in the pane; the rest are counted
+  const moreButtons = (hit) => {
+    const places = hit.more_in_section || [];
+    if (!places.length) return null;
+    const shown = places.slice(0, MORE_BUTTONS).map((p, k) => h("button", {
+      type: "button", class: "btn quiet", text: p.location || `別の箇所 ${k + 1}`, title: "このページでファイルを開きます",
+      onclick: () => openFile(hit.n, k) }));
+    const rest = places.length - shown.length;
+    return h("p", { class: "pv-more" }, h("span", { text: "同じ節のほかのページ：" }), ...shown,
+      rest > 0 ? h("span", { text: `ほか ${rest}` }) : null);
+  };
   const elsewhereLines = (hit) => (hit.elsewhere || []).map((e) => h("p", { class: "r-elsewhere" },
     h("span", { class: "r-elsewhere-at", text: e.location ? `同じ節の ${e.location}：` : "同じ節の別の箇所：" }),
     markTerms(e.snippet, [e.term])));
@@ -3035,6 +3073,7 @@ MANAGE_JS = r"""(() => {
       h("h2", { class: "pv-name", text: base(hit.path), title: hit.path }),
       h("p", { class: "pv-where", text: [hit.crumb || "", hit.location].filter(Boolean).join("　") }),
       ...elsewhereLines(hit),
+      moreButtons(hit),
       // what acts on the file sits on its path's line, apart from what acts on the hit below
       h("p", { class: "pv-path" },
         h("span", { text: `${shortPath(hit.path)}　${hit.modified}`, title: hit.path }),
@@ -3158,6 +3197,7 @@ MANAGE_JS = r"""(() => {
           h("span", { class: "r-collected", text: "調査リスト" })),
         h("p", { class: "r-snippet" }, markTerms(hit.snippet, terms.concat(hit.terms))),
         ...elsewhereLines(hit),
+        moreLine(hit),
         // the name is in bold above: the date first, so it is never the part cut off, then the folder
         h("span", { class: "r-path", text: `${hit.modified}　${nearDir(hit.path)}`, title: hit.path }),
         hit.newer_version ? h("span", { class: "r-flag", text: `新しい版かもしれません: ${base(hit.newer_version)}` }) : null);

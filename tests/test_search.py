@@ -520,6 +520,48 @@ def test_a_file_named_for_one_word_holds_it_for_require_all(tmp_path, index):
     hits = search(index, [root], ["煮込み", "火加減"], require_all=True)
     assert [Path(h.path).name for h in hits] == ["煮込み.md"]
 
+
+def test_the_pages_of_one_section_are_one_hit_and_name_the_others(tmp_path, index):
+    root = tmp_path / "docs"
+    root.mkdir()
+    # three pages of one heading say it, then a page of another heading
+    _pdf(root / "book.pdf", ["鍋の手入れ\n鍋は乾かす。", "鍋は重ねない。", "鍋の底を磨く。", "包丁\n鍋の横に置く。"],
+         "鍋の手入れ", [1, "包丁", 4])
+    index.sync(root)
+    hits = search(index, [root], ["鍋"], per_file=5)
+    assert [h.title for h in hits].count("鍋の手入れ") == 1 and len(hits) == 2
+    first = next(h for h in hits if h.title == "鍋の手入れ")
+    # the page with the heading ranks first and stands for the section; the others are named
+    assert first.location == "p.1"
+    assert [(p["location"], p["anchor"]["page"]) for p in first.more_in_section] == [("p.2", 2), ("p.3", 3)]
+    other = next(h for h in hits if h.title == "包丁")
+    assert other.more_in_section is None  # another heading's page is a hit of its own
+
+
+def test_a_spreadsheets_rows_are_hits_of_their_own(tmp_path, index):
+    import openpyxl
+
+    root = tmp_path / "docs"
+    root.mkdir()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "在庫"
+    ws.append(["品名", "メモ"])
+    for i in range(400):  # rows enough to be read in several parts
+        ws.append([f"品 {i}", "鍋" if i in (3, 390) else "皿"])
+    wb.save(root / "stock.xlsx")
+    index.sync(root)
+    hits = search(index, [root], ["鍋"], per_file=5)
+    assert len(hits) >= 2 and all(h.more_in_section is None for h in hits)
+
+
+def test_pages_are_named_as_runs():
+    from docwhere.search import pages_label
+
+    places = [{"location": f"p.{n}"} for n in (17, 12, 13, 14, 21, 23, 22)]
+    assert pages_label(places) == "p.12-14, p.17, p.21-23"
+    assert pages_label([{"location": ""}, {"location": "p.3"}]) == ""  # not all pages: counted instead
+
 def test_a_section_opening_with_several_bookmarks_is_still_one(tmp_path, index):
     root = tmp_path / "docs"
     root.mkdir()
